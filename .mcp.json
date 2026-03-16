@@ -1,9 +1,9 @@
 {
   "mcpServers": {
-    "TalkToFigma": {
+    "ClaudeToFigma": {
       "command": "bunx",
       "args": [
-        "cursor-talk-to-figma-mcp@latest"
+        "claude-to-figma@latest"
       ]
     }
   }

@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "cursor-talk-to-figma-mcp",
+      "name": "claude-to-figma",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.13.1",
         "uuid": "latest",

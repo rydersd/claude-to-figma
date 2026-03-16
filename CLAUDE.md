@@ -29,13 +29,13 @@ There is no test suite or linter configured.
 
 ## Architecture
 
-### MCP Server (`src/talk_to_figma_mcp/server.ts`)
+### MCP Server (`src/claude_to_figma_mcp/server.ts`)
 The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 50+ tools (create shapes, modify text, manage layouts, export images, etc.) and several AI prompts (design strategies). Communicates with Claude Code over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds.
 
 ### WebSocket Relay (`src/socket.ts`)
 Lightweight Bun WebSocket server on port 3055 (configurable via `PORT` env). Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
 
-### Figma Plugin (`src/cursor_mcp_plugin/`)
+### Figma Plugin (`src/claude_figma_plugin/`)
 Runs inside Figma. `code.js` is the plugin main thread handling 30+ commands via a dispatcher. `ui.html` is the plugin UI for WebSocket connection management. `manifest.json` declares permissions (dynamic-page access, localhost network). The plugin is **not built/bundled** — `code.js` is written directly as the runtime artifact.
 
 ## Key Patterns
@@ -61,7 +61,7 @@ The `create_node_tree` tool creates entire node hierarchies in one round-trip. K
 
 1. Run `bun setup` — installs dependencies and writes MCP config
 2. `bun socket` in one terminal (WebSocket relay)
-3. In Figma: Plugins → Development → Link existing plugin → select `src/cursor_mcp_plugin/manifest.json`
+3. In Figma: Plugins → Development → Link existing plugin → select `src/claude_figma_plugin/manifest.json`
 4. Run plugin in Figma, join a channel, then use tools from Claude Code
 
 Add the MCP server to Claude Code:

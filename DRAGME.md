@@ -1,4 +1,4 @@
-# README for AI Agent: Cursor-Figma MCP Setup Guide
+# README for AI Agent: Claude-to-Figma MCP Setup Guide
 
 ## 🤖 AI Agent Decision Flow
 
@@ -28,7 +28,7 @@ flowchart TD
 
 ## 🎯 Objective
 
-Install and configure Cursor-Figma MCP integration with **AI-agent-friendly decision trees** and fail-safe checkpoints at each step. This guide uses Cursor's built-in Git clone functionality to directly clone the official repository, simplifying the setup process.
+Install and configure Claude-to-Figma MCP integration with **AI-agent-friendly decision trees** and fail-safe checkpoints at each step. This guide uses Cursor's built-in Git clone functionality to directly clone the official repository, simplifying the setup process.
 
 ### 🤖 For AI Agents Reading This Guide
 
@@ -358,8 +358,8 @@ graph TD
 1. **Verify project structure**:
 
 ```bash
-# Verify current directory (should already be in cursor-talk-to-figma-mcp)
-pwd | grep "cursor-talk-to-figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
+# Verify current directory (should already be in claude-to-figma)
+pwd | grep "claude-to-figma" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
 
 # Verify project structure
 ls package.json src && echo "✅ Project structure valid" || echo "❌ ERROR: Invalid project structure"
@@ -489,8 +489,8 @@ graph TD
 1. **Verify project setup**:
 
 ```bash
-# Verify current directory (should already be in cursor-talk-to-figma-mcp)
-pwd | grep "cursor-talk-to-figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
+# Verify current directory (should already be in claude-to-figma)
+pwd | grep "claude-to-figma" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
 
 # Verify and setup
 ls package.json src && echo "✅ Project structure valid" || echo "❌ ERROR: Invalid project structure"
@@ -573,8 +573,8 @@ graph TD
 ### Step B.2: Setup Dependencies in Cursor
 
 ```bash
-# Verify current directory (should already be in cursor-talk-to-figma-mcp)
-pwd | grep "cursor-talk-to-figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
+# Verify current directory (should already be in claude-to-figma)
+pwd | grep "claude-to-figma" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
 
 # Verify project structure
 ls package.json src && echo "✅ Project structure valid" || echo "❌ ERROR: Invalid project structure"
@@ -662,8 +662,8 @@ Progress: Method B 100% Complete ✅ - Proceeding to Common Steps
 **🚨 CRITICAL FOR AI AGENTS**: Project is already cloned and open in Cursor.
 
 ```bash
-# Verify current directory (should already be in cursor-talk-to-figma-mcp)
-pwd | grep "cursor-talk-to-figma-mcp" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
+# Verify current directory (should already be in claude-to-figma)
+pwd | grep "claude-to-figma" && echo "✅ Correct directory" || echo "❌ ERROR: Wrong directory"
 
 # Verify project structure
 ls package.json src && echo "✅ Project structure valid" || echo "❌ ERROR: Invalid project structure"
@@ -682,7 +682,7 @@ echo "✅ Project verified - MCP should be configured"
 **CHECKPOINT C.1**: Verify in Cursor:
 1. Open Settings (`Cmd+,` on Mac, `Ctrl+,` on Windows/Linux)
 2. Search "MCP"  
-3. Confirm "TalkToFigma" shows as "Connected"
+3. Confirm "ClaudeToFigma" shows as "Connected"
 
 **AI AGENTS**: Update overall progress after Cursor launch:
 
@@ -795,12 +795,12 @@ Progress: 63% Complete - WebSocket Running ✅ - Installing Figma Plugin
 #### 🔌 Install the Community Plugin
 
 1. **Open the Plugin Page**:
-   - Navigate to: https://www.figma.com/community/plugin/1485687494525374295/cursor-talk-to-figma-mcp-plugin
+   - Navigate to: https://www.figma.com/community/plugin/1485687494525374295/claude-to-figma-plugin
    - Click **"Install"** to add the plugin to your Figma account
 
 2. **Open Figma and Run the Plugin**:
    - Open any Figma file (or create a new one)
-   - Go to `Plugins` menu → `Cursor Talk to Figma MCP Plugin`
+   - Go to `Plugins` menu → `Claude to Figma Plugin`
    - The plugin panel will open
 
 #### ⚙️ Configure Plugin to Connect to Local WebSocket
@@ -890,7 +890,7 @@ get_document_info
    - Verify you can see:
      - ✅ **WebSocket server terminal** still running with "WebSocket server running on port 3055"
      - ✅ **Connection logs** showing Figma plugin is connected
-     - ✅ **MCP status** showing TalkToFigma as connected
+     - ✅ **MCP status** showing ClaudeToFigma as connected
 
 2. **Test End-to-End Communication**:
    ```bash
@@ -972,7 +972,7 @@ echo "🔍 Debugging MCP connection..."
 # Check if in correct project directory
 if [ ! -f "package.json" ] || [ ! -d "src" ]; then
     echo "❌ Not in project directory"
-    echo "💡 Please ensure you're in the cloned cursor-talk-to-figma-mcp directory"
+    echo "💡 Please ensure you're in the cloned claude-to-figma directory"
     echo "💡 Use Cursor's File > Open Folder to open the cloned project"
     exit 1
 fi
@@ -1115,7 +1115,7 @@ fi
 - ✅ Project successfully cloned and configured
 - ✅ MCP configuration file present and valid
 - ✅ Cursor IDE launched from project directory
-- ✅ MCP shows "TalkToFigma" as "Connected" in settings
+- ✅ MCP shows "ClaudeToFigma" as "Connected" in settings
 - ✅ WebSocket server running on port 3055 (verified via `@Terminals`)
 - ✅ Figma plugin installed, configured with `ws://localhost:3055`, and connected
 - ✅ Plugin connection visible in WebSocket server logs (check `@Terminals`)
@@ -1134,7 +1134,7 @@ fi
 
 1. **Open Cursor IDE**
 2. **Clone Repository**: Use `Cmd+Shift+P` → "Git: Clone"
-3. **Enter URL**: `https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp.git`
+3. **Enter URL**: `https://github.com/rydersd/claude-to-figma.git`
 4. **Select location and clone**
 5. **Open cloned project in Cursor**
 6. **Run setup**: `bun setup`
@@ -1142,13 +1142,13 @@ fi
 ### Alternative One-Line Commands (For Advanced Users)
 ```bash
 # Method A1 (Homebrew) - Clone and auto-open in Cursor
-[ "$HOMEBREW_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp.git && cd cursor-talk-to-figma-mcp && brew install bun && bun setup && cursor .
+[ "$HOMEBREW_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/rydersd/claude-to-figma.git && cd claude-to-figma && brew install bun && bun setup && cursor .
 
 # Method A2 (Direct) - Clone and auto-open in Cursor
-[ "$SUDO_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp.git && cd cursor-talk-to-figma-mcp && curl -fsSL https://bun.sh/install | bash && source ~/.zshrc && bun setup && cursor .
+[ "$SUDO_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/rydersd/claude-to-figma.git && cd claude-to-figma && curl -fsSL https://bun.sh/install | bash && source ~/.zshrc && bun setup && cursor .
 
 # Method B (Cursor-only) - Clone and open manually
-[ "$CURSOR_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp.git && echo "✅ Project cloned to ~/Desktop/cursor-talk-to-figma-mcp" && echo "💡 Open this folder in Cursor and run 'bun setup'"
+[ "$CURSOR_AVAILABLE" = "YES" ] && cd ~/Desktop && git clone https://github.com/rydersd/claude-to-figma.git && echo "✅ Project cloned to ~/Desktop/claude-to-figma" && echo "💡 Open this folder in Cursor and run 'bun setup'"
 ```
 
 ### Service Management

@@ -2,10 +2,10 @@
 
 MCP_CONFIG='{
   "mcpServers": {
-    "TalkToFigma": {
+    "ClaudeToFigma": {
       "command": "bunx",
       "args": [
-        "cursor-talk-to-figma-mcp@latest"
+        "claude-to-figma@latest"
       ]
     }
   }
@@ -13,11 +13,6 @@ MCP_CONFIG='{
 
 bun install
 
-# Cursor: write .cursor/mcp.json
-mkdir -p .cursor
-echo "$MCP_CONFIG" > .cursor/mcp.json
-echo "✓ Cursor MCP config written to .cursor/mcp.json"
-
-# Claude Code: write .mcp.json in project root
+# Write .mcp.json in project root for Claude Code
 echo "$MCP_CONFIG" > .mcp.json
-echo "✓ Claude Code MCP config written to .mcp.json"
+echo "✓ MCP config written to .mcp.json"
