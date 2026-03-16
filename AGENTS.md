@@ -56,8 +56,8 @@ The MCP config written by `bun setup` uses the published package:
 {
   "mcpServers": {
     "ClaudeToFigma": {
-      "command": "bunx",
-      "args": ["claude-to-figma@latest"]
+      "command": "bun",
+      "args": ["/path-to-repo/src/claude_to_figma_mcp/server.ts"]
     }
   }
 }
@@ -66,7 +66,7 @@ The MCP config written by `bun setup` uses the published package:
 You can also add it manually for Claude Code via the CLI:
 
 ```bash
-claude mcp add ClaudeToFigma -- bunx claude-to-figma@latest
+claude mcp add ClaudeToFigma -- bun /path-to-repo/src/claude_to_figma_mcp/server.ts
 ```
 
 ## Agent Notes

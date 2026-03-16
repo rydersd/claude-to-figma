@@ -52,8 +52,8 @@ Add the server to your MCP configuration in `.mcp.json`:
 {
   "mcpServers": {
     "ClaudeToFigma": {
-      "command": "bunx",
-      "args": ["claude-to-figma@latest"]
+      "command": "bun",
+      "args": ["/path-to-repo/src/claude_to_figma_mcp/server.ts"]
     }
   }
 }
@@ -62,7 +62,7 @@ Add the server to your MCP configuration in `.mcp.json`:
 Or add via CLI:
 
 ```bash
-claude mcp add ClaudeToFigma -- bunx claude-to-figma@latest
+claude mcp add ClaudeToFigma -- bun /path-to-repo/src/claude_to_figma_mcp/server.ts
 ```
 
 ### WebSocket Server

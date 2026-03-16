@@ -3,9 +3,9 @@
 MCP_CONFIG='{
   "mcpServers": {
     "ClaudeToFigma": {
-      "command": "bunx",
+      "command": "bun",
       "args": [
-        "claude-to-figma@latest"
+        "src/claude_to_figma_mcp/server.ts"
       ]
     }
   }

@@ -67,5 +67,5 @@ The `create_node_tree` tool creates entire node hierarchies in one round-trip. K
 Add the MCP server to Claude Code:
 
 ```bash
-claude mcp add ClaudeToFigma -- bunx claude-to-figma@latest
+claude mcp add ClaudeToFigma -- bun /path-to-repo/src/claude_to_figma_mcp/server.ts
 ```

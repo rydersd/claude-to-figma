@@ -414,7 +414,7 @@
 
         // Add instructions for localhost when disconnected
         if (!isConnected) {
-          statusMessage += `<br><br>Run this in your terminal, then connect<br><code>bunx claude-to-figma-socket</code>`;
+          statusMessage += `<br><br>Run this in your terminal, then connect<br><code>bun socket</code>`;
         }
 
         connectionStatus.innerHTML = statusMessage;
@@ -819,8 +819,8 @@
         const mcpConfig = {
           mcpServers: {
             ClaudeToFigma: {
-              command: "bunx",
-              args: ["claude-to-figma@latest"],
+              command: "bun",
+              args: ["src/claude_to_figma_mcp/server.ts"],
             },
           },
         };
