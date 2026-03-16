@@ -4650,7 +4650,7 @@ function expandRepeats(node) {
         expandedChildren.push(expandRepeats(child));
       }
     }
-    return { ...node, children: expandedChildren };
+    return Object.assign({}, node, { children: expandedChildren });
   }
 
   return node;
@@ -4732,12 +4732,16 @@ async function createNodeTree(params) {
   };
 
   async function createNode(spec, parentNodeId) {
-    const { type, children, ...props } = spec;
+    var type = spec.type;
+    var children = spec.children;
+    var props = Object.assign({}, spec);
+    delete props.type;
+    delete props.children;
 
     // Resolve color strings (hex/#RGB, $var:) to RGBA objects for create functions
     // Collect $var: references to bind after node creation
     const pendingVarBindings = [];
-    const createParams = { ...props, parentId: parentNodeId };
+    const createParams = Object.assign({}, props, { parentId: parentNodeId });
 
     for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
       if (createParams[colorProp] != null) {
