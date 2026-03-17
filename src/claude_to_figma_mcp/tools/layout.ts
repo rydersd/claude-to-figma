@@ -145,13 +145,14 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
-  server.tool("clone_node", "Clone an existing node in Figma", {
+  server.tool("clone_node", "Clone an existing node in Figma. Works with nodes inside instances — the clone is placed on the page or into an explicit parentId.", {
     nodeId: z.string().describe("The ID of the node to clone"),
     x: z.number().optional().describe("New X position for the clone"),
-    y: z.number().optional().describe("New Y position for the clone")
-  }, async ({ nodeId, x, y }: any) => {
+    y: z.number().optional().describe("New Y position for the clone"),
+    parentId: z.string().optional().describe("Optional parent node ID to place the clone into. If omitted, uses the source's parent (or the page if inside an instance)."),
+  }, async ({ nodeId, x, y, parentId }: any) => {
     try {
-      const result = await sendCommandToFigma('clone_node', { nodeId, x, y });
+      const result = await sendCommandToFigma('clone_node', { nodeId, x, y, parentId });
       const typedResult = result as { name: string; id: string };
       return { content: [{ type: "text", text: `Cloned node "${typedResult.name}" with new ID: ${typedResult.id}${x !== undefined && y !== undefined ? ` at position (${x}, ${y})` : ''}` }] };
     } catch (error) {
