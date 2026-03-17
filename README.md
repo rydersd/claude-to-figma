@@ -170,7 +170,9 @@ The MCP server provides the following tools for interacting with Figma:
 - `set_text_auto_resize` - Controls how a text node resizes to fit content: NONE, WIDTH_AND_HEIGHT, HEIGHT, or TRUNCATE
 - `set_text_decoration` - Applies underline, strikethrough, or removes decoration from a text node
 - `set_text_align` - Sets horizontal (LEFT, CENTER, RIGHT, JUSTIFIED) and/or vertical (TOP, CENTER, BOTTOM) text alignment
-- `set_text_format` - Sets paragraph formatting: line height, paragraph indent/spacing, letter spacing, and text case transformation
+- `set_text_format` - Sets node-level text formatting: line height, paragraph indent/spacing, letter spacing, text case (including SMALL_CAPS), leading trim, hanging punctuation/list, list spacing, truncation, and max lines
+- `set_text_list` - Applies native Figma ordered/unordered list formatting to a text node, with per-line type and indentation control for nested lists
+- `set_range_format` - Applies formatting to specific character ranges: font family/size/style, color, text case, decoration, letter spacing, line height, list type, indentation, and hyperlinks — for rich text with mixed fonts, bold spans, colored text, and inline links
 
 ### Auto Layout & Spacing
 

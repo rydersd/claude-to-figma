@@ -128,6 +128,8 @@ export type FigmaCommand =
   | "optimize_structure"
   | "set_text_align"
   | "set_text_format"
+  | "set_text_list"
+  | "set_range_format"
   | "set_clips_content";
 
 export type CommandParams = {
@@ -446,8 +448,39 @@ export type CommandParams = {
     paragraphIndent?: number;
     paragraphSpacing?: number;
     letterSpacing?: number | { value: number; unit: "PIXELS" | "PERCENT" };
-    textCase?: "ORIGINAL" | "UPPER" | "LOWER" | "TITLE";
+    textCase?: "ORIGINAL" | "UPPER" | "LOWER" | "TITLE" | "SMALL_CAPS" | "SMALL_CAPS_FORCED";
     leadingTrim?: "NONE" | "CAP_HEIGHT";
+    hangingPunctuation?: boolean;
+    hangingList?: boolean;
+    listSpacing?: number;
+    textTruncation?: "DISABLED" | "ENDING";
+    maxLines?: number | null;
+  };
+  set_text_list: {
+    nodeId: string;
+    listType?: "ORDERED" | "UNORDERED" | "NONE";
+    indentation?: number;
+    listSpacing?: number;
+    hangingList?: boolean;
+    lines?: Array<{ line: number; type?: "ORDERED" | "UNORDERED" | "NONE"; indentation?: number }>;
+  };
+  set_range_format: {
+    nodeId: string;
+    ranges: Array<{
+      start: number;
+      end: number;
+      fontFamily?: string;
+      fontStyle?: string;
+      fontSize?: number;
+      color?: string | { r: number; g: number; b: number; a?: number };
+      textCase?: string;
+      textDecoration?: string;
+      letterSpacing?: number | { value: number; unit: string };
+      lineHeight?: number | "AUTO" | { value: number; unit: string };
+      listType?: "ORDERED" | "UNORDERED" | "NONE";
+      indentation?: number;
+      hyperlink?: { type: "URL"; value: string } | null;
+    }>;
   };
   set_clips_content: {
     nodeId: string;

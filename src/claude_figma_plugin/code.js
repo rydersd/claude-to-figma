@@ -334,6 +334,16 @@ async function handleCommand(command, params) {
         throw new Error("Missing required parameter: nodeId");
       }
       return await setTextFormat(params);
+    case "set_text_list":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setTextList(params);
+    case "set_range_format":
+      if (!params || !params.nodeId || !params.ranges) {
+        throw new Error("Missing required parameters: nodeId and ranges");
+      }
+      return await setRangeFormat(params);
     case "set_clips_content":
       if (!params || !params.nodeId) {
         throw new Error("Missing required parameter: nodeId");
@@ -5120,8 +5130,8 @@ async function setTextDecoration(params) {
     throw new Error(`Node is not a text node: ${nodeId}`);
   }
 
-  // Load the font before changing decoration (required by Figma API)
-  await figma.loadFontAsync(node.fontName);
+  // Load all fonts (handles mixed font text)
+  await loadAllFonts(node);
   node.textDecoration = decoration;
 
   return {
@@ -6221,19 +6231,15 @@ async function setTextAlign(params) {
   };
 }
 
-// --- set_text_format: Set paragraph formatting on a text node ---
+// --- set_text_format: Set paragraph/node-level formatting on a text node ---
 async function setTextFormat(params) {
   var nodeId = params.nodeId;
   var node = await figma.getNodeByIdAsync(nodeId);
   if (!node) throw new Error("Node not found with ID: " + nodeId);
   if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
 
-  // Load font first — needed for any text property changes
-  try {
-    if (node.fontName !== figma.mixed) {
-      await figma.loadFontAsync(node.fontName);
-    }
-  } catch (e) {}
+  // Load all fonts used in the text node
+  await loadAllFonts(node);
 
   if (params.lineHeight !== undefined) {
     if (params.lineHeight === "AUTO") {
@@ -6263,6 +6269,21 @@ async function setTextFormat(params) {
   if (params.leadingTrim !== undefined) {
     node.leadingTrim = params.leadingTrim;
   }
+  if (params.hangingPunctuation !== undefined) {
+    node.hangingPunctuation = !!params.hangingPunctuation;
+  }
+  if (params.hangingList !== undefined) {
+    node.hangingList = !!params.hangingList;
+  }
+  if (params.listSpacing !== undefined) {
+    node.listSpacing = params.listSpacing;
+  }
+  if (params.textTruncation !== undefined) {
+    node.textTruncation = params.textTruncation;
+  }
+  if (params.maxLines !== undefined) {
+    node.maxLines = params.maxLines;
+  }
 
   return {
     id: node.id,
@@ -6272,6 +6293,220 @@ async function setTextFormat(params) {
     paragraphSpacing: node.paragraphSpacing,
     letterSpacing: node.letterSpacing,
     textCase: node.textCase,
+    hangingPunctuation: node.hangingPunctuation,
+    hangingList: node.hangingList,
+    listSpacing: node.listSpacing,
+    textTruncation: node.textTruncation,
+    maxLines: node.maxLines,
+  };
+}
+
+// Helper: load all fonts used in a text node (handles mixed fonts)
+async function loadAllFonts(textNode) {
+  if (textNode.fontName === figma.mixed) {
+    // Get all unique fonts used in the text
+    var segments = textNode.getStyledTextSegments(["fontName"]);
+    for (var i = 0; i < segments.length; i++) {
+      try {
+        await figma.loadFontAsync(segments[i].fontName);
+      } catch (e) {}
+    }
+  } else {
+    try {
+      await figma.loadFontAsync(textNode.fontName);
+    } catch (e) {}
+  }
+}
+
+// --- set_text_list: Set native list formatting on a text node ---
+async function setTextList(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
+
+  await loadAllFonts(node);
+
+  var lines = params.lines;
+  var listType = params.listType || "UNORDERED";
+  var start = 0;
+  var end = node.characters.length;
+
+  // If specific lines are provided, apply per-line
+  if (lines && Array.isArray(lines)) {
+    // Split text into lines to find character ranges
+    var text = node.characters;
+    var lineStarts = [0];
+    for (var i = 0; i < text.length; i++) {
+      if (text[i] === "\n") lineStarts.push(i + 1);
+    }
+    lineStarts.push(text.length); // sentinel
+
+    for (var li = 0; li < lines.length; li++) {
+      var lineSpec = lines[li];
+      var lineIdx = lineSpec.line; // 0-based line index
+      if (lineIdx < 0 || lineIdx >= lineStarts.length - 1) continue;
+
+      var ls = lineStarts[lineIdx];
+      var le = lineStarts[lineIdx + 1];
+      // Don't include trailing newline in range
+      if (le > ls && text[le - 1] === "\n") le--;
+      if (le <= ls) continue;
+
+      var lt = lineSpec.type || listType;
+      node.setRangeListOptions(ls, le, { type: lt });
+
+      if (lineSpec.indentation !== undefined) {
+        node.setRangeIndentation(ls, le, lineSpec.indentation);
+      }
+    }
+  } else {
+    // Apply to entire text
+    node.setRangeListOptions(start, end, { type: listType });
+    if (params.indentation !== undefined) {
+      node.setRangeIndentation(start, end, params.indentation);
+    }
+  }
+
+  // Node-level list properties
+  if (params.listSpacing !== undefined) {
+    node.listSpacing = params.listSpacing;
+  }
+  if (params.hangingList !== undefined) {
+    node.hangingList = !!params.hangingList;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    characters: node.characters,
+    listSpacing: node.listSpacing,
+    hangingList: node.hangingList,
+  };
+}
+
+// --- set_range_format: Per-range text formatting ---
+async function setRangeFormat(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
+
+  await loadAllFonts(node);
+
+  var ranges = params.ranges;
+  if (!ranges || !Array.isArray(ranges) || ranges.length === 0) {
+    throw new Error("Missing or empty ranges array");
+  }
+
+  var results = [];
+
+  for (var ri = 0; ri < ranges.length; ri++) {
+    var range = ranges[ri];
+    var start = range.start;
+    var end = range.end;
+
+    if (start === undefined || end === undefined) {
+      results.push({ index: ri, success: false, error: "Missing start or end" });
+      continue;
+    }
+    if (start < 0 || end > node.characters.length || start >= end) {
+      results.push({ index: ri, success: false, error: "Invalid range: start=" + start + " end=" + end + " length=" + node.characters.length });
+      continue;
+    }
+
+    try {
+      // Font family + style
+      if (range.fontFamily !== undefined) {
+        var fontStyle = range.fontStyle || "Regular";
+        await figma.loadFontAsync({ family: range.fontFamily, style: fontStyle });
+        node.setRangeFontName(start, end, { family: range.fontFamily, style: fontStyle });
+      }
+
+      // Font size
+      if (range.fontSize !== undefined) {
+        node.setRangeFontSize(start, end, range.fontSize);
+      }
+
+      // Text color (fills)
+      if (range.color !== undefined) {
+        var color = range.color;
+        if (typeof color === "string") {
+          color = hexToFigmaColor(color);
+          if (!color) throw new Error("Invalid hex color");
+        }
+        node.setRangeFills(start, end, [{
+          type: "SOLID",
+          color: { r: color.r, g: color.g, b: color.b },
+          opacity: color.a !== undefined ? color.a : 1,
+        }]);
+      }
+
+      // Text case
+      if (range.textCase !== undefined) {
+        node.setRangeTextCase(start, end, range.textCase);
+      }
+
+      // Text decoration
+      if (range.textDecoration !== undefined) {
+        node.setRangeTextDecoration(start, end, range.textDecoration);
+      }
+
+      // Letter spacing
+      if (range.letterSpacing !== undefined) {
+        if (typeof range.letterSpacing === "number") {
+          node.setRangeLetterSpacing(start, end, { value: range.letterSpacing, unit: "PIXELS" });
+        } else {
+          node.setRangeLetterSpacing(start, end, range.letterSpacing);
+        }
+      }
+
+      // Line height
+      if (range.lineHeight !== undefined) {
+        if (range.lineHeight === "AUTO") {
+          node.setRangeLineHeight(start, end, { unit: "AUTO" });
+        } else if (typeof range.lineHeight === "number") {
+          node.setRangeLineHeight(start, end, { value: range.lineHeight, unit: "PIXELS" });
+        } else {
+          node.setRangeLineHeight(start, end, range.lineHeight);
+        }
+      }
+
+      // List options
+      if (range.listType !== undefined) {
+        node.setRangeListOptions(start, end, { type: range.listType });
+      }
+
+      // Indentation (for nested lists)
+      if (range.indentation !== undefined) {
+        node.setRangeIndentation(start, end, range.indentation);
+      }
+
+      // Hyperlink
+      if (range.hyperlink !== undefined) {
+        node.setRangeHyperlink(start, end, range.hyperlink);
+      }
+
+      results.push({ index: ri, success: true, start: start, end: end });
+    } catch (e) {
+      results.push({ index: ri, success: false, start: start, end: end, error: e.message || String(e) });
+    }
+  }
+
+  var successCount = 0;
+  var failureCount = 0;
+  for (var i = 0; i < results.length; i++) {
+    if (results[i].success) successCount++;
+    else failureCount++;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    totalRanges: ranges.length,
+    successCount: successCount,
+    failureCount: failureCount,
+    results: results,
   };
 }
 
