@@ -1358,6 +1358,77 @@ server.tool(
   }
 );
 
+// Swap Instance Variant Tool
+server.tool(
+  "swap_instance_variant",
+  "Swap a component instance to a different component or variant. The target must be a COMPONENT node. Overrides on the instance are preserved where possible.",
+  {
+    nodeId: z.string().describe("The ID of the INSTANCE node to swap"),
+    componentKey: z.string().describe("The ID of the target COMPONENT node to swap to (use the id field from get_local_components, or a component node ID from get_node_info)"),
+  },
+  async ({ nodeId, componentKey }: any) => {
+    try {
+      const result = await sendCommandToFigma("swap_instance_variant", {
+        nodeId,
+        componentKey,
+      });
+      const typedResult = result as any;
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(typedResult),
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error swapping instance variant: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Set Component Properties Tool
+server.tool(
+  "set_component_properties",
+  "Set component property values on a component instance. Properties use key-value pairs where keys include the #id suffix (e.g. 'Text#12345'). Use get_node_info on an instance to see its componentProperties and available property keys. Supports TEXT, BOOLEAN, INSTANCE_SWAP, and VARIANT property types.",
+  {
+    nodeId: z.string().describe("The ID of the INSTANCE node to update"),
+    properties: z.record(z.string(), z.union([z.string(), z.boolean()])).describe("Key-value pairs of component properties to set. Keys must include the #id suffix (e.g. 'Text#12345': 'Hello', 'Visible#67890': true). For INSTANCE_SWAP, the value is a component ID string."),
+  },
+  async ({ nodeId, properties }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_component_properties", {
+        nodeId,
+        properties,
+      });
+      const typedResult = result as any;
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(typedResult),
+          }
+        ]
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error setting component properties: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
 
 // Set Corner Radius Tool
 server.tool(
@@ -2752,6 +2823,80 @@ server.tool(
 );
 
 server.tool(
+  "group_nodes",
+  "Group multiple nodes together (like Cmd+G). All nodes must share the same parent.",
+  {
+    nodeIds: z.array(z.string()).min(1).describe("Array of node IDs to group together"),
+    name: z.string().optional().describe("Optional name for the group"),
+  },
+  async ({ nodeIds, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("group_nodes", { nodeIds, name });
+      const typedResult = result as { id: string; name: string; childrenCount: number };
+      return {
+        content: [{ type: "text", text: `Created group "${typedResult.name}" (ID: ${typedResult.id}) with ${typedResult.childrenCount} children` }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error grouping nodes: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+server.tool(
+  "batch_reparent",
+  "Move multiple nodes into a target frame/group/section. Validates parent is a container type.",
+  {
+    nodeIds: z.array(z.string()).min(1).describe("Array of node IDs to move"),
+    parentId: z.string().describe("The ID of the target parent (FRAME, GROUP, SECTION, PAGE, or COMPONENT)"),
+    index: z.number().int().min(0).optional().describe("Optional insertion index (0-based). If omitted, nodes are appended."),
+  },
+  async ({ nodeIds, parentId, index }: any) => {
+    try {
+      const result = await sendCommandToFigma("batch_reparent", { nodeIds, parentId, index });
+      const typedResult = result as {
+        success: boolean;
+        totalRequested: number;
+        successCount: number;
+        failureCount: number;
+        parentName: string;
+        results: Array<{
+          success: boolean;
+          nodeId: string;
+          nodeName?: string;
+          error?: string;
+        }>;
+      };
+
+      const failedResults = typedResult.results.filter((item: any) => !item.success);
+      let responseText = `Batch reparent completed: ${typedResult.successCount} of ${typedResult.totalRequested} nodes moved into "${typedResult.parentName}".`;
+      if (failedResults.length > 0) {
+        responseText += `\n\nFailed nodes:\n${failedResults.map((item: any) => `- ${item.nodeId}: ${item.error}`).join("\n")}`;
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: responseText,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error batch reparenting nodes: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+server.tool(
   "create_component",
   "Convert an existing frame into a Figma component",
   {
@@ -2837,6 +2982,50 @@ server.tool(
     } catch (error) {
       return {
         content: [{ type: "text", text: `Error setting stroke dash: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+server.tool(
+  "set_stroke_properties",
+  "Set stroke properties (weight, cap, join, align, dashPattern) on a node without requiring a color change",
+  {
+    nodeId: z.string().describe("The ID of the node"),
+    weight: z.number().positive().optional().describe("Stroke weight"),
+    cap: z.enum(["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL", "TRIANGLE_FILLED", "DIAMOND_FILLED", "CIRCLE_FILLED"]).optional().describe("Stroke cap style"),
+    join: z.enum(["MITER", "BEVEL", "ROUND"]).optional().describe("Stroke join style"),
+    align: z.enum(["INSIDE", "OUTSIDE", "CENTER"]).optional().describe("Stroke alignment relative to the node boundary"),
+    dashPattern: z.array(z.number()).optional().describe("Dash pattern array. Empty [] for solid, [10, 5] for dashed, [2, 2] for dotted"),
+  },
+  async ({ nodeId, weight, cap, join, align, dashPattern }: any) => {
+    if (weight === undefined && cap === undefined && join === undefined && align === undefined && dashPattern === undefined) {
+      return {
+        content: [{ type: "text", text: "Error: At least one stroke property (weight, cap, join, align, dashPattern) must be provided" }],
+      };
+    }
+    try {
+      const result = await sendCommandToFigma("set_stroke_properties", {
+        nodeId,
+        weight,
+        cap,
+        join,
+        align,
+        dashPattern,
+      });
+      const typedResult = result as { name: string; id: string; strokeWeight: number; strokeCap: string; strokeJoin: string; strokeAlign: string; dashPattern: number[] };
+      const updated: string[] = [];
+      if (weight !== undefined) updated.push(`weight=${typedResult.strokeWeight}`);
+      if (cap !== undefined) updated.push(`cap=${typedResult.strokeCap}`);
+      if (join !== undefined) updated.push(`join=${typedResult.strokeJoin}`);
+      if (align !== undefined) updated.push(`align=${typedResult.strokeAlign}`);
+      if (dashPattern !== undefined) updated.push(`dashPattern=[${typedResult.dashPattern.join(", ")}]`);
+      return {
+        content: [{ type: "text", text: `Set stroke properties on "${typedResult.name}": ${updated.join(", ")}` }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error setting stroke properties: ${error instanceof Error ? error.message : String(error)}` }],
       };
     }
   }
@@ -3085,6 +3274,8 @@ type FigmaCommand =
   | "create_component_instance"
   | "get_instance_overrides"
   | "set_instance_overrides"
+  | "swap_instance_variant"
+  | "set_component_properties"
   | "export_node_as_image"
   | "join"
   | "set_corner_radius"
@@ -3113,11 +3304,19 @@ type FigmaCommand =
   | "create_component"
   | "create_vector"
   | "set_stroke_dash"
+  | "set_stroke_properties"
   | "remove_fill"
   | "create_section"
   | "set_text_decoration"
   | "create_node_tree"
-  | "get_local_variables";
+  | "get_local_variables"
+  | "rename_node"
+  | "batch_rename"
+  | "create_line"
+  | "group_nodes"
+  | "batch_reparent"
+  | "batch_set_fill_color"
+  | "batch_clone";
 
 type CommandParams = {
   get_document_info: Record<string, never>;
@@ -3199,6 +3398,14 @@ type CommandParams = {
   set_instance_overrides: {
     targetNodeIds: string[];
     sourceInstanceId: string;
+  };
+  swap_instance_variant: {
+    nodeId: string;
+    componentKey: string;
+  };
+  set_component_properties: {
+    nodeId: string;
+    properties: Record<string, string | boolean>;
   };
   export_node_as_image: {
     nodeId: string;
@@ -3302,6 +3509,14 @@ type CommandParams = {
     nodeId: string;
     dashPattern: number[];
   };
+  set_stroke_properties: {
+    nodeId: string;
+    weight?: number;
+    cap?: "NONE" | "ROUND" | "SQUARE" | "ARROW_LINES" | "ARROW_EQUILATERAL" | "TRIANGLE_FILLED" | "DIAMOND_FILLED" | "CIRCLE_FILLED";
+    join?: "MITER" | "BEVEL" | "ROUND";
+    align?: "INSIDE" | "OUTSIDE" | "CENTER";
+    dashPattern?: number[];
+  };
   remove_fill: {
     nodeId: string;
   };
@@ -3322,6 +3537,43 @@ type CommandParams = {
     parentId?: string;
   };
   get_local_variables: Record<string, never>;
+  rename_node: {
+    nodeId: string;
+    name: string;
+  };
+  batch_rename: {
+    mappings: Array<{ nodeId: string; name: string }>;
+  };
+  create_line: {
+    startX: number;
+    startY: number;
+    endX: number;
+    endY: number;
+    strokeWeight?: number;
+    strokeColor?: { r: number; g: number; b: number; a?: number } | string;
+    startCap?: string;
+    endCap?: string;
+    name?: string;
+    parentId?: string;
+  };
+  group_nodes: {
+    nodeIds: string[];
+    name?: string;
+  };
+  batch_reparent: {
+    nodeIds: string[];
+    parentId: string;
+    index?: number;
+  };
+  batch_set_fill_color: {
+    nodeIds: string[];
+    color: { r: number; g: number; b: number; a: number };
+  };
+  batch_clone: {
+    sourceId: string;
+    positions: Array<{ x: number; y: number }>;
+    names?: string[];
+  };
 
 };
 
@@ -3476,6 +3728,108 @@ function connectToFigma(port: number = 3055) {
   });
 }
 
+// Rename Node Tool
+server.tool(
+  "rename_node",
+  "Rename a node's layer name in Figma",
+  {
+    nodeId: z.string().describe("The ID of the node to rename"),
+    name: z.string().describe("The new name for the node"),
+  },
+  async ({ nodeId, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("rename_node", { nodeId, name });
+      const typedResult = result as { id: string; oldName: string; newName: string };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Renamed node "${typedResult.oldName}" to "${typedResult.newName}" (ID: ${typedResult.id})`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error renaming node: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Batch Rename Tool
+server.tool(
+  "batch_rename",
+  "Rename multiple nodes' layer names in Figma in one call",
+  {
+    mappings: z
+      .array(
+        z.object({
+          nodeId: z.string().describe("The ID of the node to rename"),
+          name: z.string().describe("The new name for the node"),
+        })
+      )
+      .describe("Array of node ID and name pairs to rename"),
+  },
+  async ({ mappings }: any) => {
+    try {
+      if (!mappings || mappings.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No mappings provided",
+            },
+          ],
+        };
+      }
+
+      const result = await sendCommandToFigma("batch_rename", { mappings });
+      const typedResult = result as {
+        success: boolean;
+        totalRequested: number;
+        successCount: number;
+        failureCount: number;
+        results: Array<{
+          success: boolean;
+          nodeId: string;
+          oldName?: string;
+          newName?: string;
+          error?: string;
+        }>;
+      };
+
+      const failedResults = typedResult.results.filter((item: any) => !item.success);
+      let responseText = `Batch rename completed: ${typedResult.successCount} of ${typedResult.totalRequested} nodes renamed successfully.`;
+      if (failedResults.length > 0) {
+        responseText += `\n\nFailed nodes:\n${failedResults.map((item: any) => `- ${item.nodeId}: ${item.error}`).join("\n")}`;
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: responseText,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error batch renaming nodes: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
 // Function to join a channel
 async function joinChannel(channelName: string): Promise<void> {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -3595,6 +3949,177 @@ server.tool(
             type: "text",
             text: `Error joining channel: ${error instanceof Error ? error.message : String(error)
               }`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Create Line Tool
+server.tool(
+  "create_line",
+  "Create a line or arrow between two points in Figma. Uses a vector node with per-vertex stroke caps, so each end can have a different cap (e.g., one end arrow, other end none).",
+  {
+    startX: z.number().describe("X position of the start point"),
+    startY: z.number().describe("Y position of the start point"),
+    endX: z.number().describe("X position of the end point"),
+    endY: z.number().describe("Y position of the end point"),
+    strokeWeight: z.number().positive().optional().describe("Stroke weight (default 2)"),
+    strokeColor: z.union([
+      z.object({
+        r: z.number().min(0).max(1).describe("Red (0-1)"),
+        g: z.number().min(0).max(1).describe("Green (0-1)"),
+        b: z.number().min(0).max(1).describe("Blue (0-1)"),
+        a: z.number().min(0).max(1).optional().describe("Alpha (0-1)"),
+      }),
+      z.string().describe("Hex color string (e.g. '#FF0000') or variable ref ('$var:Collection/Name')"),
+    ]).optional().describe("Stroke color as RGBA object, hex string, or variable reference"),
+    startCap: z.enum(["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL", "TRIANGLE_FILLED", "DIAMOND_FILLED", "CIRCLE_FILLED"]).optional().describe("Cap style for the start vertex (default NONE)"),
+    endCap: z.enum(["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL", "TRIANGLE_FILLED", "DIAMOND_FILLED", "CIRCLE_FILLED"]).optional().describe("Cap style for the end vertex (default NONE)"),
+    name: z.string().optional().describe("Optional name for the line node"),
+    parentId: z.string().optional().describe("Optional parent node ID to append the line to"),
+  },
+  async ({ startX, startY, endX, endY, strokeWeight, strokeColor, startCap, endCap, name, parentId }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_line", {
+        startX,
+        startY,
+        endX,
+        endY,
+        strokeWeight: strokeWeight || 2,
+        strokeColor,
+        startCap: startCap || "NONE",
+        endCap: endCap || "NONE",
+        name: name || "Line",
+        parentId,
+      });
+      const typedResult = result as { name: string; id: string };
+      return {
+        content: [{ type: "text", text: `Created line "${typedResult.name}" with ID: ${typedResult.id}` }],
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error creating line: ${error instanceof Error ? error.message : String(error)}` }],
+      };
+    }
+  }
+);
+
+// Batch Set Fill Color Tool
+server.tool(
+  "batch_set_fill_color",
+  "Set the fill color of multiple nodes at once. Supports RGBA (0-1), hex strings (#RRGGBB), or Figma variable references ($var:Collection/Name). Returns success/failure counts.",
+  {
+    nodeIds: z.array(z.string()).describe("Array of node IDs to modify"),
+    r: z.number().min(0).max(1).describe("Red component (0-1)"),
+    g: z.number().min(0).max(1).describe("Green component (0-1)"),
+    b: z.number().min(0).max(1).describe("Blue component (0-1)"),
+    a: z.number().min(0).max(1).optional().describe("Alpha component (0-1)"),
+  },
+  async ({ nodeIds, r, g, b, a }: any) => {
+    try {
+      if (!nodeIds || nodeIds.length === 0) {
+        return {
+          content: [{ type: "text", text: "No node IDs provided" }],
+        };
+      }
+
+      const result = await sendCommandToFigma("batch_set_fill_color", {
+        nodeIds,
+        color: { r, g, b, a: a || 1 },
+      });
+
+      const typedResult = result as {
+        successCount: number;
+        failureCount: number;
+        results: Array<{ nodeId: string; success: boolean; name?: string; error?: string }>;
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Batch set fill color to RGBA(${r}, ${g}, ${b}, ${a || 1}) on ${nodeIds.length} nodes: ${typedResult.successCount} succeeded, ${typedResult.failureCount} failed`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error batch setting fill color: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+      };
+    }
+  }
+);
+
+// Batch Clone Tool
+server.tool(
+  "batch_clone",
+  "Clone an existing node to multiple positions in one call. Optionally name each clone. Returns array of created clones with their IDs and positions.",
+  {
+    sourceId: z.string().describe("The ID of the node to clone"),
+    positions: z.array(
+      z.object({
+        x: z.number().describe("X position for this clone"),
+        y: z.number().describe("Y position for this clone"),
+      })
+    ).describe("Array of {x, y} positions for each clone"),
+    names: z.array(z.string()).optional().describe("Optional array of names for each clone (must match positions length)"),
+  },
+  async ({ sourceId, positions, names }: any) => {
+    try {
+      if (!positions || positions.length === 0) {
+        return {
+          content: [{ type: "text", text: "No positions provided" }],
+        };
+      }
+
+      if (names && names.length !== positions.length) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Names array length (${names.length}) must match positions array length (${positions.length})`,
+            },
+          ],
+        };
+      }
+
+      const result = await sendCommandToFigma("batch_clone", {
+        sourceId,
+        positions,
+        names,
+      });
+
+      const typedResult = result as {
+        clones: Array<{ id: string; name: string; x: number; y: number }>;
+        successCount: number;
+        failureCount: number;
+      };
+
+      const cloneList = typedResult.clones
+        .map((c: any) => `  - "${c.name}" (${c.id}) at (${c.x}, ${c.y})`)
+        .join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Cloned node to ${typedResult.successCount} positions (${typedResult.failureCount} failed):\n${cloneList}`,
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error batch cloning: ${error instanceof Error ? error.message : String(error)}`,
           },
         ],
       };

@@ -214,6 +214,10 @@ async function handleCommand(command, params) {
           throw new Error("Missing sourceInstanceId parameter");
         }
       }
+    case "swap_instance_variant":
+      return await swapInstanceVariant(params);
+    case "set_component_properties":
+      return await setComponentProperties(params);
     case "set_layout_mode":
       return await setLayoutMode(params);
     case "set_padding":
@@ -251,6 +255,8 @@ async function handleCommand(command, params) {
       return await createVector(params);
     case "set_stroke_dash":
       return await setStrokeDash(params);
+    case "set_stroke_properties":
+      return await setStrokeProperties(params);
     case "remove_fill":
       return await removeFill(params);
     case "create_section":
@@ -261,6 +267,38 @@ async function handleCommand(command, params) {
       return await createNodeTree(params);
     case "get_local_variables":
       return await getLocalVariables();
+    case "create_line":
+      return await createLine(params);
+    case "rename_node":
+      if (!params || !params.nodeId || !params.name) {
+        throw new Error("Missing required parameters: nodeId and name");
+      }
+      return await renameNode(params);
+    case "batch_rename":
+      if (!params || !params.mappings || !Array.isArray(params.mappings)) {
+        throw new Error("Missing or invalid mappings parameter");
+      }
+      return await batchRename(params);
+    case "group_nodes":
+      if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
+        throw new Error("Missing or invalid nodeIds parameter");
+      }
+      return await groupNodes(params);
+    case "batch_reparent":
+      if (!params || !params.nodeIds || !Array.isArray(params.nodeIds) || !params.parentId) {
+        throw new Error("Missing required parameters: nodeIds array and parentId");
+      }
+      return await batchReparent(params);
+    case "batch_set_fill_color":
+      if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
+        throw new Error("Missing or invalid nodeIds parameter");
+      }
+      return await batchSetFillColor(params);
+    case "batch_clone":
+      if (!params || !params.sourceId || !params.positions || !Array.isArray(params.positions)) {
+        throw new Error("Missing required parameters: sourceId and positions array");
+      }
+      return await batchClone(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -988,6 +1026,82 @@ async function setFillColor(params) {
   };
 }
 
+async function batchSetFillColor(params) {
+  const { nodeIds, color, commandId = generateCommandId() } = params || {};
+
+  if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("Missing or empty nodeIds array");
+  }
+
+  const { r, g, b, a } = color || {};
+  const totalItems = nodeIds.length;
+  const useProgress = totalItems >= 10;
+
+  if (useProgress) {
+    sendProgressUpdate(
+      commandId,
+      "batch_set_fill_color",
+      "started",
+      0,
+      totalItems,
+      0,
+      `Starting batch fill color for ${totalItems} nodes`
+    );
+  }
+
+  const results = [];
+  let successCount = 0;
+  let failureCount = 0;
+
+  for (let i = 0; i < nodeIds.length; i++) {
+    const nodeId = nodeIds[i];
+    try {
+      const result = await setFillColor({ nodeId, color: { r, g, b, a } });
+      results.push({ nodeId, success: true, name: result.name });
+      successCount++;
+    } catch (error) {
+      results.push({
+        nodeId,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      failureCount++;
+    }
+
+    if (useProgress && (i + 1) % 5 === 0) {
+      const progress = Math.round(((i + 1) / totalItems) * 100);
+      sendProgressUpdate(
+        commandId,
+        "batch_set_fill_color",
+        "in_progress",
+        progress,
+        totalItems,
+        i + 1,
+        `Processed ${i + 1}/${totalItems} nodes (${successCount} succeeded, ${failureCount} failed)`
+      );
+    }
+  }
+
+  if (useProgress) {
+    sendProgressUpdate(
+      commandId,
+      "batch_set_fill_color",
+      "completed",
+      100,
+      totalItems,
+      totalItems,
+      `Completed: ${successCount} succeeded, ${failureCount} failed`
+    );
+  }
+
+  return {
+    successCount,
+    failureCount,
+    totalItems,
+    results,
+  };
+}
+
 async function setStrokeColor(params) {
   const {
     nodeId,
@@ -1297,6 +1411,87 @@ async function createComponentInstance(params) {
     };
   } catch (error) {
     throw new Error(`Error creating component instance: ${error.message}`);
+  }
+}
+
+async function swapInstanceVariant(params) {
+  const { nodeId, componentKey } = params || {};
+
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+  if (!componentKey) {
+    throw new Error("Missing componentKey parameter");
+  }
+
+  try {
+    const instanceNode = await figma.getNodeByIdAsync(nodeId);
+    if (!instanceNode) {
+      throw new Error(`Node not found with ID: ${nodeId}`);
+    }
+    if (instanceNode.type !== "INSTANCE") {
+      throw new Error(`Node ${nodeId} is not an INSTANCE (got type: ${instanceNode.type}). Only INSTANCE nodes can be swapped.`);
+    }
+
+    const targetComponent = await figma.getNodeByIdAsync(componentKey);
+    if (!targetComponent) {
+      throw new Error(`Target component not found with ID: ${componentKey}`);
+    }
+    if (targetComponent.type !== "COMPONENT") {
+      throw new Error(`Target node ${componentKey} is not a COMPONENT (got type: ${targetComponent.type}). Use get_local_components to find valid component IDs.`);
+    }
+
+    instanceNode.swapComponent(targetComponent);
+
+    const mainComponent = await instanceNode.getMainComponentAsync();
+
+    return {
+      success: true,
+      instanceId: instanceNode.id,
+      instanceName: instanceNode.name,
+      swappedToComponentId: targetComponent.id,
+      swappedToComponentName: targetComponent.name,
+      mainComponentId: mainComponent ? mainComponent.id : undefined,
+      width: instanceNode.width,
+      height: instanceNode.height,
+    };
+  } catch (error) {
+    throw new Error(`Error swapping instance variant: ${error.message}`);
+  }
+}
+
+async function setComponentProperties(params) {
+  const { nodeId, properties } = params || {};
+
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+  if (!properties || typeof properties !== "object") {
+    throw new Error("Missing or invalid properties parameter. Must be an object of key-value pairs.");
+  }
+
+  try {
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) {
+      throw new Error(`Node not found with ID: ${nodeId}`);
+    }
+    if (node.type !== "INSTANCE") {
+      throw new Error(`Node ${nodeId} is not an INSTANCE (got type: ${node.type}). Only INSTANCE nodes have component properties.`);
+    }
+
+    node.setProperties(properties);
+
+    // Read back the current properties after the update
+    const currentProperties = node.componentProperties;
+
+    return {
+      success: true,
+      instanceId: node.id,
+      instanceName: node.name,
+      componentProperties: currentProperties,
+    };
+  } catch (error) {
+    throw new Error(`Error setting component properties: ${error.message}`);
   }
 }
 
@@ -1775,6 +1970,118 @@ async function cloneNode(params) {
     y: "y" in clone ? clone.y : undefined,
     width: "width" in clone ? clone.width : undefined,
     height: "height" in clone ? clone.height : undefined,
+  };
+}
+
+async function batchClone(params) {
+  const { sourceId, positions, names, commandId = generateCommandId() } = params || {};
+
+  if (!sourceId) {
+    throw new Error("Missing sourceId parameter");
+  }
+
+  if (!positions || !Array.isArray(positions) || positions.length === 0) {
+    throw new Error("Missing or empty positions array");
+  }
+
+  if (names && names.length !== positions.length) {
+    throw new Error(
+      `Names array length (${names.length}) must match positions array length (${positions.length})`
+    );
+  }
+
+  const node = await figma.getNodeByIdAsync(sourceId);
+  if (!node) {
+    throw new Error(`Source node not found with ID: ${sourceId}`);
+  }
+
+  const totalItems = positions.length;
+  const useProgress = totalItems >= 10;
+
+  if (useProgress) {
+    sendProgressUpdate(
+      commandId,
+      "batch_clone",
+      "started",
+      0,
+      totalItems,
+      0,
+      `Starting batch clone of "${node.name}" to ${totalItems} positions`
+    );
+  }
+
+  const parent = node.parent || figma.currentPage;
+  const clones = [];
+  let successCount = 0;
+  let failureCount = 0;
+
+  for (let i = 0; i < positions.length; i++) {
+    try {
+      const clone = node.clone();
+      const pos = positions[i];
+
+      if ("x" in clone && "y" in clone) {
+        clone.x = pos.x;
+        clone.y = pos.y;
+      }
+
+      if (names && names[i]) {
+        clone.name = names[i];
+      }
+
+      parent.appendChild(clone);
+
+      clones.push({
+        id: clone.id,
+        name: clone.name,
+        x: "x" in clone ? clone.x : undefined,
+        y: "y" in clone ? clone.y : undefined,
+      });
+      successCount++;
+    } catch (error) {
+      clones.push({
+        id: null,
+        name: names ? names[i] : null,
+        x: positions[i].x,
+        y: positions[i].y,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      failureCount++;
+    }
+
+    if (useProgress && (i + 1) % 5 === 0) {
+      const progress = Math.round(((i + 1) / totalItems) * 100);
+      sendProgressUpdate(
+        commandId,
+        "batch_clone",
+        "in_progress",
+        progress,
+        totalItems,
+        i + 1,
+        `Cloned ${i + 1}/${totalItems} nodes (${successCount} succeeded, ${failureCount} failed)`
+      );
+    }
+  }
+
+  if (useProgress) {
+    sendProgressUpdate(
+      commandId,
+      "batch_clone",
+      "completed",
+      100,
+      totalItems,
+      totalItems,
+      `Completed: ${successCount} clones succeeded, ${failureCount} failed`
+    );
+  }
+
+  return {
+    sourceId,
+    sourceName: node.name,
+    clones,
+    successCount,
+    failureCount,
+    totalItems,
   };
 }
 
@@ -4396,6 +4703,111 @@ async function createVector(params) {
   };
 }
 
+// Create Line (vector with per-vertex stroke caps)
+async function createLine(params) {
+  var startX = params.startX !== undefined ? params.startX : 0;
+  var startY = params.startY !== undefined ? params.startY : 0;
+  var endX = params.endX !== undefined ? params.endX : 100;
+  var endY = params.endY !== undefined ? params.endY : 0;
+  var strokeWeight = params.strokeWeight || 2;
+  var strokeColor = params.strokeColor;
+  var startCap = params.startCap || "NONE";
+  var endCap = params.endCap || "NONE";
+  var name = params.name || "Line";
+  var parentId = params.parentId;
+
+  // Compute the vector node position (top-left of bounding box)
+  var originX = Math.min(startX, endX);
+  var originY = Math.min(startY, endY);
+
+  // Vertices use local coordinates relative to the vector node's origin
+  var v0x = startX - originX;
+  var v0y = startY - originY;
+  var v1x = endX - originX;
+  var v1y = endY - originY;
+
+  var vec = figma.createVector();
+  vec.name = name;
+  vec.x = originX;
+  vec.y = originY;
+
+  // Set the vector network with per-vertex stroke caps
+  vec.vectorNetwork = {
+    vertices: [
+      { x: v0x, y: v0y, strokeCap: startCap },
+      { x: v1x, y: v1y, strokeCap: endCap },
+    ],
+    segments: [{ start: 0, end: 1 }],
+    regions: [],
+  };
+
+  // Resolve stroke color
+  var resolvedColor = null;
+  var varRef = null;
+  if (strokeColor) {
+    var resolved = resolveColorValue(strokeColor);
+    resolvedColor = resolved.color;
+    varRef = resolved.varRef;
+  }
+
+  // Apply stroke paint
+  if (resolvedColor) {
+    vec.strokes = [
+      {
+        type: "SOLID",
+        color: {
+          r: resolvedColor.r !== undefined ? resolvedColor.r : 0,
+          g: resolvedColor.g !== undefined ? resolvedColor.g : 0,
+          b: resolvedColor.b !== undefined ? resolvedColor.b : 0,
+        },
+        opacity: resolvedColor.a !== undefined ? resolvedColor.a : 1,
+      },
+    ];
+  } else if (!varRef) {
+    // Default black stroke
+    vec.strokes = [
+      {
+        type: "SOLID",
+        color: { r: 0, g: 0, b: 0 },
+        opacity: 1,
+      },
+    ];
+  }
+
+  // Bind variable if provided
+  if (varRef) {
+    await bindVariableToColor(vec, "strokes", varRef);
+  }
+
+  // Remove default fills (vectors get a default fill)
+  vec.fills = [];
+
+  vec.strokeWeight = strokeWeight;
+
+  // Append to parent or current page
+  if (parentId) {
+    var parentNode = await figma.getNodeByIdAsync(parentId);
+    if (!parentNode) {
+      throw new Error("Parent node not found with ID: " + parentId);
+    }
+    if (!("appendChild" in parentNode)) {
+      throw new Error("Parent node does not support children: " + parentId);
+    }
+    parentNode.appendChild(vec);
+  } else {
+    figma.currentPage.appendChild(vec);
+  }
+
+  return {
+    id: vec.id,
+    name: vec.name,
+    x: vec.x,
+    y: vec.y,
+    width: vec.width,
+    height: vec.height,
+  };
+}
+
 // Set Stroke Dash Pattern
 async function setStrokeDash(params) {
   const { nodeId, dashPattern } = params || {};
@@ -4418,6 +4830,50 @@ async function setStrokeDash(params) {
   return {
     id: node.id,
     name: node.name,
+    dashPattern: node.dashPattern,
+  };
+}
+
+// Set Stroke Properties
+async function setStrokeProperties(params) {
+  const { nodeId, weight, cap, join, align, dashPattern } = params || {};
+
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found with ID: ${nodeId}`);
+  }
+
+  if (!("strokes" in node)) {
+    throw new Error(`Node does not support strokes: ${nodeId}`);
+  }
+
+  if (weight !== undefined) {
+    node.strokeWeight = weight;
+  }
+  if (cap !== undefined) {
+    node.strokeCap = cap;
+  }
+  if (join !== undefined) {
+    node.strokeJoin = join;
+  }
+  if (align !== undefined) {
+    node.strokeAlign = align;
+  }
+  if (dashPattern !== undefined) {
+    node.dashPattern = dashPattern;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    strokeWeight: node.strokeWeight,
+    strokeCap: node.strokeCap,
+    strokeJoin: node.strokeJoin,
+    strokeAlign: node.strokeAlign,
     dashPattern: node.dashPattern,
   };
 }
@@ -4544,6 +5000,301 @@ async function getLocalVariables() {
   }
 
   return { collections: result };
+}
+
+async function renameNode(params) {
+  const { nodeId, name } = params || {};
+
+  if (!nodeId) {
+    throw new Error("Missing nodeId parameter");
+  }
+
+  if (!name) {
+    throw new Error("Missing name parameter");
+  }
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) {
+    throw new Error(`Node not found with ID: ${nodeId}`);
+  }
+
+  const oldName = node.name;
+  node.name = name;
+
+  return {
+    id: node.id,
+    oldName: oldName,
+    newName: node.name,
+  };
+}
+
+async function batchRename(params) {
+  const { mappings } = params || {};
+  const commandId = params.commandId || generateCommandId();
+
+  if (!mappings || !Array.isArray(mappings)) {
+    const errorMsg = "Missing required parameters: mappings array";
+
+    sendProgressUpdate(
+      commandId,
+      "batch_rename",
+      "error",
+      0,
+      0,
+      0,
+      errorMsg,
+      { error: errorMsg }
+    );
+
+    throw new Error(errorMsg);
+  }
+
+  console.log(`Starting batch rename for ${mappings.length} nodes`);
+
+  const useProgress = mappings.length >= 10;
+
+  if (useProgress) {
+    sendProgressUpdate(
+      commandId,
+      "batch_rename",
+      "started",
+      0,
+      mappings.length,
+      0,
+      `Starting batch rename for ${mappings.length} nodes`,
+      { totalNodes: mappings.length }
+    );
+  }
+
+  const results = [];
+  let successCount = 0;
+  let failureCount = 0;
+
+  for (let i = 0; i < mappings.length; i++) {
+    const mapping = mappings[i];
+
+    try {
+      if (!mapping.nodeId || !mapping.name) {
+        throw new Error("Missing nodeId or name in mapping");
+      }
+
+      const node = await figma.getNodeByIdAsync(mapping.nodeId);
+      if (!node) {
+        throw new Error(`Node not found with ID: ${mapping.nodeId}`);
+      }
+
+      const oldName = node.name;
+      node.name = mapping.name;
+      successCount++;
+
+      results.push({
+        success: true,
+        nodeId: mapping.nodeId,
+        oldName: oldName,
+        newName: node.name,
+      });
+    } catch (err) {
+      failureCount++;
+      results.push({
+        success: false,
+        nodeId: mapping.nodeId,
+        error: err.message || String(err),
+      });
+    }
+
+    if (useProgress && (i + 1) % 5 === 0) {
+      const progress = Math.round(((i + 1) / mappings.length) * 100);
+      sendProgressUpdate(
+        commandId,
+        "batch_rename",
+        "in_progress",
+        progress,
+        mappings.length,
+        i + 1,
+        `Renamed ${i + 1} of ${mappings.length} nodes (${successCount} succeeded, ${failureCount} failed)`,
+        { successCount, failureCount, processedItems: i + 1 }
+      );
+    }
+  }
+
+  if (useProgress) {
+    sendProgressUpdate(
+      commandId,
+      "batch_rename",
+      "completed",
+      100,
+      mappings.length,
+      mappings.length,
+      `Batch rename completed: ${successCount} succeeded, ${failureCount} failed`,
+      { successCount, failureCount }
+    );
+  }
+
+  return {
+    success: failureCount === 0,
+    totalRequested: mappings.length,
+    successCount: successCount,
+    failureCount: failureCount,
+    results: results,
+  };
+}
+
+// Group Nodes
+async function groupNodes(params) {
+  const { nodeIds, name } = params || {};
+
+  if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("Missing or empty nodeIds array");
+  }
+
+  const nodes = [];
+  for (const id of nodeIds) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node) {
+      throw new Error(`Node not found with ID: ${id}`);
+    }
+    nodes.push(node);
+  }
+
+  // Validate all nodes share the same parent
+  const parent = nodes[0].parent;
+  if (!parent) {
+    throw new Error(`Node ${nodeIds[0]} has no parent`);
+  }
+  for (let i = 1; i < nodes.length; i++) {
+    if (nodes[i].parent !== parent) {
+      throw new Error(
+        `All nodes must share the same parent. Node ${nodeIds[i]} has parent "${nodes[i].parent ? nodes[i].parent.name : "none"}" but expected "${parent.name}"`
+      );
+    }
+  }
+
+  const group = figma.group(nodes, parent);
+
+  if (name) {
+    group.name = name;
+  }
+
+  return {
+    id: group.id,
+    name: group.name,
+    childrenCount: group.children.length,
+  };
+}
+
+// Batch Reparent
+async function batchReparent(params) {
+  const { nodeIds, parentId, index } = params || {};
+  const commandId = params.commandId || generateCommandId();
+
+  if (!nodeIds || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+    throw new Error("Missing or empty nodeIds array");
+  }
+  if (!parentId) {
+    throw new Error("Missing parentId parameter");
+  }
+
+  const parentNode = await figma.getNodeByIdAsync(parentId);
+  if (!parentNode) {
+    throw new Error(`Parent node not found with ID: ${parentId}`);
+  }
+
+  const validContainerTypes = ["FRAME", "GROUP", "SECTION", "PAGE", "COMPONENT"];
+  if (!validContainerTypes.includes(parentNode.type)) {
+    throw new Error(
+      `Parent node type "${parentNode.type}" is not a valid container. Must be one of: ${validContainerTypes.join(", ")}`
+    );
+  }
+
+  if (!("appendChild" in parentNode)) {
+    throw new Error(`Parent node does not support appendChild: ${parentId}`);
+  }
+
+  const useProgress = nodeIds.length >= 10;
+
+  if (useProgress) {
+    sendProgressUpdate(
+      commandId,
+      "batch_reparent",
+      "started",
+      0,
+      nodeIds.length,
+      0,
+      `Starting batch reparent for ${nodeIds.length} nodes into "${parentNode.name}"`,
+      { totalNodes: nodeIds.length }
+    );
+  }
+
+  const results = [];
+  let successCount = 0;
+  let failureCount = 0;
+
+  for (let i = 0; i < nodeIds.length; i++) {
+    const nodeId = nodeIds[i];
+
+    try {
+      const node = await figma.getNodeByIdAsync(nodeId);
+      if (!node) {
+        throw new Error(`Node not found with ID: ${nodeId}`);
+      }
+
+      if (index !== undefined && index !== null) {
+        parentNode.insertChild(index + i, node);
+      } else {
+        parentNode.appendChild(node);
+      }
+
+      successCount++;
+      results.push({
+        success: true,
+        nodeId: nodeId,
+        nodeName: node.name,
+      });
+    } catch (err) {
+      failureCount++;
+      results.push({
+        success: false,
+        nodeId: nodeId,
+        error: err.message || String(err),
+      });
+    }
+
+    if (useProgress && (i + 1) % 5 === 0) {
+      const progress = Math.round(((i + 1) / nodeIds.length) * 100);
+      sendProgressUpdate(
+        commandId,
+        "batch_reparent",
+        "in_progress",
+        progress,
+        nodeIds.length,
+        i + 1,
+        `Reparented ${i + 1} of ${nodeIds.length} nodes (${successCount} succeeded, ${failureCount} failed)`,
+        { successCount, failureCount, processedItems: i + 1 }
+      );
+    }
+  }
+
+  if (useProgress) {
+    sendProgressUpdate(
+      commandId,
+      "batch_reparent",
+      "completed",
+      100,
+      nodeIds.length,
+      nodeIds.length,
+      `Batch reparent completed: ${successCount} succeeded, ${failureCount} failed`,
+      { successCount, failureCount }
+    );
+  }
+
+  return {
+    success: failureCount === 0,
+    totalRequested: nodeIds.length,
+    successCount: successCount,
+    failureCount: failureCount,
+    parentName: parentNode.name,
+    results: results,
+  };
 }
 
 // --- Color resolution helpers for create_node_tree ---
