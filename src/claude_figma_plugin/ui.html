@@ -422,6 +422,19 @@
           isConnected ? "connected" : "disconnected"
         }`;
 
+        // Attach click-to-copy on channel name
+        const channelEl = connectionStatus.querySelector(".channel-name");
+        if (channelEl) {
+          channelEl.addEventListener("click", () => {
+            const text = `channel changed to '${channelEl.textContent}'`;
+            navigator.clipboard.writeText(text).then(() => {
+              const original = channelEl.textContent;
+              channelEl.textContent = "Copied!";
+              setTimeout(() => { channelEl.textContent = original; }, 1500);
+            });
+          });
+        }
+
         // Update connect button text and style based on connection state
         connectButton.textContent = isConnected ? "Disconnect" : "Connect";
         connectButton.className = isConnected ? "secondary" : "primary";
@@ -477,7 +490,7 @@
                   const channelName = data.channel;
                   updateConnectionStatus(
                     true,
-                    `Connected to server in channel: <strong>${channelName}</strong>`
+                    `Connected to server in channel: <strong class="channel-name" style="cursor:pointer; text-decoration:underline; text-decoration-style:dotted;" title="Click to copy channel to clipboard">${channelName}</strong>`
                   );
 
                   // Notify the plugin code
