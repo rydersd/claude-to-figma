@@ -159,6 +159,7 @@ The MCP server provides the following tools for interacting with Figma:
 - `create_line` - Draws a line from (startX, startY) to (endX, endY) with optional stroke color, weight, and start/end caps (e.g. arrows)
 - `create_section` - Places a labeled section container at (x, y) with given size, optionally adopting existing nodes as children
 - `create_vector` - Places a vector node from an SVG path string at (x, y) with given size and optional fill color
+- `create_ellipse` - Places an ellipse (circle or oval) at (x, y) with given size, optional fill color, and arc data for arcs/donuts
 - `create_node_tree` - Builds an entire node hierarchy from a JSON spec in one round-trip — supports nested frames, `$repeat` for data-driven repetition, `$var:` for Figma variable binding, and hex color shorthand
 
 ### Text
@@ -190,6 +191,10 @@ The MCP server provides the following tools for interacting with Figma:
 - `set_stroke_dash` - Sets the dash pattern (array of dash/gap lengths) on a node's stroke
 - `set_stroke_properties` - Sets stroke weight, end cap, join style, alignment, and dash pattern in one call
 - `remove_fill` - Clears all fills from a node
+- `set_effects` - Sets effects on a node: drop shadow, inner shadow, layer blur, background blur — replaces all existing effects
+- `set_opacity` - Sets node opacity (0 = transparent, 1 = opaque)
+- `set_blend_mode` - Sets the blend mode of a node (NORMAL, MULTIPLY, SCREEN, OVERLAY, etc.)
+- `set_rotation` - Sets the rotation of a node in degrees (-180 to 180)
 
 ### Layout & Organization
 
@@ -201,6 +206,9 @@ The MCP server provides the following tools for interacting with Figma:
 - `insert_child_at` - Moves a node into a parent at a specific child index, controlling layer order
 - `reorder_child` - Changes a node's position (z-order) within its current parent
 - `set_clips_content` - Sets whether a frame clips children to its boundary — set to false for overflow-visible patterns like floating badges
+- `set_layout_positioning` - Sets a child to ABSOLUTE (ignore auto-layout, float above siblings) or AUTO (participate in flow) — with optional constraints for pinning
+- `set_constraints` - Sets horizontal/vertical constraints (MIN/MAX/CENTER/STRETCH/SCALE) for responsive pinning behavior
+- `set_min_max_size` - Sets min/max width and height on a node — used with auto-layout FILL sizing to constrain growth
 
 ### Components & Styles
 

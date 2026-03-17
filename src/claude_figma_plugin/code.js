@@ -349,6 +349,43 @@ async function handleCommand(command, params) {
         throw new Error("Missing required parameter: nodeId");
       }
       return await setClipsContent(params);
+    case "set_effects":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setEffects(params);
+    case "set_opacity":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setOpacity(params);
+    case "set_blend_mode":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setBlendMode(params);
+    case "set_layout_positioning":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setLayoutPositioning(params);
+    case "set_rotation":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setRotation(params);
+    case "create_ellipse":
+      return await createEllipse(params);
+    case "set_constraints":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setConstraints(params);
+    case "set_min_max_size":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setMinMaxSize(params);
     case "scan_node_styles":
       if (!params || !params.nodeId) {
         throw new Error("Missing required parameter: nodeId");
@@ -6525,6 +6562,226 @@ async function setClipsContent(params) {
     id: node.id,
     name: node.name,
     clipsContent: node.clipsContent,
+  };
+}
+
+// --- set_effects: Set effects (shadows, blurs) on a node ---
+async function setEffects(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("effects" in node)) throw new Error("Node does not support effects (type: " + node.type + ")");
+
+  var effects = params.effects;
+  if (!effects || !Array.isArray(effects)) throw new Error("Missing or invalid effects array");
+
+  var figmaEffects = [];
+  for (var i = 0; i < effects.length; i++) {
+    var e = effects[i];
+    var effect = {
+      type: e.type,
+      visible: e.visible !== false,
+    };
+
+    if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
+      var color = e.color || { r: 0, g: 0, b: 0, a: 0.25 };
+      if (typeof color === "string") {
+        var parsed = hexToFigmaColor(color);
+        if (parsed) color = parsed;
+        else color = { r: 0, g: 0, b: 0, a: 0.25 };
+      }
+      effect.color = { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== undefined ? color.a : 0.25 };
+      effect.offset = { x: (e.offset && e.offset.x) || 0, y: (e.offset && e.offset.y) || 4 };
+      effect.radius = e.radius !== undefined ? e.radius : 4;
+      effect.spread = e.spread !== undefined ? e.spread : 0;
+      if (e.blendMode) effect.blendMode = e.blendMode;
+    } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+      effect.radius = e.radius !== undefined ? e.radius : 4;
+    }
+
+    figmaEffects.push(effect);
+  }
+
+  node.effects = figmaEffects;
+
+  return {
+    id: node.id,
+    name: node.name,
+    effectCount: figmaEffects.length,
+    effects: figmaEffects,
+  };
+}
+
+// --- set_opacity: Set node opacity ---
+async function setOpacity(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("opacity" in node)) throw new Error("Node does not support opacity (type: " + node.type + ")");
+
+  node.opacity = params.opacity;
+
+  return {
+    id: node.id,
+    name: node.name,
+    opacity: node.opacity,
+  };
+}
+
+// --- set_blend_mode: Set node blend mode ---
+async function setBlendMode(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("blendMode" in node)) throw new Error("Node does not support blendMode (type: " + node.type + ")");
+
+  node.blendMode = params.blendMode;
+
+  return {
+    id: node.id,
+    name: node.name,
+    blendMode: node.blendMode,
+  };
+}
+
+// --- set_layout_positioning: Set absolute/auto positioning in auto-layout ---
+async function setLayoutPositioning(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("layoutPositioning" in node)) throw new Error("Node does not support layoutPositioning (type: " + node.type + ")");
+
+  node.layoutPositioning = params.positioning;
+
+  // If setting to ABSOLUTE, also set x/y constraints if provided
+  if (params.positioning === "ABSOLUTE" && params.constraints) {
+    if ("constraints" in node) {
+      var c = params.constraints;
+      node.constraints = {
+        horizontal: c.horizontal || "MIN",
+        vertical: c.vertical || "MIN",
+      };
+    }
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    layoutPositioning: node.layoutPositioning,
+    constraints: "constraints" in node ? node.constraints : undefined,
+  };
+}
+
+// --- set_rotation: Set node rotation ---
+async function setRotation(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("rotation" in node)) throw new Error("Node does not support rotation (type: " + node.type + ")");
+
+  node.rotation = params.rotation;
+
+  return {
+    id: node.id,
+    name: node.name,
+    rotation: node.rotation,
+  };
+}
+
+// --- create_ellipse: Create an ellipse/circle ---
+async function createEllipse(params) {
+  var x = params.x || 0;
+  var y = params.y || 0;
+  var width = params.width || 100;
+  var height = params.height || 100;
+  var name = params.name || "Ellipse";
+  var parentId = params.parentId;
+
+  var ellipse = figma.createEllipse();
+  ellipse.x = x;
+  ellipse.y = y;
+  ellipse.resize(width, height);
+  ellipse.name = name;
+
+  // Set fill color if provided
+  if (params.fillColor) {
+    var fc = params.fillColor;
+    if (typeof fc === "string") {
+      fc = hexToFigmaColor(fc) || { r: 0.85, g: 0.85, b: 0.85, a: 1 };
+    }
+    ellipse.fills = [{
+      type: "SOLID",
+      color: { r: fc.r || 0, g: fc.g || 0, b: fc.b || 0 },
+      opacity: fc.a !== undefined ? fc.a : 1,
+    }];
+  }
+
+  // Set arc data if provided (for arcs/donuts)
+  if (params.arcData) {
+    ellipse.arcData = {
+      startingAngle: params.arcData.startingAngle || 0,
+      endingAngle: params.arcData.endingAngle || 6.2831853,
+      innerRadius: params.arcData.innerRadius || 0,
+    };
+  }
+
+  if (parentId) {
+    var parentNode = await figma.getNodeByIdAsync(parentId);
+    if (!parentNode) throw new Error("Parent node not found with ID: " + parentId);
+    if (!("appendChild" in parentNode)) throw new Error("Parent node does not support children: " + parentId);
+    parentNode.appendChild(ellipse);
+  } else {
+    figma.currentPage.appendChild(ellipse);
+  }
+
+  return {
+    id: ellipse.id,
+    name: ellipse.name,
+    x: ellipse.x,
+    y: ellipse.y,
+    width: ellipse.width,
+    height: ellipse.height,
+  };
+}
+
+// --- set_constraints: Set horizontal/vertical constraints ---
+async function setConstraints(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("constraints" in node)) throw new Error("Node does not support constraints (type: " + node.type + ")");
+
+  var c = {};
+  var current = node.constraints;
+  c.horizontal = params.horizontal || current.horizontal;
+  c.vertical = params.vertical || current.vertical;
+  node.constraints = c;
+
+  return {
+    id: node.id,
+    name: node.name,
+    constraints: node.constraints,
+  };
+}
+
+// --- set_min_max_size: Set min/max width/height on auto-layout children ---
+async function setMinMaxSize(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+
+  if (params.minWidth !== undefined) node.minWidth = params.minWidth;
+  if (params.maxWidth !== undefined) node.maxWidth = params.maxWidth;
+  if (params.minHeight !== undefined) node.minHeight = params.minHeight;
+  if (params.maxHeight !== undefined) node.maxHeight = params.maxHeight;
+
+  return {
+    id: node.id,
+    name: node.name,
+    minWidth: node.minWidth,
+    maxWidth: node.maxWidth,
+    minHeight: node.minHeight,
+    maxHeight: node.maxHeight,
   };
 }
 

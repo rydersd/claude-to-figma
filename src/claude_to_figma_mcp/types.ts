@@ -130,7 +130,15 @@ export type FigmaCommand =
   | "set_text_format"
   | "set_text_list"
   | "set_range_format"
-  | "set_clips_content";
+  | "set_clips_content"
+  | "set_effects"
+  | "set_opacity"
+  | "set_blend_mode"
+  | "set_layout_positioning"
+  | "set_rotation"
+  | "create_ellipse"
+  | "set_constraints"
+  | "set_min_max_size";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -485,6 +493,57 @@ export type CommandParams = {
   set_clips_content: {
     nodeId: string;
     clipsContent: boolean;
+  };
+  set_effects: {
+    nodeId: string;
+    effects: Array<{
+      type: "DROP_SHADOW" | "INNER_SHADOW" | "LAYER_BLUR" | "BACKGROUND_BLUR";
+      visible?: boolean;
+      color?: string | { r: number; g: number; b: number; a?: number };
+      offset?: { x: number; y: number };
+      radius?: number;
+      spread?: number;
+      blendMode?: string;
+    }>;
+  };
+  set_opacity: {
+    nodeId: string;
+    opacity: number;
+  };
+  set_blend_mode: {
+    nodeId: string;
+    blendMode: string;
+  };
+  set_layout_positioning: {
+    nodeId: string;
+    positioning: "ABSOLUTE" | "AUTO";
+    constraints?: { horizontal?: string; vertical?: string };
+  };
+  set_rotation: {
+    nodeId: string;
+    rotation: number;
+  };
+  create_ellipse: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    name?: string;
+    parentId?: string;
+    fillColor?: string | { r: number; g: number; b: number; a?: number };
+    arcData?: { startingAngle?: number; endingAngle?: number; innerRadius?: number };
+  };
+  set_constraints: {
+    nodeId: string;
+    horizontal?: "MIN" | "MAX" | "CENTER" | "STRETCH" | "SCALE";
+    vertical?: "MIN" | "MAX" | "CENTER" | "STRETCH" | "SCALE";
+  };
+  set_min_max_size: {
+    nodeId: string;
+    minWidth?: number | null;
+    maxWidth?: number | null;
+    minHeight?: number | null;
+    maxHeight?: number | null;
   };
 };
 
