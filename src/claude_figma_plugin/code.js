@@ -1803,10 +1803,15 @@ async function setCornerRadius(params) {
     node.cornerRadius = radius;
   }
 
+  // cornerRadius may be figma.mixed (a Symbol) after setting individual corners
+  // Symbols can't be serialized through postMessage, so convert to string
+  var cr = "cornerRadius" in node ? node.cornerRadius : undefined;
+  if (typeof cr === "symbol") cr = "mixed";
+
   return {
     id: node.id,
     name: node.name,
-    cornerRadius: "cornerRadius" in node ? node.cornerRadius : undefined,
+    cornerRadius: cr,
     topLeftRadius: "topLeftRadius" in node ? node.topLeftRadius : undefined,
     topRightRadius: "topRightRadius" in node ? node.topRightRadius : undefined,
     bottomRightRadius:
