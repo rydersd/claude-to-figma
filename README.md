@@ -130,76 +130,123 @@ The MCP server provides the following tools for interacting with Figma:
 
 ### Document & Selection
 
-- `get_document_info` - Get information about the current Figma document
-- `get_selection` - Get information about the current selection
-- `read_my_design` - Get detailed node information about the current selection without parameters
-- `get_node_info` - Get detailed information about a specific node
-- `get_nodes_info` - Get detailed information about multiple nodes by providing an array of node IDs
-- `set_focus` - Set focus on a specific node by selecting it and scrolling viewport to it
-- `set_selections` - Set selection to multiple nodes and scroll viewport to show them
+- `get_document_info` - Returns the current page name, ID, and a list of all top-level children (id, name, type)
+- `get_selection` - Returns detailed node data for whatever is currently selected in Figma
+- `read_my_design` - Same as `get_selection` but takes no parameters — a shorthand for quick reads
+- `get_node_info` - Returns full details (type, size, position, styles, children) for a single node by ID
+- `get_nodes_info` - Returns full details for multiple nodes by ID array in one round-trip
+- `set_focus` - Selects a node and scrolls the viewport to center it on screen
+- `set_selections` - Selects multiple nodes and zooms the viewport to fit them all
 
 ### Annotations
 
-- `get_annotations` - Get all annotations in the current document or specific node
-- `set_annotation` - Create or update an annotation with markdown support
-- `set_multiple_annotations` - Batch create/update multiple annotations efficiently
-- `scan_nodes_by_types` - Scan for nodes with specific types (useful for finding annotation targets)
+- `get_annotations` - Returns all native Figma annotations on the document or a specific node, optionally including category metadata
+- `set_annotation` - Creates or updates a single native annotation with markdown content and optional category
+- `set_multiple_annotations` - Creates or updates many annotations in one call to avoid per-annotation round-trips
+- `scan_nodes_by_types` - Returns all descendant nodes matching specified types (e.g. TEXT, INSTANCE) under a given root — useful for finding annotation targets
 
 ### Prototyping & Connections
 
-- `get_reactions` - Get all prototype reactions from nodes with visual highlight animation
-- `set_default_connector` - Set a copied FigJam connector as the default connector style for creating connections (must be set before creating connections)
-- `create_connections` - Create FigJam connector lines between nodes, based on prototype flows or custom mapping
+- `get_reactions` - Returns all prototype interaction triggers and actions from the given nodes, highlighting them in Figma
+- `set_default_connector` - Sets the style template for subsequent `create_connections` calls by copying a FigJam connector's appearance
+- `create_connections` - Creates FigJam connector lines between pairs of nodes, with optional text labels on each connector
 
 ### Creating Elements
 
-- `create_rectangle` - Create a new rectangle with position, size, and optional name
-- `create_frame` - Create a new frame with position, size, and optional name
-- `create_text` - Create a new text node with customizable font properties
+- `create_rectangle` - Places a rectangle at (x, y) with given width/height, optional name and parent
+- `create_frame` - Places a frame at (x, y) with given width/height, optional fill/stroke colors and parent
+- `create_text` - Places a text node at (x, y) with given content, optional font size, weight, color, width, and parent
+- `create_line` - Draws a line from (startX, startY) to (endX, endY) with optional stroke color, weight, and start/end caps (e.g. arrows)
+- `create_section` - Places a labeled section container at (x, y) with given size, optionally adopting existing nodes as children
+- `create_vector` - Places a vector node from an SVG path string at (x, y) with given size and optional fill color
+- `create_node_tree` - Builds an entire node hierarchy from a JSON spec in one round-trip — supports nested frames, `$repeat` for data-driven repetition, `$var:` for Figma variable binding, and hex color shorthand
 
-### Modifying text content
+### Text
 
-- `scan_text_nodes` - Scan text nodes with intelligent chunking for large designs
-- `set_text_content` - Set the text content of a single text node
-- `set_multiple_text_contents` - Batch update multiple text nodes efficiently
+- `scan_text_nodes` - Returns all text nodes under a root, with chunked responses for large trees to avoid timeouts
+- `set_text_content` - Replaces the text content of a single text node, loading the required font automatically
+- `set_multiple_text_contents` - Replaces text on many nodes in one call, each identified by node ID
+- `set_font_family` - Changes the font family and style (e.g. "Inter", "Bold") on a text node
+- `set_text_auto_resize` - Controls how a text node resizes to fit content: NONE, WIDTH_AND_HEIGHT, HEIGHT, or TRUNCATE
+- `set_text_decoration` - Applies underline, strikethrough, or removes decoration from a text node
+- `set_text_align` - Sets horizontal (LEFT, CENTER, RIGHT, JUSTIFIED) and/or vertical (TOP, CENTER, BOTTOM) text alignment
+- `set_text_format` - Sets paragraph formatting: line height, paragraph indent/spacing, letter spacing, and text case transformation
 
 ### Auto Layout & Spacing
 
-- `set_layout_mode` - Set the layout mode and wrap behavior of a frame (NONE, HORIZONTAL, VERTICAL)
-- `set_padding` - Set padding values for an auto-layout frame (top, right, bottom, left)
-- `set_axis_align` - Set primary and counter axis alignment for auto-layout frames
-- `set_layout_sizing` - Set horizontal and vertical sizing modes for auto-layout frames (FIXED, HUG, FILL)
-- `set_item_spacing` - Set distance between children in an auto-layout frame
+- `set_layout_mode` - Switches a frame to HORIZONTAL, VERTICAL, or NONE auto-layout, with optional wrap behavior
+- `set_padding` - Sets top, right, bottom, left padding on an auto-layout frame
+- `set_axis_align` - Sets primary axis (e.g. space-between) and counter axis (e.g. center) alignment on an auto-layout frame
+- `set_layout_sizing` - Sets horizontal and vertical sizing modes (FIXED, HUG, FILL) on an auto-layout frame
+- `set_item_spacing` - Sets the gap between children in an auto-layout frame
 
 ### Styling
 
-- `set_fill_color` - Set the fill color of a node (RGBA)
-- `set_stroke_color` - Set the stroke color and weight of a node
-- `set_corner_radius` - Set the corner radius of a node with optional per-corner control
+- `set_fill_color` - Sets a solid fill color on a node using RGBA values (0–1 range)
+- `set_stroke_color` - Sets a solid stroke color and optional weight on a node
+- `set_corner_radius` - Sets corner radius on a node, with optional per-corner control (top-left, top-right, bottom-right, bottom-left)
+- `set_stroke_dash` - Sets the dash pattern (array of dash/gap lengths) on a node's stroke
+- `set_stroke_properties` - Sets stroke weight, end cap, join style, alignment, and dash pattern in one call
+- `remove_fill` - Clears all fills from a node
 
 ### Layout & Organization
 
-- `move_node` - Move a node to a new position
-- `resize_node` - Resize a node with new dimensions
-- `delete_node` - Delete a node
-- `delete_multiple_nodes` - Delete multiple nodes at once efficiently
-- `clone_node` - Create a copy of an existing node with optional position offset
+- `move_node` - Repositions a node to new (x, y) coordinates
+- `resize_node` - Changes a node's width and height
+- `delete_node` - Removes a single node from the document
+- `delete_multiple_nodes` - Removes multiple nodes by ID array in one call
+- `clone_node` - Duplicates a node with an optional (x, y) offset for the copy
+- `insert_child_at` - Moves a node into a parent at a specific child index, controlling layer order
+- `reorder_child` - Changes a node's position (z-order) within its current parent
+- `set_clips_content` - Sets whether a frame clips children to its boundary — set to false for overflow-visible patterns like floating badges
 
 ### Components & Styles
 
-- `get_styles` - Get information about local styles
-- `get_local_components` - Get information about local components
-- `create_component_instance` - Create an instance of a component
-- `get_instance_overrides` - Extract override properties from a selected component instance
-- `set_instance_overrides` - Apply extracted overrides to target instances
+- `get_styles` - Returns all local paint, text, effect, and grid styles in the document
+- `get_local_variables` - Returns all local variables (design tokens) organized by collection — use names with `$var:Collection/Name` in color fields to bind real Figma variables
+- `get_local_components` - Returns all local components with their IDs, names, descriptions, and published keys
+- `create_component` - Converts an existing frame into a reusable Figma component, returning its new component ID and key
+- `create_component_instance` - Places an instance of a component by local ID or published key at (x, y), with optional parent
+- `get_instance_overrides` - Extracts all override properties (text, fills, visibility, etc.) from a component instance for later replication
+- `set_instance_overrides` - Applies a source instance's overrides to one or more target instances, swapping them to match
+- `swap_instance_variant` - Swaps a component instance to a different component or variant while preserving compatible overrides
+- `set_component_properties` - Sets exposed component properties (text, boolean, instance swap, variant) on an instance using key#id pairs
 
-### Export & Advanced
+### Component Introspection & AI Manipulation
 
-- `export_node_as_image` - Export a node as an image (PNG, JPG, SVG, or PDF) - limited support on image currently returning base64 as text
+- `introspect` - Returns a flat property map of every editable surface in a component or frame — text nodes, fill/stroke colors, instance variants, visibility toggles, and component properties — keyed by semantic path (e.g. `badge.text`, `header.fill`). Also reports tree depth, wrapper frame count, and name collisions.
+- `set_properties` - Applies value changes to multiple properties by semantic key in one call. Accepts text strings, hex colors, variant names, booleans, and component property values. Each property is applied independently — one failure won't abort others.
+- `optimize_structure` - Analyzes a component or frame for structural inefficiencies (wrapper frames, unnamed text nodes) and optionally applies fixes. Dry-run by default — reports proposed changes without modifying anything.
+
+### Vectors
+
+- `create_vector` - Places a vector node from an SVG path string (also listed under Creating Elements)
+- `set_vector_path` - Replaces the SVG path data on an existing vector node, with optional resize
+- `get_vector_network` - Returns the full vector network (vertices, segments, regions) of a vector node for programmatic editing
+- `set_vector_network` - Replaces the vector network with new vertices, segments, and optional fill regions
+
+### Batch Operations
+
+- `rename_node` - Renames a single node by ID
+- `batch_rename` - Renames multiple nodes in one call using an array of {nodeId, name} mappings
+- `group_nodes` - Wraps multiple nodes into a new Figma group with an optional name
+- `batch_reparent` - Moves multiple nodes under a new parent node at an optional child index
+- `batch_set_fill_color` - Applies the same fill color to multiple nodes at once
+- `batch_clone` - Duplicates one source node to multiple (x, y) positions with optional names per clone
+- `batch_mutate` - Executes a mixed array of operations (rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path) in a single round-trip — each operation runs independently
+
+### Inspection & Linting
+
+- `scan_node_styles` - Walks a frame tree and returns fill, stroke, font, layout, corner-radius, and component data for every descendant — includes a `boundVariable` flag on each color for detecting hardcoded vs token-bound values
+- `screenshot_region` - Captures a PNG screenshot of a rectangular canvas region at optional scale
+
+### Export
+
+- `export_node_as_image` - Exports a node as PNG, JPG, SVG, or PDF at optional scale, returning base64-encoded image data
 
 ### Connection Management
 
-- `join_channel` - Join a specific channel to communicate with Figma
+- `join_channel` - Joins a named WebSocket channel to establish communication between the MCP server and the Figma plugin
 
 ### MCP Prompts
 
@@ -255,10 +302,13 @@ When working with the Figma MCP:
     - Verify all annotations are properly linked to their targets
     - Delete legacy annotation nodes after successful conversion
 11. Visualize prototype noodles as FigJam connectors:
-
-- Use `get_reactions` to extract prototype flows,
-- set a default connector with `set_default_connector`,
-- and generate connector lines with `create_connections` for clear visual flow mapping.
+    - Use `get_reactions` to extract prototype flows,
+    - set a default connector with `set_default_connector`,
+    - and generate connector lines with `create_connections` for clear visual flow mapping.
+12. For efficient component manipulation:
+    - Call `introspect` first to discover all editable properties in one round-trip
+    - Use `set_properties` with the returned property map to make multiple changes at once
+    - Run `optimize_structure` in dry-run mode to identify structural inefficiencies before applying
 
 ## License
 

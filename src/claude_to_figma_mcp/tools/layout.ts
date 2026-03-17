@@ -185,4 +185,17 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       return { content: [{ type: "text", text: `Error reordering child: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
+
+  server.tool("set_clips_content", "Set whether a frame clips its children to the frame boundary. Set to false for overflow-visible patterns like badges floating above cards.", {
+    nodeId: z.string().describe("The ID of the frame node"),
+    clipsContent: z.boolean().describe("Whether to clip children to the frame boundary"),
+  }, async ({ nodeId, clipsContent }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_clips_content", { nodeId, clipsContent });
+      const typedResult = result as { name: string; id: string; clipsContent: boolean };
+      return { content: [{ type: "text", text: `Set clipsContent of "${typedResult.name}" to ${typedResult.clipsContent}` }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error setting clips content: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
 }

@@ -52,6 +52,18 @@ const OperationSchema = z.discriminatedUnion("op", [
     visible: z.boolean().describe("Whether the node should be visible"),
   }),
   z.object({
+    op: z.literal("set_font"),
+    nodeId: z.string().describe("Node ID of a TEXT node"),
+    fontFamily: z.string().optional().describe("Font family name (default: Inter)"),
+    fontStyle: z.string().optional().describe("Font style (default: Regular)"),
+  }),
+  z.object({
+    op: z.literal("set_text_align"),
+    nodeId: z.string().describe("Node ID of a TEXT node"),
+    horizontal: z.enum(["LEFT", "CENTER", "RIGHT", "JUSTIFIED"]).optional().describe("Horizontal alignment"),
+    vertical: z.enum(["TOP", "CENTER", "BOTTOM"]).optional().describe("Vertical alignment"),
+  }),
+  z.object({
     op: z.literal("set_vector_path"),
     nodeId: z.string().describe("Node ID of a VECTOR node"),
     pathData: z.string().describe("New SVG path data string"),
@@ -63,7 +75,7 @@ const OperationSchema = z.discriminatedUnion("op", [
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
   server.tool(
     "batch_mutate",
-    "Execute multiple mixed operations in a single round-trip. Supports: rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_vector_path. Operations run sequentially — later operations can depend on earlier ones. Dramatically reduces MCP call count for bulk updates.",
+    "Execute multiple mixed operations in a single round-trip. Supports: rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path. Operations run sequentially — later operations can depend on earlier ones. Dramatically reduces MCP call count for bulk updates.",
     {
       operations: z.array(OperationSchema).min(1).max(100).describe("Array of operations to execute. Each must have an 'op' field plus operation-specific params."),
     },

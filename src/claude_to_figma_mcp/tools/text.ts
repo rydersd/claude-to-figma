@@ -94,4 +94,37 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       return { content: [{ type: "text", text: `Error setting text auto-resize: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
+
+  server.tool("set_text_align", "Set horizontal and/or vertical text alignment on a text node", {
+    nodeId: z.string().describe("The ID of the text node"),
+    horizontal: z.enum(["LEFT", "CENTER", "RIGHT", "JUSTIFIED"]).optional().describe("Horizontal text alignment"),
+    vertical: z.enum(["TOP", "CENTER", "BOTTOM"]).optional().describe("Vertical text alignment"),
+  }, async ({ nodeId, horizontal, vertical }: any) => {
+    if (horizontal === undefined && vertical === undefined) {
+      return { content: [{ type: "text", text: "Error: At least one of horizontal or vertical alignment must be provided" }] };
+    }
+    try {
+      const result = await sendCommandToFigma("set_text_align", { nodeId, horizontal, vertical });
+      const typedResult = result as { name: string; id: string; textAlignHorizontal: string; textAlignVertical: string };
+      return { content: [{ type: "text", text: `Set text alignment of "${typedResult.name}" to horizontal=${typedResult.textAlignHorizontal}, vertical=${typedResult.textAlignVertical}` }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error setting text alignment: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+
+  server.tool("set_text_format", "Set paragraph formatting properties on a text node: line height, paragraph indent/spacing, letter spacing, text case", {
+    nodeId: z.string().describe("The ID of the text node"),
+    lineHeight: z.union([z.number(), z.literal("AUTO")]).optional().describe("Line height in pixels, or 'AUTO' for automatic"),
+    paragraphIndent: z.number().min(0).optional().describe("First-line paragraph indent in pixels"),
+    paragraphSpacing: z.number().min(0).optional().describe("Spacing between paragraphs in pixels"),
+    letterSpacing: z.number().optional().describe("Letter spacing in pixels"),
+    textCase: z.enum(["ORIGINAL", "UPPER", "LOWER", "TITLE"]).optional().describe("Text case transformation"),
+  }, async ({ nodeId, lineHeight, paragraphIndent, paragraphSpacing, letterSpacing, textCase }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_text_format", { nodeId, lineHeight, paragraphIndent, paragraphSpacing, letterSpacing, textCase });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error setting text format: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
 }
