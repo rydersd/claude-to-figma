@@ -324,11 +324,51 @@ async function handleCommand(command, params) {
         throw new Error("Missing required parameter: operations array");
       }
       return await batchMutate(params);
+    case "set_text_align":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setTextAlign(params);
+    case "set_text_format":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setTextFormat(params);
+    case "set_text_list":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setTextList(params);
+    case "set_range_format":
+      if (!params || !params.nodeId || !params.ranges) {
+        throw new Error("Missing required parameters: nodeId and ranges");
+      }
+      return await setRangeFormat(params);
+    case "set_clips_content":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setClipsContent(params);
     case "scan_node_styles":
       if (!params || !params.nodeId) {
         throw new Error("Missing required parameter: nodeId");
       }
       return await scanNodeStyles(params);
+    case "introspect_node":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await introspectNode(params);
+    case "set_properties":
+      if (!params || !params.nodeId || !params.properties) {
+        throw new Error("Missing required parameters: nodeId and properties");
+      }
+      return await setProperties(params);
+    case "optimize_structure":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await optimizeStructure(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -753,6 +793,7 @@ async function createRectangle(params) {
     height = 100,
     name = "Rectangle",
     parentId,
+    fillColor,
   } = params || {};
 
   const rect = figma.createRectangle();
@@ -760,6 +801,20 @@ async function createRectangle(params) {
   rect.y = y;
   rect.resize(width, height);
   rect.name = name;
+
+  // Set fill color if provided
+  if (fillColor) {
+    const paintStyle = {
+      type: "SOLID",
+      color: {
+        r: parseFloat(fillColor.r) || 0,
+        g: parseFloat(fillColor.g) || 0,
+        b: parseFloat(fillColor.b) || 0,
+      },
+      opacity: parseFloat(fillColor.a) || 1,
+    };
+    rect.fills = [paintStyle];
+  }
 
   // If parentId is provided, append to that node, otherwise append to current page
   if (parentId) {
@@ -816,6 +871,11 @@ async function createFrame(params) {
   frame.resize(width, height);
   frame.name = name;
 
+  // Set clipsContent if provided
+  if (params.clipsContent !== undefined) {
+    frame.clipsContent = !!params.clipsContent;
+  }
+
   // Set layout mode if provided
   if (layoutMode !== "NONE") {
     frame.layoutMode = layoutMode;
@@ -831,9 +891,11 @@ async function createFrame(params) {
     frame.primaryAxisAlignItems = primaryAxisAlignItems;
     frame.counterAxisAlignItems = counterAxisAlignItems;
 
-    // Set layout sizing only when layoutMode is not NONE
-    frame.layoutSizingHorizontal = layoutSizingHorizontal;
-    frame.layoutSizingVertical = layoutSizingVertical;
+    // Set layout sizing (defer FILL until after parenting — it requires an auto-layout parent)
+    if (layoutSizingHorizontal !== "FILL" && layoutSizingVertical !== "FILL") {
+      frame.layoutSizingHorizontal = layoutSizingHorizontal;
+      frame.layoutSizingVertical = layoutSizingVertical;
+    }
 
     // Set item spacing only when layoutMode is not NONE
     frame.itemSpacing = itemSpacing;
@@ -884,6 +946,24 @@ async function createFrame(params) {
     parentNode.appendChild(frame);
   } else {
     figma.currentPage.appendChild(frame);
+  }
+
+  // Now set FILL sizing after the frame has been parented (FILL requires auto-layout parent)
+  if (layoutMode !== "NONE") {
+    if (layoutSizingHorizontal === "FILL" || layoutSizingVertical === "FILL") {
+      try {
+        frame.layoutSizingHorizontal = layoutSizingHorizontal;
+        frame.layoutSizingVertical = layoutSizingVertical;
+      } catch (e) {
+        // FILL may fail if parent is not auto-layout — fall back to FIXED
+        if (layoutSizingHorizontal === "FILL") {
+          try { frame.layoutSizingHorizontal = "FILL"; } catch (e2) { frame.layoutSizingHorizontal = "FIXED"; }
+        }
+        if (layoutSizingVertical === "FILL") {
+          try { frame.layoutSizingVertical = "FILL"; } catch (e2) { frame.layoutSizingVertical = "FIXED"; }
+        }
+      }
+    }
   }
 
   return {
@@ -941,19 +1021,31 @@ async function createText(params) {
     }
   };
 
+  // Accept optional fontFamily and fontStyle params
+  const userFontFamily = params.fontFamily || "Inter";
+  const userFontStyle = params.fontStyle || getFontStyle(fontWeight);
+
   const textNode = figma.createText();
   textNode.x = x;
   textNode.y = y;
   textNode.name = name || text;
   try {
     await figma.loadFontAsync({
-      family: "Inter",
-      style: getFontStyle(fontWeight),
+      family: userFontFamily,
+      style: userFontStyle,
     });
-    textNode.fontName = { family: "Inter", style: getFontStyle(fontWeight) };
+    textNode.fontName = { family: userFontFamily, style: userFontStyle };
     textNode.fontSize = parseInt(fontSize);
   } catch (error) {
-    console.error("Error setting font size", error);
+    console.error("Error setting font", error);
+    // Fallback to Inter if the requested font is not available
+    try {
+      await figma.loadFontAsync({ family: "Inter", style: getFontStyle(fontWeight) });
+      textNode.fontName = { family: "Inter", style: getFontStyle(fontWeight) };
+      textNode.fontSize = parseInt(fontSize);
+    } catch (fallbackError) {
+      console.error("Error setting fallback font", fallbackError);
+    }
   }
   setCharacters(textNode, text);
 
@@ -1660,11 +1752,11 @@ async function setCornerRadius(params) {
   // If corners array is provided, set individual corner radii
   if (corners && Array.isArray(corners) && corners.length === 4) {
     if ("topLeftRadius" in node) {
-      // Node supports individual corner radii
-      if (corners[0]) node.topLeftRadius = radius;
-      if (corners[1]) node.topRightRadius = radius;
-      if (corners[2]) node.bottomRightRadius = radius;
-      if (corners[3]) node.bottomLeftRadius = radius;
+      // Node supports individual corner radii — set each explicitly
+      node.topLeftRadius = corners[0] ? radius : 0;
+      node.topRightRadius = corners[1] ? radius : 0;
+      node.bottomRightRadius = corners[2] ? radius : 0;
+      node.bottomLeftRadius = corners[3] ? radius : 0;
     } else {
       // Node only supports uniform corner radius
       node.cornerRadius = radius;
@@ -1963,7 +2055,7 @@ const setCharactersWithSmartMatchFont = async (
 
 // Add the cloneNode function implementation
 async function cloneNode(params) {
-  const { nodeId, x, y } = params || {};
+  const { nodeId, x, y, parentId } = params || {};
 
   if (!nodeId) {
     throw new Error("Missing nodeId parameter");
@@ -1986,11 +2078,36 @@ async function cloneNode(params) {
     clone.y = y;
   }
 
-  // Add the clone to the same parent as the original node
-  if (node.parent) {
-    node.parent.appendChild(clone);
+  // Determine where to place the clone
+  // If parentId is explicitly provided, use that
+  // Otherwise try the source's parent — but if it's inside an instance, fall back to the page
+  if (parentId) {
+    const targetParent = await figma.getNodeByIdAsync(parentId);
+    if (!targetParent) {
+      throw new Error(`Parent node not found with ID: ${parentId}`);
+    }
+    if (!("appendChild" in targetParent)) {
+      throw new Error(`Parent node does not support children: ${parentId}`);
+    }
+    targetParent.appendChild(clone);
   } else {
-    figma.currentPage.appendChild(clone);
+    // Check if source parent is safe to clone into (not inside an instance)
+    let safeParent = node.parent;
+    if (safeParent) {
+      let ancestor = safeParent;
+      while (ancestor) {
+        if (ancestor.type === "INSTANCE") {
+          safeParent = null; // Can't place inside an instance
+          break;
+        }
+        ancestor = ancestor.parent;
+      }
+    }
+    if (safeParent && "appendChild" in safeParent) {
+      safeParent.appendChild(clone);
+    } else {
+      figma.currentPage.appendChild(clone);
+    }
   }
 
   return {
@@ -4731,7 +4848,7 @@ async function createVector(params) {
           const updatedVertices = network.vertices.map(function(v) {
             return Object.assign({}, v, { strokeCap: strokeCap });
           });
-          vector.vectorNetwork = Object.assign({}, network, { vertices: updatedVertices });
+          await vector.setVectorNetworkAsync(Object.assign({}, network, { vertices: updatedVertices }));
         }
       } catch (e) {
         // strokeCap on vertices may not be supported for all vector types; fall back silently
@@ -4794,14 +4911,14 @@ async function createLine(params) {
   vec.y = originY;
 
   // Set the vector network with per-vertex stroke caps
-  vec.vectorNetwork = {
+  await vec.setVectorNetworkAsync({
     vertices: [
       { x: v0x, y: v0y, strokeCap: startCap },
       { x: v1x, y: v1y, strokeCap: endCap },
     ],
     segments: [{ start: 0, end: 1 }],
     regions: [],
-  };
+  });
 
   // Resolve stroke color
   var resolvedColor = null;
@@ -5013,8 +5130,8 @@ async function setTextDecoration(params) {
     throw new Error(`Node is not a text node: ${nodeId}`);
   }
 
-  // Load the font before changing decoration (required by Figma API)
-  await figma.loadFontAsync(node.fontName);
+  // Load all fonts (handles mixed font text)
+  await loadAllFonts(node);
   node.textDecoration = decoration;
 
   return {
@@ -5845,11 +5962,11 @@ async function setVectorNetwork(params) {
     };
   });
 
-  node.vectorNetwork = {
+  await node.setVectorNetworkAsync({
     vertices: figmaVertices,
     segments: figmaSegments,
     regions: figmaRegions,
-  };
+  });
 
   // Read back the result
   var updatedNetwork = node.vectorNetwork;
@@ -6029,6 +6146,26 @@ async function batchMutate(params) {
           result = { op: "set_visible", nodeId: op.nodeId, name: visNode.name, visible: visNode.visible };
           break;
 
+        case "set_font":
+          var fontNode = await figma.getNodeByIdAsync(op.nodeId);
+          if (!fontNode) throw new Error("Node not found: " + op.nodeId);
+          if (fontNode.type !== "TEXT") throw new Error("Node is not TEXT: " + op.nodeId);
+          var batchFontFamily = op.fontFamily || "Inter";
+          var batchFontStyle = op.fontStyle || "Regular";
+          await figma.loadFontAsync({ family: batchFontFamily, style: batchFontStyle });
+          fontNode.fontName = { family: batchFontFamily, style: batchFontStyle };
+          result = { op: "set_font", nodeId: op.nodeId, name: fontNode.name, fontFamily: batchFontFamily, fontStyle: batchFontStyle };
+          break;
+
+        case "set_text_align":
+          var alignNode = await figma.getNodeByIdAsync(op.nodeId);
+          if (!alignNode) throw new Error("Node not found: " + op.nodeId);
+          if (alignNode.type !== "TEXT") throw new Error("Node is not TEXT: " + op.nodeId);
+          if (op.horizontal !== undefined) alignNode.textAlignHorizontal = op.horizontal;
+          if (op.vertical !== undefined) alignNode.textAlignVertical = op.vertical;
+          result = { op: "set_text_align", nodeId: op.nodeId, name: alignNode.name, horizontal: alignNode.textAlignHorizontal, vertical: alignNode.textAlignVertical };
+          break;
+
         case "set_vector_path":
           var vpNode = await figma.getNodeByIdAsync(op.nodeId);
           if (!vpNode) throw new Error("Node not found: " + op.nodeId);
@@ -6062,6 +6199,332 @@ async function batchMutate(params) {
     successCount: successCount,
     failureCount: failureCount,
     results: results,
+  };
+}
+
+// --- set_text_align: Set text alignment on a text node ---
+async function setTextAlign(params) {
+  var nodeId = params.nodeId;
+  var horizontal = params.horizontal;
+  var vertical = params.vertical;
+
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
+
+  if (horizontal !== undefined) {
+    var validH = ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"];
+    if (validH.indexOf(horizontal) === -1) throw new Error("Invalid horizontal alignment: " + horizontal + ". Must be one of: " + validH.join(", "));
+    node.textAlignHorizontal = horizontal;
+  }
+  if (vertical !== undefined) {
+    var validV = ["TOP", "CENTER", "BOTTOM"];
+    if (validV.indexOf(vertical) === -1) throw new Error("Invalid vertical alignment: " + vertical + ". Must be one of: " + validV.join(", "));
+    node.textAlignVertical = vertical;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    textAlignHorizontal: node.textAlignHorizontal,
+    textAlignVertical: node.textAlignVertical,
+  };
+}
+
+// --- set_text_format: Set paragraph/node-level formatting on a text node ---
+async function setTextFormat(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
+
+  // Load all fonts used in the text node
+  await loadAllFonts(node);
+
+  if (params.lineHeight !== undefined) {
+    if (params.lineHeight === "AUTO") {
+      node.lineHeight = { unit: "AUTO" };
+    } else if (typeof params.lineHeight === "number") {
+      node.lineHeight = { value: params.lineHeight, unit: "PIXELS" };
+    } else if (params.lineHeight.value !== undefined && params.lineHeight.unit !== undefined) {
+      node.lineHeight = params.lineHeight;
+    }
+  }
+  if (params.paragraphIndent !== undefined) {
+    node.paragraphIndent = params.paragraphIndent;
+  }
+  if (params.paragraphSpacing !== undefined) {
+    node.paragraphSpacing = params.paragraphSpacing;
+  }
+  if (params.letterSpacing !== undefined) {
+    if (typeof params.letterSpacing === "number") {
+      node.letterSpacing = { value: params.letterSpacing, unit: "PIXELS" };
+    } else if (params.letterSpacing.value !== undefined && params.letterSpacing.unit !== undefined) {
+      node.letterSpacing = params.letterSpacing;
+    }
+  }
+  if (params.textCase !== undefined) {
+    node.textCase = params.textCase;
+  }
+  if (params.leadingTrim !== undefined) {
+    node.leadingTrim = params.leadingTrim;
+  }
+  if (params.hangingPunctuation !== undefined) {
+    node.hangingPunctuation = !!params.hangingPunctuation;
+  }
+  if (params.hangingList !== undefined) {
+    node.hangingList = !!params.hangingList;
+  }
+  if (params.listSpacing !== undefined) {
+    node.listSpacing = params.listSpacing;
+  }
+  if (params.textTruncation !== undefined) {
+    node.textTruncation = params.textTruncation;
+  }
+  if (params.maxLines !== undefined) {
+    node.maxLines = params.maxLines;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    lineHeight: node.lineHeight,
+    paragraphIndent: node.paragraphIndent,
+    paragraphSpacing: node.paragraphSpacing,
+    letterSpacing: node.letterSpacing,
+    textCase: node.textCase,
+    hangingPunctuation: node.hangingPunctuation,
+    hangingList: node.hangingList,
+    listSpacing: node.listSpacing,
+    textTruncation: node.textTruncation,
+    maxLines: node.maxLines,
+  };
+}
+
+// Helper: load all fonts used in a text node (handles mixed fonts)
+async function loadAllFonts(textNode) {
+  if (textNode.fontName === figma.mixed) {
+    // Get all unique fonts used in the text
+    var segments = textNode.getStyledTextSegments(["fontName"]);
+    for (var i = 0; i < segments.length; i++) {
+      try {
+        await figma.loadFontAsync(segments[i].fontName);
+      } catch (e) {}
+    }
+  } else {
+    try {
+      await figma.loadFontAsync(textNode.fontName);
+    } catch (e) {}
+  }
+}
+
+// --- set_text_list: Set native list formatting on a text node ---
+async function setTextList(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
+
+  await loadAllFonts(node);
+
+  var lines = params.lines;
+  var listType = params.listType || "UNORDERED";
+  var start = 0;
+  var end = node.characters.length;
+
+  // If specific lines are provided, apply per-line
+  if (lines && Array.isArray(lines)) {
+    // Split text into lines to find character ranges
+    var text = node.characters;
+    var lineStarts = [0];
+    for (var i = 0; i < text.length; i++) {
+      if (text[i] === "\n") lineStarts.push(i + 1);
+    }
+    lineStarts.push(text.length); // sentinel
+
+    for (var li = 0; li < lines.length; li++) {
+      var lineSpec = lines[li];
+      var lineIdx = lineSpec.line; // 0-based line index
+      if (lineIdx < 0 || lineIdx >= lineStarts.length - 1) continue;
+
+      var ls = lineStarts[lineIdx];
+      var le = lineStarts[lineIdx + 1];
+      // Don't include trailing newline in range
+      if (le > ls && text[le - 1] === "\n") le--;
+      if (le <= ls) continue;
+
+      var lt = lineSpec.type || listType;
+      node.setRangeListOptions(ls, le, { type: lt });
+
+      if (lineSpec.indentation !== undefined) {
+        node.setRangeIndentation(ls, le, lineSpec.indentation);
+      }
+    }
+  } else {
+    // Apply to entire text
+    node.setRangeListOptions(start, end, { type: listType });
+    if (params.indentation !== undefined) {
+      node.setRangeIndentation(start, end, params.indentation);
+    }
+  }
+
+  // Node-level list properties
+  if (params.listSpacing !== undefined) {
+    node.listSpacing = params.listSpacing;
+  }
+  if (params.hangingList !== undefined) {
+    node.hangingList = !!params.hangingList;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    characters: node.characters,
+    listSpacing: node.listSpacing,
+    hangingList: node.hangingList,
+  };
+}
+
+// --- set_range_format: Per-range text formatting ---
+async function setRangeFormat(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
+
+  await loadAllFonts(node);
+
+  var ranges = params.ranges;
+  if (!ranges || !Array.isArray(ranges) || ranges.length === 0) {
+    throw new Error("Missing or empty ranges array");
+  }
+
+  var results = [];
+
+  for (var ri = 0; ri < ranges.length; ri++) {
+    var range = ranges[ri];
+    var start = range.start;
+    var end = range.end;
+
+    if (start === undefined || end === undefined) {
+      results.push({ index: ri, success: false, error: "Missing start or end" });
+      continue;
+    }
+    if (start < 0 || end > node.characters.length || start >= end) {
+      results.push({ index: ri, success: false, error: "Invalid range: start=" + start + " end=" + end + " length=" + node.characters.length });
+      continue;
+    }
+
+    try {
+      // Font family + style
+      if (range.fontFamily !== undefined) {
+        var fontStyle = range.fontStyle || "Regular";
+        await figma.loadFontAsync({ family: range.fontFamily, style: fontStyle });
+        node.setRangeFontName(start, end, { family: range.fontFamily, style: fontStyle });
+      }
+
+      // Font size
+      if (range.fontSize !== undefined) {
+        node.setRangeFontSize(start, end, range.fontSize);
+      }
+
+      // Text color (fills)
+      if (range.color !== undefined) {
+        var color = range.color;
+        if (typeof color === "string") {
+          color = hexToFigmaColor(color);
+          if (!color) throw new Error("Invalid hex color");
+        }
+        node.setRangeFills(start, end, [{
+          type: "SOLID",
+          color: { r: color.r, g: color.g, b: color.b },
+          opacity: color.a !== undefined ? color.a : 1,
+        }]);
+      }
+
+      // Text case
+      if (range.textCase !== undefined) {
+        node.setRangeTextCase(start, end, range.textCase);
+      }
+
+      // Text decoration
+      if (range.textDecoration !== undefined) {
+        node.setRangeTextDecoration(start, end, range.textDecoration);
+      }
+
+      // Letter spacing
+      if (range.letterSpacing !== undefined) {
+        if (typeof range.letterSpacing === "number") {
+          node.setRangeLetterSpacing(start, end, { value: range.letterSpacing, unit: "PIXELS" });
+        } else {
+          node.setRangeLetterSpacing(start, end, range.letterSpacing);
+        }
+      }
+
+      // Line height
+      if (range.lineHeight !== undefined) {
+        if (range.lineHeight === "AUTO") {
+          node.setRangeLineHeight(start, end, { unit: "AUTO" });
+        } else if (typeof range.lineHeight === "number") {
+          node.setRangeLineHeight(start, end, { value: range.lineHeight, unit: "PIXELS" });
+        } else {
+          node.setRangeLineHeight(start, end, range.lineHeight);
+        }
+      }
+
+      // List options
+      if (range.listType !== undefined) {
+        node.setRangeListOptions(start, end, { type: range.listType });
+      }
+
+      // Indentation (for nested lists)
+      if (range.indentation !== undefined) {
+        node.setRangeIndentation(start, end, range.indentation);
+      }
+
+      // Hyperlink
+      if (range.hyperlink !== undefined) {
+        node.setRangeHyperlink(start, end, range.hyperlink);
+      }
+
+      results.push({ index: ri, success: true, start: start, end: end });
+    } catch (e) {
+      results.push({ index: ri, success: false, start: start, end: end, error: e.message || String(e) });
+    }
+  }
+
+  var successCount = 0;
+  var failureCount = 0;
+  for (var i = 0; i < results.length; i++) {
+    if (results[i].success) successCount++;
+    else failureCount++;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    totalRanges: ranges.length,
+    successCount: successCount,
+    failureCount: failureCount,
+    results: results,
+  };
+}
+
+// --- set_clips_content: Set frame clipping ---
+async function setClipsContent(params) {
+  var nodeId = params.nodeId;
+  var clipsContent = params.clipsContent;
+
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("clipsContent" in node)) throw new Error("Node does not support clipsContent (type: " + node.type + ")");
+
+  node.clipsContent = !!clipsContent;
+
+  return {
+    id: node.id,
+    name: node.name,
+    clipsContent: node.clipsContent,
   };
 }
 
@@ -6211,5 +6674,584 @@ async function scanNodeStyles(params) {
     rootId: rootId,
     totalNodes: results.length,
     nodes: results,
+  };
+}
+
+// --- introspect_node: Discover the full manipulation surface of a component/frame ---
+async function introspectNode(params) {
+  var nodeId = params.nodeId;
+  var maxDepth = params.maxDepth !== undefined ? params.maxDepth : 20;
+
+  var root = await figma.getNodeByIdAsync(nodeId);
+  if (!root) {
+    throw new Error("Node not found with ID: " + nodeId);
+  }
+
+  var properties = {};
+  var wrapperFrameCount = 0;
+  var nameCollisions = {};
+  var treeDepth = 0;
+  var componentName = null;
+
+  // Generic names to skip when building semantic keys
+  var GENERIC_NAMES = new Set([
+    "Frame", "Group", "Rectangle", "Ellipse", "Vector", "Component",
+    "Instance", "frame", "group", "rectangle", "ellipse", "vector",
+  ]);
+
+  function isGenericName(name) {
+    if (GENERIC_NAMES.has(name)) return true;
+    // Pure numbers like "1", "42"
+    if (/^\d+$/.test(name)) return true;
+    // "Frame 123" style
+    if (/^(Frame|Group|Rectangle|Ellipse|Vector|Component|Instance)\s+\d+$/i.test(name)) return true;
+    return false;
+  }
+
+  function isWrapperFrame(node) {
+    if (node.type !== "FRAME") return false;
+    if (!("children" in node) || node.children.length !== 1) return false;
+    // Has visible fills?
+    if ("fills" in node && Array.isArray(node.fills)) {
+      for (var i = 0; i < node.fills.length; i++) {
+        if (node.fills[i].visible !== false && node.fills[i].type === "SOLID") return false;
+      }
+    }
+    // Has layout mode?
+    if ("layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") return false;
+    // Has effects?
+    if ("effects" in node && Array.isArray(node.effects) && node.effects.length > 0) {
+      for (var i = 0; i < node.effects.length; i++) {
+        if (node.effects[i].visible !== false) return false;
+      }
+    }
+    return true;
+  }
+
+  function hasBoundVariable(node, field) {
+    try {
+      var bindings = node.boundVariables;
+      if (bindings && bindings[field]) {
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function rgbToHex(r, g, b) {
+    var rr = Math.round(r * 255).toString(16).padStart(2, "0");
+    var gg = Math.round(g * 255).toString(16).padStart(2, "0");
+    var bb = Math.round(b * 255).toString(16).padStart(2, "0");
+    return "#" + rr + gg + bb;
+  }
+
+  function buildSemanticKey(pathSegments) {
+    // Filter out generic names, take last 2-3 meaningful ones
+    var meaningful = [];
+    for (var i = 0; i < pathSegments.length; i++) {
+      if (!isGenericName(pathSegments[i])) {
+        meaningful.push(pathSegments[i]);
+      }
+    }
+    if (meaningful.length === 0) {
+      // All generic — use last segment
+      meaningful = [pathSegments[pathSegments.length - 1] || "node"];
+    }
+    // Take last 2-3
+    var start = Math.max(0, meaningful.length - 3);
+    var parts = meaningful.slice(start);
+    // Clean up each part: lowercase, replace spaces with camelCase
+    for (var i = 0; i < parts.length; i++) {
+      parts[i] = parts[i]
+        .replace(/[^a-zA-Z0-9_ -]/g, "")
+        .replace(/\s+(.)/g, function(_, c) { return c.toUpperCase(); })
+        .replace(/^\s+/, "");
+      if (parts[i].length === 0) parts[i] = "node";
+    }
+    return parts.join(".");
+  }
+
+  function addProperty(baseKey, propSuffix, propDef) {
+    var key = propSuffix ? baseKey + "." + propSuffix : baseKey;
+
+    // Handle collisions
+    if (properties[key]) {
+      // Track collision on base name
+      var baseName = baseKey.split(".").pop();
+      nameCollisions[baseName] = (nameCollisions[baseName] || 1) + 1;
+      key = key + "_" + nameCollisions[baseName];
+    }
+
+    properties[key] = propDef;
+  }
+
+  async function walkNode(node, depth, pathSegments) {
+    if (depth > maxDepth) return;
+    if (depth > treeDepth) treeDepth = depth;
+
+    var currentPath = pathSegments.concat([node.name]);
+
+    // Check for wrapper frame
+    if (depth > 0 && isWrapperFrame(node)) {
+      wrapperFrameCount++;
+    }
+
+    var baseKey = buildSemanticKey(currentPath);
+
+    // 1. TEXT nodes
+    if (node.type === "TEXT") {
+      var textExtra = { fontSize: null, fontFamily: null };
+      try {
+        if (node.fontSize !== figma.mixed) textExtra.fontSize = node.fontSize;
+        if (node.fontName !== figma.mixed && typeof node.fontName === "object") {
+          textExtra.fontFamily = node.fontName.family;
+        }
+      } catch (e) {}
+      addProperty(baseKey, "text", {
+        type: "text",
+        value: node.characters,
+        nodeId: node.id,
+        fontSize: textExtra.fontSize,
+        fontFamily: textExtra.fontFamily,
+      });
+    }
+
+    // 2. INSTANCE nodes
+    if (node.type === "INSTANCE") {
+      try {
+        var mainComp = await node.getMainComponentAsync();
+        if (mainComp) {
+          var variants = [];
+          if (mainComp.parent && mainComp.parent.type === "COMPONENT_SET") {
+            var siblings = mainComp.parent.children;
+            for (var i = 0; i < siblings.length; i++) {
+              if (siblings[i].type === "COMPONENT") {
+                variants.push(siblings[i].name);
+              }
+            }
+          }
+          addProperty(baseKey, "instance", {
+            type: "instance",
+            value: mainComp.name,
+            nodeId: node.id,
+            componentId: mainComp.id,
+            variants: variants.length > 0 ? variants : undefined,
+          });
+        }
+      } catch (e) {}
+    }
+
+    // 3. Visible solid fills
+    if ("fills" in node && Array.isArray(node.fills)) {
+      for (var fi = 0; fi < node.fills.length; fi++) {
+        var fill = node.fills[fi];
+        if (fill.visible !== false && fill.type === "SOLID") {
+          addProperty(baseKey, "fill", {
+            type: "color",
+            value: rgbToHex(fill.color.r, fill.color.g, fill.color.b),
+            nodeId: node.id,
+            target: "fill",
+            boundVariable: hasBoundVariable(node, "fills"),
+          });
+          break; // Only first visible solid fill
+        }
+      }
+    }
+
+    // 4. Visible solid strokes
+    if ("strokes" in node && Array.isArray(node.strokes)) {
+      for (var si = 0; si < node.strokes.length; si++) {
+        var stroke = node.strokes[si];
+        if (stroke.visible !== false && stroke.type === "SOLID") {
+          addProperty(baseKey, "stroke", {
+            type: "color",
+            value: rgbToHex(stroke.color.r, stroke.color.g, stroke.color.b),
+            nodeId: node.id,
+            target: "stroke",
+            boundVariable: hasBoundVariable(node, "strokes"),
+          });
+          break;
+        }
+      }
+    }
+
+    // 5. Hidden nodes (visibility toggle)
+    if (depth > 0 && node.visible === false) {
+      addProperty(baseKey, "visible", {
+        type: "boolean",
+        value: false,
+        nodeId: node.id,
+      });
+    }
+
+    // 6. Component properties (on INSTANCE nodes)
+    if (node.type === "INSTANCE" && node.componentProperties) {
+      var compProps = node.componentProperties;
+      for (var propName in compProps) {
+        if (compProps.hasOwnProperty(propName)) {
+          var prop = compProps[propName];
+          addProperty(baseKey, "prop." + propName.split("#")[0], {
+            type: "component_property",
+            value: prop.value,
+            nodeId: node.id,
+            propertyType: prop.type,
+            key: propName,
+          });
+        }
+      }
+    }
+
+    // Recurse into children
+    if ("children" in node && node.children) {
+      for (var ci = 0; ci < node.children.length; ci++) {
+        await walkNode(node.children[ci], depth + 1, currentPath);
+      }
+    }
+  }
+
+  // Get component name if root is an instance or component
+  if (root.type === "INSTANCE") {
+    try {
+      var mc = await root.getMainComponentAsync();
+      if (mc) componentName = mc.name;
+    } catch (e) {}
+  } else if (root.type === "COMPONENT") {
+    componentName = root.name;
+  } else if (root.type === "COMPONENT_SET") {
+    componentName = root.name;
+  }
+
+  await walkNode(root, 0, []);
+
+  var propertyCount = 0;
+  for (var k in properties) {
+    if (properties.hasOwnProperty(k)) propertyCount++;
+  }
+
+  return {
+    id: root.id,
+    name: root.name,
+    component: componentName,
+    depth: treeDepth,
+    wrapperFrames: wrapperFrameCount,
+    nameCollisions: nameCollisions,
+    propertyCount: propertyCount,
+    properties: properties,
+  };
+}
+
+// --- set_properties: Modify multiple properties by semantic key ---
+async function setProperties(params) {
+  var nodeId = params.nodeId;
+  var newValues = params.properties;
+  var propertyMap = params.propertyMap;
+
+  // If no property map provided, introspect to discover it
+  if (!propertyMap) {
+    var introspection = await introspectNode({ nodeId: nodeId });
+    propertyMap = introspection.properties;
+  }
+
+  var results = [];
+  var successCount = 0;
+  var failureCount = 0;
+
+  for (var key in newValues) {
+    if (!newValues.hasOwnProperty(key)) continue;
+
+    var newValue = newValues[key];
+    var propDef = propertyMap[key];
+
+    if (!propDef) {
+      results.push({ key: key, success: false, error: "Property key not found in property map" });
+      failureCount++;
+      continue;
+    }
+
+    try {
+      var targetNode = await figma.getNodeByIdAsync(propDef.nodeId);
+      if (!targetNode) {
+        throw new Error("Node not found: " + propDef.nodeId);
+      }
+
+      var oldValue = propDef.value;
+
+      switch (propDef.type) {
+        case "text":
+          if (targetNode.type !== "TEXT") throw new Error("Node is not TEXT");
+          await figma.loadFontAsync(targetNode.fontName);
+          await setCharacters(targetNode, String(newValue));
+          results.push({ key: key, success: true, oldValue: oldValue, newValue: String(newValue) });
+          break;
+
+        case "color":
+          var hexColor = String(newValue);
+          var parsed = hexToFigmaColor(hexColor);
+          if (!parsed) throw new Error("Invalid hex color: " + hexColor);
+          if (propDef.target === "stroke") {
+            if (!("strokes" in targetNode)) throw new Error("Node does not support strokes");
+            targetNode.strokes = [{
+              type: "SOLID",
+              color: { r: parsed.r, g: parsed.g, b: parsed.b },
+              opacity: parsed.a !== undefined ? parsed.a : 1,
+            }];
+          } else {
+            if (!("fills" in targetNode)) throw new Error("Node does not support fills");
+            targetNode.fills = [{
+              type: "SOLID",
+              color: { r: parsed.r, g: parsed.g, b: parsed.b },
+              opacity: parsed.a !== undefined ? parsed.a : 1,
+            }];
+          }
+          results.push({ key: key, success: true, oldValue: oldValue, newValue: hexColor });
+          break;
+
+        case "instance":
+          if (targetNode.type !== "INSTANCE") throw new Error("Node is not an INSTANCE");
+          var variantName = String(newValue);
+          var mainComp = await targetNode.getMainComponentAsync();
+          if (!mainComp) throw new Error("Could not get main component");
+
+          var swapTarget = null;
+          if (mainComp.parent && mainComp.parent.type === "COMPONENT_SET") {
+            var siblings = mainComp.parent.children;
+            for (var si = 0; si < siblings.length; si++) {
+              if (siblings[si].type === "COMPONENT") {
+                // Use indexOf match to handle "Type=Dashboard" style names
+                if (siblings[si].name === variantName || siblings[si].name.indexOf(variantName) !== -1) {
+                  swapTarget = siblings[si];
+                  break;
+                }
+              }
+            }
+          }
+          if (!swapTarget) throw new Error("Variant not found: " + variantName);
+          targetNode.swapComponent(swapTarget);
+          results.push({ key: key, success: true, oldValue: oldValue, newValue: variantName });
+          break;
+
+        case "boolean":
+          targetNode.visible = !!newValue;
+          results.push({ key: key, success: true, oldValue: oldValue, newValue: !!newValue });
+          break;
+
+        case "component_property":
+          // Need to find the instance node that owns this property
+          if (targetNode.type !== "INSTANCE") throw new Error("Node is not an INSTANCE");
+          var propKey = propDef.key;
+          var propObj = {};
+          propObj[propKey] = newValue;
+          targetNode.setProperties(propObj);
+          results.push({ key: key, success: true, oldValue: oldValue, newValue: newValue });
+          break;
+
+        default:
+          throw new Error("Unknown property type: " + propDef.type);
+      }
+
+      successCount++;
+    } catch (e) {
+      results.push({
+        key: key,
+        success: false,
+        error: e.message || String(e),
+      });
+      failureCount++;
+    }
+  }
+
+  return {
+    nodeId: nodeId,
+    totalProperties: results.length,
+    successCount: successCount,
+    failureCount: failureCount,
+    results: results,
+  };
+}
+
+// --- optimize_structure: Analyze and optionally restructure for AI efficiency ---
+async function optimizeStructure(params) {
+  var nodeId = params.nodeId;
+  var options = params.options || {};
+  var dryRun = options.dryRun !== false; // default true
+  var maxDepth = options.maxDepth !== undefined ? options.maxDepth : 20;
+  var doFlatten = options.flatten !== false; // default true
+  var doRename = options.rename !== false; // default true
+  var doExposeProperties = options.exposeProperties === true; // default false
+  var doExtractComponents = options.extractComponents === true; // default false
+
+  var root = await figma.getNodeByIdAsync(nodeId);
+  if (!root) {
+    throw new Error("Node not found with ID: " + nodeId);
+  }
+
+  var changes = [];
+  var appliedCount = 0;
+
+  function isWrapperFrame(node) {
+    if (node.type !== "FRAME") return false;
+    if (!("children" in node) || node.children.length !== 1) return false;
+    if ("fills" in node && Array.isArray(node.fills)) {
+      for (var i = 0; i < node.fills.length; i++) {
+        if (node.fills[i].visible !== false && node.fills[i].type === "SOLID") return false;
+      }
+    }
+    if ("layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") return false;
+    if ("effects" in node && Array.isArray(node.effects) && node.effects.length > 0) {
+      for (var i = 0; i < node.effects.length; i++) {
+        if (node.effects[i].visible !== false) return false;
+      }
+    }
+    return true;
+  }
+
+  // Pass 1: Find wrapper frames to flatten (collect bottom-up)
+  var wrappers = [];
+  if (doFlatten) {
+    async function findWrappers(node, depth) {
+      if (depth > maxDepth) return;
+      // Recurse first (bottom-up processing)
+      if ("children" in node && node.children) {
+        for (var i = 0; i < node.children.length; i++) {
+          await findWrappers(node.children[i], depth + 1);
+        }
+      }
+      if (depth > 0 && isWrapperFrame(node)) {
+        wrappers.push(node);
+      }
+    }
+    await findWrappers(root, 0);
+
+    for (var wi = 0; wi < wrappers.length; wi++) {
+      var wrapper = wrappers[wi];
+      var childName = ("children" in wrapper && wrapper.children.length > 0) ? wrapper.children[0].name : "unknown";
+      changes.push({
+        action: "flatten",
+        nodeId: wrapper.id,
+        nodeName: wrapper.name,
+        description: "Remove wrapper, promote child '" + childName + "'",
+      });
+    }
+  }
+
+  // Pass 2: Find text nodes to rename
+  var textNodesToRename = [];
+  if (doRename) {
+    async function findTextNodes(node, depth) {
+      if (depth > maxDepth) return;
+      if (node.type === "TEXT" && !node.name.startsWith("_")) {
+        textNodesToRename.push(node);
+      }
+      if ("children" in node && node.children) {
+        for (var i = 0; i < node.children.length; i++) {
+          await findTextNodes(node.children[i], depth + 1);
+        }
+      }
+    }
+    await findTextNodes(root, 0);
+
+    for (var ti = 0; ti < textNodesToRename.length; ti++) {
+      var textNode = textNodesToRename[ti];
+      changes.push({
+        action: "rename",
+        nodeId: textNode.id,
+        oldName: textNode.name,
+        newName: "_" + textNode.name,
+      });
+    }
+  }
+
+  // Pass 3: Expose properties (report-only for v1)
+  if (doExposeProperties && (root.type === "COMPONENT" || root.type === "COMPONENT_SET")) {
+    async function findExposeCandidates(node, depth) {
+      if (depth > maxDepth) return;
+      if (node.type === "TEXT") {
+        changes.push({
+          action: "expose_property",
+          nodeId: node.id,
+          nodeName: node.name,
+          description: "TEXT node could be exposed as a component text property",
+          propertyType: "TEXT",
+        });
+      }
+      if (node.type === "INSTANCE") {
+        changes.push({
+          action: "expose_property",
+          nodeId: node.id,
+          nodeName: node.name,
+          description: "INSTANCE node could be exposed as an instance-swap property",
+          propertyType: "INSTANCE_SWAP",
+        });
+      }
+      if ("children" in node && node.children) {
+        for (var i = 0; i < node.children.length; i++) {
+          await findExposeCandidates(node.children[i], depth + 1);
+        }
+      }
+    }
+    await findExposeCandidates(root, 0);
+  }
+
+  // Pass 4: Extract components (stubbed for v2)
+  // doExtractComponents is accepted but returns no results in v1
+
+  // Apply changes if not dry run
+  if (!dryRun) {
+    // Apply flattening (bottom-up order — wrappers array is already bottom-up)
+    if (doFlatten) {
+      for (var ai = 0; ai < wrappers.length; ai++) {
+        var w = wrappers[ai];
+        try {
+          // Verify wrapper still exists and is still a wrapper
+          if (w.removed) continue;
+          if (!isWrapperFrame(w)) continue;
+          var parent = w.parent;
+          if (!parent || !("children" in parent)) continue;
+
+          var child = w.children[0];
+          // Find wrapper's index in parent
+          var wrapperIndex = -1;
+          for (var pi = 0; pi < parent.children.length; pi++) {
+            if (parent.children[pi].id === w.id) {
+              wrapperIndex = pi;
+              break;
+            }
+          }
+          if (wrapperIndex === -1) continue;
+
+          // Preserve child's absolute position
+          child.x = child.x + w.x;
+          child.y = child.y + w.y;
+
+          // Reparent child to wrapper's parent at wrapper's position
+          parent.insertChild(wrapperIndex, child);
+          // Remove wrapper (now empty)
+          w.remove();
+          appliedCount++;
+        } catch (e) {
+          // Skip failures silently — node may have been removed
+        }
+      }
+    }
+
+    // Apply renaming
+    if (doRename) {
+      for (var ri = 0; ri < textNodesToRename.length; ri++) {
+        try {
+          var tn = textNodesToRename[ri];
+          if (tn.removed) continue;
+          tn.name = "_" + tn.name;
+          appliedCount++;
+        } catch (e) {}
+      }
+    }
+  }
+
+  return {
+    nodeId: nodeId,
+    dryRun: dryRun,
+    totalChanges: changes.length,
+    changes: changes,
+    appliedCount: appliedCount,
   };
 }

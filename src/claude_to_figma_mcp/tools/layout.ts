@@ -145,13 +145,14 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
-  server.tool("clone_node", "Clone an existing node in Figma", {
+  server.tool("clone_node", "Clone an existing node in Figma. Works with nodes inside instances — the clone is placed on the page or into an explicit parentId.", {
     nodeId: z.string().describe("The ID of the node to clone"),
     x: z.number().optional().describe("New X position for the clone"),
-    y: z.number().optional().describe("New Y position for the clone")
-  }, async ({ nodeId, x, y }: any) => {
+    y: z.number().optional().describe("New Y position for the clone"),
+    parentId: z.string().optional().describe("Optional parent node ID to place the clone into. If omitted, uses the source's parent (or the page if inside an instance)."),
+  }, async ({ nodeId, x, y, parentId }: any) => {
     try {
-      const result = await sendCommandToFigma('clone_node', { nodeId, x, y });
+      const result = await sendCommandToFigma('clone_node', { nodeId, x, y, parentId });
       const typedResult = result as { name: string; id: string };
       return { content: [{ type: "text", text: `Cloned node "${typedResult.name}" with new ID: ${typedResult.id}${x !== undefined && y !== undefined ? ` at position (${x}, ${y})` : ''}` }] };
     } catch (error) {
@@ -183,6 +184,19 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       return { content: [{ type: "text", text: `Moved "${typedResult.childName}" to index ${typedResult.index} in "${typedResult.parentName}"` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Error reordering child: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+
+  server.tool("set_clips_content", "Set whether a frame clips its children to the frame boundary. Set to false for overflow-visible patterns like badges floating above cards.", {
+    nodeId: z.string().describe("The ID of the frame node"),
+    clipsContent: z.boolean().describe("Whether to clip children to the frame boundary"),
+  }, async ({ nodeId, clipsContent }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_clips_content", { nodeId, clipsContent });
+      const typedResult = result as { name: string; id: string; clipsContent: boolean };
+      return { content: [{ type: "text", text: `Set clipsContent of "${typedResult.name}" to ${typedResult.clipsContent}` }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error setting clips content: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
 }

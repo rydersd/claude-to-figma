@@ -122,7 +122,15 @@ export type FigmaCommand =
   | "set_vector_network"
   | "screenshot_region"
   | "batch_mutate"
-  | "scan_node_styles";
+  | "scan_node_styles"
+  | "introspect_node"
+  | "set_properties"
+  | "optimize_structure"
+  | "set_text_align"
+  | "set_text_format"
+  | "set_text_list"
+  | "set_range_format"
+  | "set_clips_content";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -408,6 +416,75 @@ export type CommandParams = {
   scan_node_styles: {
     nodeId: string;
     maxDepth?: number;
+  };
+  introspect_node: {
+    nodeId: string;
+    maxDepth?: number;
+  };
+  set_properties: {
+    nodeId: string;
+    properties: Record<string, any>;
+    propertyMap?: Record<string, any>;
+  };
+  optimize_structure: {
+    nodeId: string;
+    options?: {
+      dryRun?: boolean;
+      maxDepth?: number;
+      flatten?: boolean;
+      rename?: boolean;
+      exposeProperties?: boolean;
+      extractComponents?: boolean;
+    };
+  };
+  set_text_align: {
+    nodeId: string;
+    horizontal?: "LEFT" | "CENTER" | "RIGHT" | "JUSTIFIED";
+    vertical?: "TOP" | "CENTER" | "BOTTOM";
+  };
+  set_text_format: {
+    nodeId: string;
+    lineHeight?: number | "AUTO" | { value: number; unit: "PIXELS" | "PERCENT" | "AUTO" };
+    paragraphIndent?: number;
+    paragraphSpacing?: number;
+    letterSpacing?: number | { value: number; unit: "PIXELS" | "PERCENT" };
+    textCase?: "ORIGINAL" | "UPPER" | "LOWER" | "TITLE" | "SMALL_CAPS" | "SMALL_CAPS_FORCED";
+    leadingTrim?: "NONE" | "CAP_HEIGHT";
+    hangingPunctuation?: boolean;
+    hangingList?: boolean;
+    listSpacing?: number;
+    textTruncation?: "DISABLED" | "ENDING";
+    maxLines?: number | null;
+  };
+  set_text_list: {
+    nodeId: string;
+    listType?: "ORDERED" | "UNORDERED" | "NONE";
+    indentation?: number;
+    listSpacing?: number;
+    hangingList?: boolean;
+    lines?: Array<{ line: number; type?: "ORDERED" | "UNORDERED" | "NONE"; indentation?: number }>;
+  };
+  set_range_format: {
+    nodeId: string;
+    ranges: Array<{
+      start: number;
+      end: number;
+      fontFamily?: string;
+      fontStyle?: string;
+      fontSize?: number;
+      color?: string | { r: number; g: number; b: number; a?: number };
+      textCase?: string;
+      textDecoration?: string;
+      letterSpacing?: number | { value: number; unit: string };
+      lineHeight?: number | "AUTO" | { value: number; unit: string };
+      listType?: "ORDERED" | "UNORDERED" | "NONE";
+      indentation?: number;
+      hyperlink?: { type: "URL"; value: string } | null;
+    }>;
+  };
+  set_clips_content: {
+    nodeId: string;
+    clipsContent: boolean;
   };
 };
 
