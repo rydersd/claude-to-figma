@@ -264,6 +264,7 @@
 
       <div class="tabs">
         <div id="tab-connection" class="tab active">Connection</div>
+        <div id="tab-settings" class="tab">Settings</div>
         <div id="tab-about" class="tab">About</div>
       </div>
 
@@ -351,6 +352,35 @@
             <div id="progress-status">Not started</div>
             <div id="progress-percentage">0%</div>
           </div>
+        </div>
+      </div>
+
+      <div id="content-settings" class="tab-content">
+        <div class="section">
+          <h2>Canvas Defaults</h2>
+          <div class="toggle-container">
+            <label class="toggle-switch">
+              <input type="checkbox" id="setting-first-on-top" checked />
+              <span class="toggle-slider"></span>
+            </label>
+            <span style="font-size: 13px;">First on top (auto-layout stacking)</span>
+          </div>
+          <p style="font-size: 11px; color: #888; margin-top: -4px;">
+            When enabled, new auto-layout frames default to first child rendered on top.
+            Matches Figma's "First on top" canvas stacking option.
+          </p>
+
+          <h2>Connection</h2>
+          <div class="toggle-container">
+            <label class="toggle-switch">
+              <input type="checkbox" id="setting-auto-connect" checked />
+              <span class="toggle-slider"></span>
+            </label>
+            <span style="font-size: 13px;">Auto-connect on plugin launch</span>
+          </div>
+          <p style="font-size: 11px; color: #888; margin-top: -4px;">
+            Automatically connect to the WebSocket server when the plugin starts.
+          </p>
         </div>
       </div>
 
@@ -695,6 +725,28 @@
         return result;
       }
 
+      // Settings toggles
+      const settingFirstOnTop = document.getElementById("setting-first-on-top");
+      const settingAutoConnect = document.getElementById("setting-auto-connect");
+
+      settingFirstOnTop.addEventListener("change", () => {
+        parent.postMessage({
+          pluginMessage: {
+            type: "update-settings",
+            firstOnTop: settingFirstOnTop.checked,
+          },
+        }, "*");
+      });
+
+      settingAutoConnect.addEventListener("change", () => {
+        parent.postMessage({
+          pluginMessage: {
+            type: "update-settings",
+            autoConnect: settingAutoConnect.checked,
+          },
+        }, "*");
+      });
+
       // Tab switching
       tabs.forEach((tab) => {
         tab.addEventListener("click", () => {
@@ -798,6 +850,19 @@
         console.log("Received message from plugin:", message);
 
         switch (message.type) {
+          case "init-settings":
+            if (message.settings) {
+              if (message.settings.serverPort) {
+                portInput.value = message.settings.serverPort;
+              }
+              if (message.settings.firstOnTop !== undefined) {
+                settingFirstOnTop.checked = message.settings.firstOnTop;
+              }
+              if (message.settings.autoConnect !== undefined) {
+                settingAutoConnect.checked = message.settings.autoConnect;
+              }
+            }
+            break;
           case "connection-status":
             updateConnectionStatus(message.connected, message.message);
             break;
