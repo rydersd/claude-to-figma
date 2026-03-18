@@ -253,6 +253,11 @@ async function handleCommand(command, params) {
       return await createComponent(params);
     case "create_vector":
       return await createVector(params);
+    case "create_svg":
+      if (!params || !params.svg) {
+        throw new Error("Missing required parameter: svg");
+      }
+      return await createSvg(params);
     case "set_stroke_dash":
       return await setStrokeDash(params);
     case "set_stroke_properties":
@@ -416,6 +421,16 @@ async function handleCommand(command, params) {
         throw new Error("Missing required parameter: nodeId");
       }
       return await optimizeStructure(params);
+    case "design_query":
+      if (!params || !params.select) {
+        throw new Error("Missing required parameter: select");
+      }
+      return await designQuery(params);
+    case "figma_eval":
+      if (!params || !params.code) {
+        throw new Error("Missing required parameter: code");
+      }
+      return await figmaEval(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -7721,4 +7736,265 @@ async function optimizeStructure(params) {
     changes: changes,
     appliedCount: appliedCount,
   };
+}
+
+// --- create_svg: Create nodes from a complete SVG string ---
+async function createSvg(params) {
+  var svgString = params.svg;
+  var frame = figma.createNodeFromSvg(svgString);
+
+  if (params.name) frame.name = params.name;
+  if (params.x !== undefined) frame.x = params.x;
+  if (params.y !== undefined) frame.y = params.y;
+  if (params.width && params.height) frame.resize(params.width, params.height);
+
+  await appendOrInsertChild(frame, params.parentId, params.insertAt);
+
+  return {
+    id: frame.id,
+    name: frame.name,
+    x: frame.x,
+    y: frame.y,
+    width: frame.width,
+    height: frame.height,
+    childCount: frame.children.length,
+  };
+}
+
+// --- design_query: Query and optionally update nodes matching criteria ---
+async function designQuery(params) {
+  var select = params.select;
+  var update = params.update;
+  var limit = params.limit;
+  var includeProperties = params.includeProperties === true;
+
+  // Determine root
+  var rootNode;
+  if (select.parentId) {
+    rootNode = await figma.getNodeByIdAsync(select.parentId);
+    if (!rootNode) throw new Error("Parent node not found: " + select.parentId);
+  } else {
+    rootNode = figma.currentPage;
+  }
+
+  // Prepare filters
+  var typeFilter = null;
+  if (select.type) {
+    if (Array.isArray(select.type)) {
+      typeFilter = new Set(select.type);
+    } else {
+      typeFilter = new Set([select.type]);
+    }
+  }
+
+  var nameFilter = select.name || null;
+  var nameRegex = null;
+  if (select.nameRegex) {
+    nameRegex = new RegExp(select.nameRegex);
+  }
+
+  var componentFilter = select.component || null;
+  var whereFilter = select.where || null;
+  var maxDepth = select.maxDepth || 100;
+
+  var matches = [];
+  var totalScanned = 0;
+  var startTime = Date.now();
+  var TIMEOUT_MS = 120000;
+
+  async function walkTree(node, depth) {
+    if (depth > maxDepth) return;
+    if (limit && matches.length >= limit) return;
+    if (Date.now() - startTime > TIMEOUT_MS) return;
+
+    totalScanned++;
+
+    // Send progress every 50 nodes
+    if (totalScanned % 50 === 0) {
+      figma.ui.postMessage({
+        type: "command_progress",
+        status: "in_progress",
+        message: "Scanned " + totalScanned + " nodes, " + matches.length + " matches so far...",
+      });
+    }
+
+    // Skip the root node itself (depth 0 is the container)
+    if (depth > 0 || !select.parentId) {
+      var passed = true;
+
+      // Type filter
+      if (passed && typeFilter) {
+        if (!typeFilter.has(node.type)) passed = false;
+      }
+
+      // Name filter (substring)
+      if (passed && nameFilter) {
+        if (!node.name || node.name.indexOf(nameFilter) === -1) passed = false;
+      }
+
+      // Name regex filter
+      if (passed && nameRegex) {
+        if (!node.name || !nameRegex.test(node.name)) passed = false;
+      }
+
+      // Component filter (for INSTANCE nodes only)
+      if (passed && componentFilter) {
+        if (node.type !== "INSTANCE") {
+          passed = false;
+        } else {
+          try {
+            var mainComp = await node.getMainComponentAsync();
+            if (!mainComp || mainComp.name.indexOf(componentFilter) === -1) {
+              passed = false;
+            }
+          } catch (e) {
+            passed = false;
+          }
+        }
+      }
+
+      // Where filter (introspect + match properties)
+      if (passed && whereFilter) {
+        try {
+          var intro = await introspectNode({ nodeId: node.id, maxDepth: 5 });
+          var props = intro.properties;
+          for (var wKey in whereFilter) {
+            if (!whereFilter.hasOwnProperty(wKey)) continue;
+            var expectedVal = whereFilter[wKey];
+            var found = false;
+            for (var pKey in props) {
+              if (!props.hasOwnProperty(pKey)) continue;
+              if (pKey === wKey || pKey.indexOf(wKey) !== -1) {
+                if (props[pKey].value == expectedVal) {
+                  found = true;
+                  break;
+                }
+              }
+            }
+            if (!found) {
+              passed = false;
+              break;
+            }
+          }
+        } catch (e) {
+          passed = false;
+        }
+      }
+
+      if (passed && depth > 0) {
+        if (!limit || matches.length < limit) {
+          matches.push(node);
+        }
+      }
+    }
+
+    // Recurse into children
+    if ("children" in node && node.children) {
+      for (var i = 0; i < node.children.length; i++) {
+        if (limit && matches.length >= limit) break;
+        await walkTree(node.children[i], depth + 1);
+      }
+    }
+  }
+
+  await walkTree(rootNode, 0);
+
+  // Process results
+  var results = [];
+  var updatedCount = 0;
+  var failedCount = 0;
+
+  for (var mi = 0; mi < matches.length; mi++) {
+    var matchNode = matches[mi];
+    var resultEntry = {
+      id: matchNode.id,
+      name: matchNode.name,
+      type: matchNode.type,
+    };
+
+    // Include properties if requested
+    if (includeProperties) {
+      try {
+        var introResult = await introspectNode({ nodeId: matchNode.id, maxDepth: 5 });
+        resultEntry.properties = introResult.properties;
+      } catch (e) {
+        resultEntry.properties = { error: e.message || String(e) };
+      }
+    }
+
+    // Apply updates if provided
+    if (update) {
+      try {
+        var setResult = await setProperties({
+          nodeId: matchNode.id,
+          properties: update,
+        });
+        resultEntry.updateResult = {
+          successCount: setResult.successCount,
+          failureCount: setResult.failureCount,
+        };
+        if (setResult.successCount > 0) updatedCount++;
+        if (setResult.failureCount > 0) failedCount++;
+      } catch (e) {
+        resultEntry.updateResult = {
+          successCount: 0,
+          failureCount: 1,
+          error: e.message || String(e),
+        };
+        failedCount++;
+      }
+    }
+
+    results.push(resultEntry);
+  }
+
+  return {
+    totalScanned: totalScanned,
+    matched: matches.length,
+    updated: update ? updatedCount : undefined,
+    failed: update ? failedCount : undefined,
+    results: results,
+  };
+}
+
+function safeSerialize(value, depth) {
+  if (depth === undefined) depth = 0;
+  if (depth > 20) return "[max depth]";
+  if (value === null || value === undefined) return value;
+  var t = typeof value;
+  if (t === "string" || t === "number" || t === "boolean") return value;
+  // Figma node detection
+  if (value.id && value.type && typeof value.remove === "function") {
+    return { __nodeRef: true, id: value.id, name: value.name, type: value.type };
+  }
+  if (value instanceof Uint8Array) {
+    return { __binary: true, length: value.length };
+  }
+  if (Array.isArray(value)) {
+    return value.map(function(item) { return safeSerialize(item, depth + 1); });
+  }
+  if (t === "object") {
+    var result = {};
+    for (var key in value) {
+      if (value.hasOwnProperty(key)) result[key] = safeSerialize(value[key], depth + 1);
+    }
+    return result;
+  }
+  return String(value);
+}
+
+async function figmaEval(params) {
+  var AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  var fn = new AsyncFunction("figma", "hexToFigmaColor", "appendOrInsertChild",
+    "loadAllFonts", "getVariableByName", "bindVariableToColor",
+    "resolveColorValue", "sendProgressUpdate", "introspectNode", "setProperties",
+    params.code);
+  try {
+    var rawResult = await fn(figma, hexToFigmaColor, appendOrInsertChild,
+      loadAllFonts, getVariableByName, bindVariableToColor,
+      resolveColorValue, sendProgressUpdate, introspectNode, setProperties);
+    return { success: true, result: safeSerialize(rawResult) };
+  } catch (error) {
+    return { success: false, error: error.message || String(error), stack: error.stack || null };
+  }
 }

@@ -140,7 +140,10 @@ export type FigmaCommand =
   | "set_constraints"
   | "set_min_max_size"
   | "set_mask"
-  | "create_component_set";
+  | "create_component_set"
+  | "create_svg"
+  | "design_query"
+  | "figma_eval";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -556,6 +559,33 @@ export type CommandParams = {
   create_component_set: {
     componentIds: string[];
     name?: string;
+  };
+  create_svg: {
+    svg: string;
+    name?: string;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    parentId?: string;
+    insertAt?: number;
+  };
+  design_query: {
+    select: {
+      type?: string | string[];
+      component?: string;
+      name?: string;
+      nameRegex?: string;
+      parentId?: string;
+      where?: Record<string, any>;
+      maxDepth?: number;
+    };
+    update?: Record<string, any>;
+    limit?: number;
+    includeProperties?: boolean;
+  };
+  figma_eval: {
+    code: string;
   };
 };
 

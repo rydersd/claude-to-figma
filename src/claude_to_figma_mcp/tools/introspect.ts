@@ -61,6 +61,50 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
   );
 
   server.tool(
+    "design_query",
+    "Query nodes by type, name, component, or property values — and optionally bulk-update all matches in one call. Replaces the scan → introspect → mutate loop. Use select filters to find nodes, update to apply property changes (same keys as set_properties), and includeProperties to get the introspect output for each match.",
+    {
+      select: z.object({
+        type: z.union([z.string(), z.array(z.string())]).optional().describe("Node type(s) to match, e.g. 'TEXT', 'INSTANCE', ['FRAME', 'COMPONENT']"),
+        component: z.string().optional().describe("Match INSTANCE nodes whose main component name contains this string"),
+        name: z.string().optional().describe("Match nodes whose name contains this substring"),
+        nameRegex: z.string().optional().describe("Match nodes whose name matches this regex"),
+        parentId: z.string().optional().describe("Scope search to descendants of this node"),
+        where: z.record(z.string(), z.any()).optional().describe("Match nodes where introspect property key has this value"),
+        maxDepth: z.number().int().min(1).max(100).optional().describe("Maximum tree depth to search (default 100)"),
+      }).describe("Selection criteria"),
+      update: z.record(z.string(), z.union([z.string(), z.boolean(), z.number()])).optional().describe("Property changes to apply to each match (semantic keys from introspect)"),
+      limit: z.number().int().min(1).optional().describe("Maximum number of nodes to return/update"),
+      includeProperties: z.boolean().optional().describe("Include full introspect property map for each match"),
+    },
+    async ({ select, update, limit, includeProperties }: any) => {
+      try {
+        const result = await sendCommandToFigma("design_query", { select, update, limit, includeProperties }, 120000);
+        const typedResult = result as {
+          totalScanned: number;
+          matched: number;
+          updated?: number;
+          failed?: number;
+          results: Array<{ id: string; name: string; type: string }>;
+        };
+
+        let text = `Scanned ${typedResult.totalScanned} nodes, matched ${typedResult.matched}`;
+        if (typedResult.updated !== undefined) {
+          text += `, updated ${typedResult.updated}`;
+          if (typedResult.failed) text += ` (${typedResult.failed} failed)`;
+        }
+        text += `\n\n${JSON.stringify(typedResult.results)}`;
+
+        return { content: [{ type: "text", text }] };
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `Error in design_query: ${error instanceof Error ? error.message : String(error)}` }],
+        };
+      }
+    }
+  );
+
+  server.tool(
     "optimize_structure",
     "Analyze and optionally restructure a component or frame for more efficient AI manipulation. By default runs in dry-run mode — reports what it would change without applying. Detects wrapper frames (single-child frames with no visual purpose) and proposes flattening, and identifies text nodes that could be renamed with _ prefix for clarity. Use dryRun: false to apply changes.",
     {

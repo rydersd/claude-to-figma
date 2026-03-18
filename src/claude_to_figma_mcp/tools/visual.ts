@@ -160,6 +160,25 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
+  server.tool("create_svg", "Create Figma nodes from a complete SVG string. Handles multi-path SVGs (logos, icons, illustrations) in one call — no need to split paths. Returns a frame containing the parsed SVG elements.", {
+    svg: z.string().describe("Complete SVG markup string (e.g. '<svg ...>...</svg>')"),
+    name: z.string().optional().describe("Name for the created frame"),
+    x: z.number().optional().describe("X position"),
+    y: z.number().optional().describe("Y position"),
+    width: z.number().positive().optional().describe("Target width (must set both width and height to resize)"),
+    height: z.number().positive().optional().describe("Target height (must set both width and height to resize)"),
+    parentId: z.string().optional().describe("Parent node ID"),
+    insertAt: z.number().int().min(0).optional().describe("Index to insert at within parent"),
+  }, async ({ svg, name, x, y, width, height, parentId, insertAt }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_svg", { svg, name, x, y, width, height, parentId, insertAt });
+      const typedResult = result as { id: string; name: string; x: number; y: number; width: number; height: number; childCount: number };
+      return { content: [{ type: "text", text: `Created SVG "${typedResult.name}" (${typedResult.id}) with ${typedResult.childCount} child node(s) at (${typedResult.x}, ${typedResult.y}), size ${typedResult.width}x${typedResult.height}` }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error creating SVG: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+
   server.tool("create_component_set", "Combine multiple component nodes into a component set (variants). Each component becomes a variant. Component names should follow Figma's variant naming convention: 'Property1=Value1, Property2=Value2'. All components must share the same parent.", {
     componentIds: z.array(z.string()).min(2).describe("Array of COMPONENT node IDs to combine. Must be at least 2. Use create_component to convert frames first if needed."),
     name: z.string().optional().describe("Optional name for the component set"),
