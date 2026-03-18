@@ -8076,7 +8076,7 @@ function autoMapProperties(sourceProps, targetProps, strategy) {
     return props[key] ? props[key].type : null;
   }
 
-  // Similarity score between two strings (Jaccard on character bigrams)
+  // Similarity score between two strings (Sørensen-Dice coefficient on character bigrams)
   function similarity(a, b) {
     a = a.toLowerCase();
     b = b.toLowerCase();
@@ -8265,8 +8265,8 @@ async function diffComponents(params) {
   }
 
   return {
-    sourceComponent: sourceResult.name,
-    targetComponent: targetResult.name,
+    sourceComponent: sourceResult.component || sourceResult.name,
+    targetComponent: targetResult.component || targetResult.name,
     mapping: mapping,
     unmappedSource: unmappedSource,
     unmappedTarget: unmappedTarget,
@@ -8428,6 +8428,7 @@ async function migrateInstance(params) {
 
 // --- batchMigrate: Apply migration across entire file ---
 async function batchMigrate(params) {
+  var commandId = params.commandId || generateCommandId();
   var sourceComponentName = params.sourceComponentName;
   var sourceComponentId = params.sourceComponentId;
   var targetComponentId = params.targetComponentId;
@@ -8451,19 +8452,21 @@ async function batchMigrate(params) {
 
     if (node.type === "INSTANCE") {
       var match = false;
-      if (sourceComponentId) {
-        try {
-          var mainComp = await node.getMainComponentAsync();
-          if (mainComp && mainComp.id === sourceComponentId) match = true;
-          if (!match && mainComp && mainComp.parent && mainComp.parent.type === "COMPONENT_SET" && mainComp.parent.id === sourceComponentId) match = true;
-        } catch (e) {}
+      var mainComp = null;
+      try {
+        mainComp = await node.getMainComponentAsync();
+      } catch (e) {
+        console.error("Error checking instance:", e);
       }
-      if (!match && sourceComponentName) {
-        try {
-          var mainComp = await node.getMainComponentAsync();
-          if (mainComp && mainComp.name.indexOf(sourceComponentName) !== -1) match = true;
-          if (!match && mainComp && mainComp.parent && mainComp.parent.type === "COMPONENT_SET" && mainComp.parent.name.indexOf(sourceComponentName) !== -1) match = true;
-        } catch (e) {}
+      if (mainComp) {
+        if (sourceComponentId) {
+          if (mainComp.id === sourceComponentId) match = true;
+          if (!match && mainComp.parent && mainComp.parent.type === "COMPONENT_SET" && mainComp.parent.id === sourceComponentId) match = true;
+        }
+        if (!match && sourceComponentName) {
+          if (mainComp.name.indexOf(sourceComponentName) !== -1) match = true;
+          if (!match && mainComp.parent && mainComp.parent.type === "COMPONENT_SET" && mainComp.parent.name.indexOf(sourceComponentName) !== -1) match = true;
+        }
       }
       if (match) {
         instances.push(node);
@@ -8507,6 +8510,7 @@ async function batchMigrate(params) {
     try {
       if (typeof sendProgressUpdate === "function") {
         sendProgressUpdate(
+          commandId,
           "batch_migrate",
           "in_progress",
           Math.round((i / instances.length) * 100),
