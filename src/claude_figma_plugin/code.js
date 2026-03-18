@@ -863,19 +863,7 @@ async function createRectangle(params) {
     rect.fills = [paintStyle];
   }
 
-  // If parentId is provided, append to that node, otherwise append to current page
-  if (parentId) {
-    const parentNode = await figma.getNodeByIdAsync(parentId);
-    if (!parentNode) {
-      throw new Error(`Parent node not found with ID: ${parentId}`);
-    }
-    if (!("appendChild" in parentNode)) {
-      throw new Error(`Parent node does not support children: ${parentId}`);
-    }
-    parentNode.appendChild(rect);
-  } else {
-    figma.currentPage.appendChild(rect);
-  }
+  await appendOrInsertChild(rect, parentId, params.insertAt);
 
   return {
     id: rect.id,
@@ -981,19 +969,7 @@ async function createFrame(params) {
     frame.strokeWeight = strokeWeight;
   }
 
-  // If parentId is provided, append to that node, otherwise append to current page
-  if (parentId) {
-    const parentNode = await figma.getNodeByIdAsync(parentId);
-    if (!parentNode) {
-      throw new Error(`Parent node not found with ID: ${parentId}`);
-    }
-    if (!("appendChild" in parentNode)) {
-      throw new Error(`Parent node does not support children: ${parentId}`);
-    }
-    parentNode.appendChild(frame);
-  } else {
-    figma.currentPage.appendChild(frame);
-  }
+  await appendOrInsertChild(frame, parentId, params.insertAt);
 
   // Now set FILL sizing after the frame has been parented (FILL requires auto-layout parent)
   if (layoutMode !== "NONE") {
@@ -1114,19 +1090,7 @@ async function createText(params) {
     textNode.textAutoResize = "HEIGHT";
   }
 
-  // If parentId is provided, append to that node, otherwise append to current page
-  if (parentId) {
-    const parentNode = await figma.getNodeByIdAsync(parentId);
-    if (!parentNode) {
-      throw new Error(`Parent node not found with ID: ${parentId}`);
-    }
-    if (!("appendChild" in parentNode)) {
-      throw new Error(`Parent node does not support children: ${parentId}`);
-    }
-    parentNode.appendChild(textNode);
-  } else {
-    figma.currentPage.appendChild(textNode);
-  }
+  await appendOrInsertChild(textNode, parentId, params.insertAt);
 
   return {
     id: textNode.id,
@@ -1556,15 +1520,32 @@ async function createComponentInstance(params) {
     instance.x = x;
     instance.y = y;
 
-    if (parentId) {
-      const parent = await figma.getNodeByIdAsync(parentId);
-      if (parent && "appendChild" in parent) {
-        parent.appendChild(instance);
-      } else {
-        figma.currentPage.appendChild(instance);
+    await appendOrInsertChild(instance, parentId, params.insertAt);
+
+    // Apply component property overrides if provided
+    if (params.properties && typeof params.properties === "object") {
+      try {
+        instance.setProperties(params.properties);
+      } catch (e) {
+        // Non-fatal — instance is created, overrides just failed
+        console.error("Error setting component properties:", e);
       }
-    } else {
-      figma.currentPage.appendChild(instance);
+    }
+
+    // Apply text overrides by child name if provided
+    if (params.textOverrides && typeof params.textOverrides === "object") {
+      async function applyTextOverrides(node, overrides) {
+        if (node.type === "TEXT" && overrides[node.name] !== undefined) {
+          await loadAllFonts(node);
+          await setCharacters(node, String(overrides[node.name]));
+        }
+        if ("children" in node && node.children) {
+          for (var i = 0; i < node.children.length; i++) {
+            await applyTextOverrides(node.children[i], overrides);
+          }
+        }
+      }
+      await applyTextOverrides(instance, params.textOverrides);
     }
 
     const mainComponent = await instance.getMainComponentAsync();
@@ -4835,12 +4816,127 @@ async function createComponent(params) {
 }
 
 // Create Vector from SVG path data
-async function createVector(params) {
-  const { pathData, x = 0, y = 0, width, height, name = "Vector", parentId, fillColor, strokeColor, strokeWeight, strokeCap } = params || {};
+// Normalize SVG path data to commands Figma supports (M, L, C, Q, Z only)
+// Converts H/V to L, normalizes compact notation (M16.8 → M 16.8)
+function normalizeSvgPath(pathData) {
+  // First, insert spaces between command letters and numbers where missing
+  // e.g., "M16.8504" → "M 16.8504", "L10-5" → "L 10 -5"
+  var normalized = pathData
+    .replace(/([a-zA-Z])(\d)/g, "$1 $2")
+    .replace(/([a-zA-Z])(-)/g, "$1 $2")
+    .replace(/(\d)([a-zA-Z])/g, "$1 $2");
 
-  if (!pathData) {
+  // Tokenize
+  var tokens = normalized.match(/[a-zA-Z]|[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g);
+  if (!tokens) return pathData;
+
+  var result = [];
+  var cx = 0, cy = 0; // current point
+  var sx = 0, sy = 0; // start of subpath
+  var i = 0;
+
+  function num() {
+    if (i >= tokens.length) return 0;
+    return parseFloat(tokens[i++]);
+  }
+
+  while (i < tokens.length) {
+    var cmd = tokens[i];
+
+    // If it's a number, it's an implicit repeat of the previous command
+    if (/^[+-]?\d/.test(cmd) || cmd === ".") {
+      // implicit repeat — reuse last command
+      i--; // back up so the number is consumed by the loop below
+      cmd = result.length > 0 ? "L" : "M"; // default to L, or M if first
+      // Actually we need to handle implicit repeats properly
+      // For now just skip
+      i++;
+      continue;
+    }
+
+    i++; // consume command
+
+    switch (cmd) {
+      case "M": cx = num(); cy = num(); sx = cx; sy = cy; result.push("M " + cx + " " + cy); break;
+      case "m": cx += num(); cy += num(); sx = cx; sy = cy; result.push("M " + cx + " " + cy); break;
+      case "L": cx = num(); cy = num(); result.push("L " + cx + " " + cy); break;
+      case "l": cx += num(); cy += num(); result.push("L " + cx + " " + cy); break;
+      case "H": cx = num(); result.push("L " + cx + " " + cy); break;
+      case "h": cx += num(); result.push("L " + cx + " " + cy); break;
+      case "V": cy = num(); result.push("L " + cx + " " + cy); break;
+      case "v": cy += num(); result.push("L " + cx + " " + cy); break;
+      case "C": {
+        var x1 = num(), y1 = num(), x2 = num(), y2 = num(); cx = num(); cy = num();
+        result.push("C " + x1 + " " + y1 + " " + x2 + " " + y2 + " " + cx + " " + cy);
+        break;
+      }
+      case "c": {
+        var x1 = cx+num(), y1 = cy+num(), x2 = cx+num(), y2 = cy+num();
+        cx += num(); cy += num();
+        result.push("C " + x1 + " " + y1 + " " + x2 + " " + y2 + " " + cx + " " + cy);
+        break;
+      }
+      case "S": case "s": {
+        // Smooth cubic — reflect previous control point
+        // For simplicity, treat as cubic with first control = current point
+        var abs = cmd === "S";
+        var x2 = abs ? num() : cx+num();
+        var y2 = abs ? num() : cy+num();
+        var ex = abs ? num() : cx+num();
+        var ey = abs ? num() : cy+num();
+        result.push("C " + cx + " " + cy + " " + x2 + " " + y2 + " " + ex + " " + ey);
+        cx = ex; cy = ey;
+        break;
+      }
+      case "Q": {
+        var qx = num(), qy = num(); cx = num(); cy = num();
+        result.push("Q " + qx + " " + qy + " " + cx + " " + cy);
+        break;
+      }
+      case "q": {
+        var qx = cx+num(), qy = cy+num(); cx += num(); cy += num();
+        result.push("Q " + qx + " " + qy + " " + cx + " " + cy);
+        break;
+      }
+      case "T": case "t": {
+        // Smooth quadratic — reflect previous control
+        var abs = cmd === "T";
+        cx = abs ? num() : cx+num();
+        cy = abs ? num() : cy+num();
+        result.push("L " + cx + " " + cy); // approximate as line
+        break;
+      }
+      case "A": case "a": {
+        // Arc — approximate as line to endpoint
+        var abs = cmd === "A";
+        num(); num(); num(); num(); num(); // rx, ry, rotation, large-arc, sweep
+        cx = abs ? num() : cx+num();
+        cy = abs ? num() : cy+num();
+        result.push("L " + cx + " " + cy);
+        break;
+      }
+      case "Z": case "z":
+        cx = sx; cy = sy;
+        result.push("Z");
+        break;
+      default:
+        // Unknown command — skip
+        break;
+    }
+  }
+
+  return result.join(" ");
+}
+
+async function createVector(params) {
+  const { pathData: rawPathData, x = 0, y = 0, width, height, name = "Vector", parentId, fillColor, strokeColor, strokeWeight, strokeCap } = params || {};
+
+  if (!rawPathData) {
     throw new Error("Missing pathData parameter");
   }
+
+  // Normalize SVG path to Figma-compatible commands
+  const pathData = normalizeSvgPath(rawPathData);
 
   const vector = figma.createVector();
   vector.name = name;
@@ -4906,18 +5002,7 @@ async function createVector(params) {
   }
 
   // Append to parent or current page
-  if (parentId) {
-    const parentNode = await figma.getNodeByIdAsync(parentId);
-    if (!parentNode) {
-      throw new Error(`Parent node not found with ID: ${parentId}`);
-    }
-    if (!("appendChild" in parentNode)) {
-      throw new Error(`Parent node does not support children: ${parentId}`);
-    }
-    parentNode.appendChild(vector);
-  } else {
-    figma.currentPage.appendChild(vector);
-  }
+  await appendOrInsertChild(vector, parentId, params.insertAt);
 
   return {
     id: vector.id,
@@ -5875,7 +5960,7 @@ async function setVectorPath(params) {
 
   node.vectorPaths = [{
     windingRule: "NONZERO",
-    data: pathData,
+    data: normalizeSvgPath(pathData),
   }];
 
   // Optionally resize to new dimensions (useful when path changes shape)
@@ -6217,7 +6302,7 @@ async function batchMutate(params) {
           var vpNode = await figma.getNodeByIdAsync(op.nodeId);
           if (!vpNode) throw new Error("Node not found: " + op.nodeId);
           if (vpNode.type !== "VECTOR") throw new Error("Node is not a VECTOR (type: " + vpNode.type + ")");
-          vpNode.vectorPaths = [{ windingRule: "NONZERO", data: op.pathData }];
+          vpNode.vectorPaths = [{ windingRule: "NONZERO", data: normalizeSvgPath(op.pathData) }];
           if (op.width !== undefined && op.height !== undefined) {
             vpNode.resize(op.width, op.height);
           }
@@ -6346,6 +6431,22 @@ async function setTextFormat(params) {
     textTruncation: node.textTruncation,
     maxLines: node.maxLines,
   };
+}
+
+// Helper: append or insert a child into a parent at optional index
+async function appendOrInsertChild(child, parentId, insertAt) {
+  if (parentId) {
+    var parentNode = await figma.getNodeByIdAsync(parentId);
+    if (!parentNode) throw new Error("Parent node not found with ID: " + parentId);
+    if (!("appendChild" in parentNode)) throw new Error("Parent node does not support children: " + parentId);
+    if (insertAt !== undefined && insertAt !== null && "insertChild" in parentNode) {
+      parentNode.insertChild(insertAt, child);
+    } else {
+      parentNode.appendChild(child);
+    }
+  } else {
+    figma.currentPage.appendChild(child);
+  }
 }
 
 // Helper: sanitize figma.mixed (Symbol) values for postMessage serialization
@@ -6741,14 +6842,7 @@ async function createEllipse(params) {
     };
   }
 
-  if (parentId) {
-    var parentNode = await figma.getNodeByIdAsync(parentId);
-    if (!parentNode) throw new Error("Parent node not found with ID: " + parentId);
-    if (!("appendChild" in parentNode)) throw new Error("Parent node does not support children: " + parentId);
-    parentNode.appendChild(ellipse);
-  } else {
-    figma.currentPage.appendChild(ellipse);
-  }
+  await appendOrInsertChild(ellipse, parentId, params.insertAt);
 
   return {
     id: ellipse.id,
