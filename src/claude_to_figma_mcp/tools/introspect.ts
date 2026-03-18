@@ -72,7 +72,10 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
         parentId: z.string().optional().describe("Scope search to descendants of this node"),
         where: z.record(z.string(), z.any()).optional().describe("Match nodes where introspect property key has this value"),
         maxDepth: z.number().int().min(1).max(100).optional().describe("Maximum tree depth to search (default 100)"),
-      }).describe("Selection criteria"),
+      }).refine(
+        (s) => s.type || s.component || s.name || s.nameRegex || s.parentId || s.where,
+        { message: "At least one selection filter (type, component, name, nameRegex, parentId, or where) is required" }
+      ).describe("Selection criteria"),
       update: z.record(z.string(), z.union([z.string(), z.boolean(), z.number()])).optional().describe("Property changes to apply to each match (semantic keys from introspect)"),
       limit: z.number().int().min(1).optional().describe("Maximum number of nodes to return/update"),
       includeProperties: z.boolean().optional().describe("Include full introspect property map for each match"),

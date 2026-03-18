@@ -7790,12 +7790,20 @@ async function designQuery(params) {
   var nameFilter = select.name || null;
   var nameRegex = null;
   if (select.nameRegex) {
-    nameRegex = new RegExp(select.nameRegex);
+    try {
+      nameRegex = new RegExp(select.nameRegex);
+    } catch (e) {
+      throw new Error("Invalid regex pattern: " + e.message);
+    }
   }
 
   var componentFilter = select.component || null;
   var whereFilter = select.where || null;
   var maxDepth = select.maxDepth || 100;
+
+  if (!typeFilter && !nameFilter && !nameRegex && !componentFilter && !whereFilter && !select.parentId) {
+    throw new Error("At least one selection filter is required to prevent unintended bulk operations");
+  }
 
   var matches = [];
   var totalScanned = 0;
@@ -7816,6 +7824,7 @@ async function designQuery(params) {
         status: "in_progress",
         message: "Scanned " + totalScanned + " nodes, " + matches.length + " matches so far...",
       });
+      await new Promise(function(r) { setTimeout(r, 0); });
     }
 
     // Skip the root node itself (depth 0 is the container)
@@ -7865,7 +7874,7 @@ async function designQuery(params) {
             for (var pKey in props) {
               if (!props.hasOwnProperty(pKey)) continue;
               if (pKey === wKey || pKey.indexOf(wKey) !== -1) {
-                if (props[pKey].value == expectedVal) {
+                if (props[pKey].value === expectedVal) {
                   found = true;
                   break;
                 }
@@ -7995,6 +8004,6 @@ async function figmaEval(params) {
       resolveColorValue, sendProgressUpdate, introspectNode, setProperties);
     return { success: true, result: safeSerialize(rawResult) };
   } catch (error) {
-    return { success: false, error: error.message || String(error), stack: error.stack || null };
+    return { success: false, error: error.message || String(error) };
   }
 }
