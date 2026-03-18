@@ -460,6 +460,102 @@ This strategy enables transferring content and property overrides from a source 
     }
   );
 
+  // Component Migration Strategy Prompt
+  server.prompt(
+    "component_migration_strategy",
+    "Strategy for migrating component instances when design system components are updated",
+    (extra) => {
+      return {
+        messages: [
+          {
+            role: "assistant",
+            content: {
+              type: "text",
+              text: `# Component Migration Strategy
+
+## Overview
+When design system components are updated (structural changes, renamed layers, new properties, variable restructuring), Figma's native update propagation often breaks overrides. This strategy uses AI-driven migration to intelligently swap instances while preserving customizations.
+
+## 6-Step Migration Workflow
+
+### 1. Understand — Identify old and new components
+\`\`\`
+get_local_components()
+\`\`\`
+- Identify the old component (source) and new component (target)
+- Note their node IDs for the next steps
+
+### 2. Diff — Compare component versions
+\`\`\`
+diff_components(sourceId: "old-component-id", targetId: "new-component-id")
+\`\`\`
+- Review the mapping: check confidence scores and match types
+- Look at unmappedSource (properties that will be lost) and unmappedTarget (new properties)
+- If the auto-mapping is wrong, re-run with manualMappings to correct specific entries
+- Pay attention to structural changes (depth, wrapper frames)
+
+### 3. Test — Preview migration on a single instance
+\`\`\`
+migrate_instance(
+  instanceId: "one-instance-id",
+  targetComponentId: "new-component-id",
+  propertyMapping: { ...mapping from step 2... },
+  dryRun: true
+)
+\`\`\`
+- Review overridesToApply to confirm correct values will be transferred
+- Check unmappedKeys for any overrides that will be lost
+
+### 4. Apply One — Migrate a single instance and verify
+\`\`\`
+migrate_instance(
+  instanceId: "one-instance-id",
+  targetComponentId: "new-component-id",
+  propertyMapping: { ...mapping from step 2... }
+)
+\`\`\`
+- Verify visually: \`export_node_as_image(nodeId: "migrated-instance-id")\`
+- Check that text, colors, visibility, and nested instances transferred correctly
+
+### 5. Batch Preview — Review full migration scope
+\`\`\`
+batch_migrate(
+  sourceComponentName: "OldButton",
+  targetComponentId: "new-component-id",
+  propertyMapping: { ...mapping... },
+  dryRun: true
+)
+\`\`\`
+- Review total instance count
+- Use parentId to scope to specific frames if needed
+- Use limit to migrate in smaller batches for large files
+
+### 6. Batch Apply — Migrate all instances
+\`\`\`
+batch_migrate(
+  sourceComponentName: "OldButton",
+  targetComponentId: "new-component-id",
+  propertyMapping: { ...mapping... }
+)
+\`\`\`
+- Verify a sample with \`export_node_as_image\` on a few migrated instances
+- Check for any failures in the results
+
+## Key Considerations
+
+- **Variable bindings**: introspect now reports \`boundVariableName\` (e.g., "Colors/Primary") — use this to verify token bindings are preserved
+- **Nested instances**: Instances inside other instances use swapComponent instead of delete+create — overrides are applied the same way
+- **Confidence scores**: Mappings below 0.6 confidence should be reviewed manually
+- **Component properties**: Properties exposed on the component API (booleans, text, instance swaps) are mapped through the same system
+- **Partial migration**: Use limit + parentId for incremental migration across large files`,
+            },
+          },
+        ],
+        description: "Strategy for migrating component instances when design system components are updated",
+      };
+    }
+  );
+
   // Strategy for converting Figma prototype reactions to connector lines
   server.prompt(
     "reaction_to_connector_strategy",
