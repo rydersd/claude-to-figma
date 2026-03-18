@@ -6,10 +6,11 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
   server.tool("set_layout_mode", "Set the layout mode and wrap behavior of a frame in Figma", {
     nodeId: z.string().describe("The ID of the frame to modify"),
     layoutMode: z.enum(["NONE", "HORIZONTAL", "VERTICAL"]).describe("Layout mode for the frame"),
-    layoutWrap: z.enum(["NO_WRAP", "WRAP"]).optional().describe("Whether the auto-layout frame wraps its children")
-  }, async ({ nodeId, layoutMode, layoutWrap }: any) => {
+    layoutWrap: z.enum(["NO_WRAP", "WRAP"]).optional().describe("Whether the auto-layout frame wraps its children"),
+    itemReverseZIndex: z.boolean().optional().describe("Override first-on-top stacking. When true, first child renders on top in auto-layout frames.")
+  }, async ({ nodeId, layoutMode, layoutWrap, itemReverseZIndex }: any) => {
     try {
-      const result = await sendCommandToFigma("set_layout_mode", { nodeId, layoutMode, layoutWrap: layoutWrap || "NO_WRAP" });
+      const result = await sendCommandToFigma("set_layout_mode", { nodeId, layoutMode, layoutWrap: layoutWrap || "NO_WRAP", itemReverseZIndex });
       const typedResult = result as { name: string };
       return { content: [{ type: "text", text: `Set layout mode of frame "${typedResult.name}" to ${layoutMode}${layoutWrap ? ` with ${layoutWrap}` : ''}` }] };
     } catch (error) {

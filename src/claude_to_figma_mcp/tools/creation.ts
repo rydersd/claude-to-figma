@@ -57,9 +57,10 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       counterAxisAlignItems: z.enum(["MIN", "MAX", "CENTER", "BASELINE"]).optional().describe("Counter axis alignment for auto-layout frame"),
       layoutSizingHorizontal: z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Horizontal sizing mode for auto-layout frame"),
       layoutSizingVertical: z.enum(["FIXED", "HUG", "FILL"]).optional().describe("Vertical sizing mode for auto-layout frame"),
-      itemSpacing: z.number().optional().describe("Distance between children in auto-layout frame. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN.")
+      itemSpacing: z.number().optional().describe("Distance between children in auto-layout frame. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN."),
+      itemReverseZIndex: z.boolean().optional().describe("Override first-on-top stacking. When true, first child renders on top in auto-layout frames.")
     },
-    async ({ x, y, width, height, name, parentId, fillColor, strokeColor, strokeWeight, layoutMode, layoutWrap, paddingTop, paddingRight, paddingBottom, paddingLeft, primaryAxisAlignItems, counterAxisAlignItems, layoutSizingHorizontal, layoutSizingVertical, itemSpacing }: any) => {
+    async ({ x, y, width, height, name, parentId, fillColor, strokeColor, strokeWeight, layoutMode, layoutWrap, paddingTop, paddingRight, paddingBottom, paddingLeft, primaryAxisAlignItems, counterAxisAlignItems, layoutSizingHorizontal, layoutSizingVertical, itemSpacing, itemReverseZIndex }: any) => {
       try {
         const result = await sendCommandToFigma("create_frame", {
           x, y, width, height, name: name || "Frame", parentId,
@@ -67,7 +68,8 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
           strokeColor, strokeWeight, layoutMode, layoutWrap,
           paddingTop, paddingRight, paddingBottom, paddingLeft,
           primaryAxisAlignItems, counterAxisAlignItems,
-          layoutSizingHorizontal, layoutSizingVertical, itemSpacing
+          layoutSizingHorizontal, layoutSizingVertical, itemSpacing,
+          itemReverseZIndex
         });
         const typedResult = result as { name: string; id: string };
         return { content: [{ type: "text", text: `Created frame "${typedResult.name}" with ID: ${typedResult.id}. Use the ID as the parentId to appendChild inside this frame.` }] };
