@@ -80,6 +80,12 @@ bun socket
 3. Select the `src/claude_figma_plugin/manifest.json` file
 4. The plugin should now be available in your Figma development plugins
 
+The plugin includes a **Settings tab** with:
+- **First on top**: When enabled, new auto-layout frames default to first-child-on-top stacking (`itemReverseZIndex`)
+- **Auto-connect**: Automatically connects to the WebSocket server when the plugin launches
+
+Settings persist across sessions via Figma's client storage.
+
 ## Windows + WSL Guide
 
 1. Install bun via powershell
@@ -161,6 +167,7 @@ The MCP server provides the following tools for interacting with Figma:
 - `create_vector` - Places a vector node from an SVG path string at (x, y) with given size and optional fill color
 - `create_ellipse` - Places an ellipse (circle or oval) at (x, y) with given size, optional fill color, and arc data for arcs/donuts
 - `create_node_tree` - Builds an entire node hierarchy from a JSON spec in one round-trip — supports nested frames, `$repeat` for data-driven repetition, `$var:` for Figma variable binding, and hex color shorthand
+- `create_svg` - Creates Figma nodes from a complete SVG markup string (logos, icons, illustrations) in one call — handles multi-path SVGs without splitting, returns a frame containing the parsed elements
 
 ### Text
 
@@ -224,6 +231,12 @@ The MCP server provides the following tools for interacting with Figma:
 - `set_component_properties` - Sets exposed component properties (text, boolean, instance swap, variant) on an instance using key#id pairs
 - `create_component_set` - Combines multiple component nodes into a variant set — each component becomes a variant with names following Figma's 'Property=Value' convention
 
+### Component Migration
+
+- `diff_components` - Compares two components (old vs new) and produces a semantic property mapping with structural diff using a 4-pass matching algorithm
+- `migrate_instance` - Migrates a single component instance to a new component while preserving overrides, with optional dry-run preview
+- `batch_migrate` - Migrates all instances of a source component to a target component across the file or within a subtree, with optional dry-run and scope limiting
+
 ### Component Introspection & AI Manipulation
 
 - `introspect` - Returns a flat property map of every editable surface in a component or frame — text nodes, fill/stroke colors, instance variants, visibility toggles, and component properties — keyed by semantic path (e.g. `badge.text`, `header.fill`). Also reports tree depth, wrapper frame count, and name collisions.
@@ -252,6 +265,11 @@ The MCP server provides the following tools for interacting with Figma:
 - `scan_node_styles` - Walks a frame tree and returns fill, stroke, font, layout, corner-radius, and component data for every descendant — includes a `boundVariable` flag on each color for detecting hardcoded vs token-bound values
 - `screenshot_region` - Captures a PNG screenshot of a rectangular canvas region at optional scale
 
+### Query & Eval
+
+- `design_query` - Query nodes by type, name, component, or property values and optionally bulk-update all matches in one call — replaces the scan-introspect-mutate loop with selection filters, optional property updates, and optional introspect output per match
+- `figma_eval` - **WARNING: Executes arbitrary JavaScript in the Figma plugin sandbox.** Can read, modify, or delete any nodes in the document. Code runs as the body of an async function with access to `figma`, `hexToFigmaColor`, `introspectNode`, and other helpers — use `return` for results
+
 ### Export
 
 - `export_node_as_image` - Exports a node as PNG, JPG, SVG, or PDF at optional scale, returning base64-encoded image data
@@ -269,6 +287,7 @@ The MCP server includes several helper prompts to guide you through complex desi
 - `text_replacement_strategy` - Systematic approach for replacing text in Figma designs
 - `annotation_conversion_strategy` - Strategy for converting manual annotations to Figma's native annotations
 - `swap_overrides_instances` - Strategy for transferring overrides between component instances in Figma
+- `component_migration_strategy` - Strategy for migrating component instances when design system components are updated, using the diff-test-apply workflow
 - `reaction_to_connector_strategy` - Strategy for converting Figma prototype reactions to connector lines using the output of 'get_reactions', and guiding the use 'create_connections' in sequence
 
 ## Development
@@ -321,6 +340,10 @@ When working with the Figma MCP:
     - Call `introspect` first to discover all editable properties in one round-trip
     - Use `set_properties` with the returned property map to make multiple changes at once
     - Run `optimize_structure` in dry-run mode to identify structural inefficiencies before applying
+13. For component migration during design system updates:
+    - Use `diff_components` to compare old and new component structures
+    - Preview changes with `migrate_instance` in dry-run mode
+    - Apply bulk migrations with `batch_migrate` after verification
 
 ## License
 

@@ -22,7 +22,7 @@ bun run build            # Build MCP server (tsup → dist/)
 bun run dev              # Build in watch mode
 bun socket               # Start WebSocket relay server (port 3055)
 bun run start            # Run built MCP server
-bun setup                # Full setup (install + write .cursor/mcp.json + .mcp.json)
+bun setup                # Full setup (install + write .mcp.json)
 ```
 
 There is no test suite or linter configured.
@@ -30,13 +30,13 @@ There is no test suite or linter configured.
 ## Architecture
 
 ### MCP Server (`src/claude_to_figma_mcp/server.ts`)
-The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 50+ tools (create shapes, modify text, manage layouts, export images, etc.) and several AI prompts (design strategies). Communicates with Claude Code over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds.
+The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 90+ tools (create shapes, modify text, manage layouts, export images, component migration, design queries, etc.) and several AI prompts (design strategies). Communicates with Claude Code over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds.
 
 ### WebSocket Relay (`src/socket.ts`)
 Lightweight Bun WebSocket server on port 3055 (configurable via `PORT` env). Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
 
 ### Figma Plugin (`src/claude_figma_plugin/`)
-Runs inside Figma. `code.js` is the plugin main thread handling 30+ commands via a dispatcher. `ui.html` is the plugin UI for WebSocket connection management. `manifest.json` declares permissions (dynamic-page access, localhost network). The plugin is **not built/bundled** — `code.js` is written directly as the runtime artifact.
+Runs inside Figma. `code.js` is the plugin main thread handling 80+ commands via a dispatcher. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares permissions (dynamic-page access, localhost network). The plugin is **not built/bundled** — `code.js` is written directly as the runtime artifact.
 
 ## Key Patterns
 
