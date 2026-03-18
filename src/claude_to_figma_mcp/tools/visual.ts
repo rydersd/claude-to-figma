@@ -145,4 +145,33 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       return { content: [{ type: "text", text: `Error setting min/max size: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
+
+  server.tool("set_mask", "Set a node as a mask layer — it clips subsequent siblings to its shape. Optionally group the mask with specified sibling nodes first (best practice to contain the mask effect).", {
+    nodeId: z.string().describe("The ID of the node to use as a mask (typically a shape like rectangle, ellipse, or vector)"),
+    isMask: z.boolean().optional().describe("Whether to enable (true, default) or disable (false) masking"),
+    groupWithIds: z.array(z.string()).optional().describe("Optional array of sibling node IDs to group with the mask node before applying. Groups the mask + siblings so the mask effect is contained."),
+    groupName: z.string().optional().describe("Optional name for the created group"),
+  }, async ({ nodeId, isMask, groupWithIds, groupName }: any) => {
+    try {
+      const result = await sendCommandToFigma("set_mask", { nodeId, isMask, groupWithIds, groupName });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error setting mask: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+
+  server.tool("create_component_set", "Combine multiple component nodes into a component set (variants). Each component becomes a variant. Component names should follow Figma's variant naming convention: 'Property1=Value1, Property2=Value2'. All components must share the same parent.", {
+    componentIds: z.array(z.string()).min(2).describe("Array of COMPONENT node IDs to combine. Must be at least 2. Use create_component to convert frames first if needed."),
+    name: z.string().optional().describe("Optional name for the component set"),
+  }, async ({ componentIds, name }: any) => {
+    try {
+      const result = await sendCommandToFigma("create_component_set", { componentIds, name });
+      const typedResult = result as { id: string; name: string; variantCount: number; variants: Array<{ id: string; name: string }> };
+      let text = `Created component set "${typedResult.name}" with ${typedResult.variantCount} variants:\n`;
+      text += typedResult.variants.map((v: any) => `- ${v.name} (${v.id})`).join("\n");
+      return { content: [{ type: "text", text }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error creating component set: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
 }

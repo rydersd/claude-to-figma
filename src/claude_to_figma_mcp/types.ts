@@ -138,7 +138,9 @@ export type FigmaCommand =
   | "set_rotation"
   | "create_ellipse"
   | "set_constraints"
-  | "set_min_max_size";
+  | "set_min_max_size"
+  | "set_mask"
+  | "create_component_set";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -544,6 +546,16 @@ export type CommandParams = {
     maxWidth?: number | null;
     minHeight?: number | null;
     maxHeight?: number | null;
+  };
+  set_mask: {
+    nodeId: string;
+    isMask?: boolean;
+    groupWithIds?: string[];
+    groupName?: string;
+  };
+  create_component_set: {
+    componentIds: string[];
+    name?: string;
   };
 };
 

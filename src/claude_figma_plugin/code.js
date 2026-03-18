@@ -386,6 +386,16 @@ async function handleCommand(command, params) {
         throw new Error("Missing required parameter: nodeId");
       }
       return await setMinMaxSize(params);
+    case "set_mask":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setMask(params);
+    case "create_component_set":
+      if (!params || !params.componentIds || !Array.isArray(params.componentIds)) {
+        throw new Error("Missing required parameter: componentIds array");
+      }
+      return await createComponentSet(params);
     case "scan_node_styles":
       if (!params || !params.nodeId) {
         throw new Error("Missing required parameter: nodeId");
@@ -6788,6 +6798,106 @@ async function setMinMaxSize(params) {
     maxWidth: node.maxWidth,
     minHeight: node.minHeight,
     maxHeight: node.maxHeight,
+  };
+}
+
+// --- set_mask: Set a node as a mask for its siblings ---
+async function setMask(params) {
+  var nodeId = params.nodeId;
+  var isMask = params.isMask !== false; // default true
+
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("isMask" in node)) throw new Error("Node does not support isMask (type: " + node.type + ")");
+
+  // If enabling mask and shouldGroup is requested, group the mask with its siblings
+  if (isMask && params.groupWithIds && Array.isArray(params.groupWithIds)) {
+    var siblings = [node];
+    for (var i = 0; i < params.groupWithIds.length; i++) {
+      var sibling = await figma.getNodeByIdAsync(params.groupWithIds[i]);
+      if (sibling) siblings.push(sibling);
+    }
+    if (siblings.length > 1) {
+      var group = figma.group(siblings, node.parent);
+      if (params.groupName) group.name = params.groupName;
+      // The mask node is now inside the group — set isMask on it
+      // After grouping, node reference may be stale, refetch
+      var maskNode = await figma.getNodeByIdAsync(nodeId);
+      if (maskNode && "isMask" in maskNode) {
+        maskNode.isMask = true;
+      }
+      return {
+        maskNodeId: nodeId,
+        isMask: true,
+        groupId: group.id,
+        groupName: group.name,
+        childCount: group.children.length,
+      };
+    }
+  }
+
+  node.isMask = isMask;
+
+  return {
+    id: node.id,
+    name: node.name,
+    isMask: node.isMask,
+  };
+}
+
+// --- create_component_set: Combine components into a variant set ---
+async function createComponentSet(params) {
+  var componentIds = params.componentIds;
+  var name = params.name;
+
+  // Fetch all component nodes
+  var components = [];
+  for (var i = 0; i < componentIds.length; i++) {
+    var comp = await figma.getNodeByIdAsync(componentIds[i]);
+    if (!comp) throw new Error("Component not found with ID: " + componentIds[i]);
+    if (comp.type !== "COMPONENT") throw new Error("Node " + componentIds[i] + " is not a COMPONENT (type: " + comp.type + "). Convert frames to components first with create_component.");
+    components.push(comp);
+  }
+
+  if (components.length < 2) {
+    throw new Error("Need at least 2 components to create a component set. Got " + components.length);
+  }
+
+  // All components must share the same parent
+  var parent = components[0].parent;
+  for (var i = 1; i < components.length; i++) {
+    if (components[i].parent !== parent) {
+      throw new Error("All components must share the same parent. Component " + components[i].id + " has a different parent.");
+    }
+  }
+
+  // Combine into variants
+  var componentSet = figma.combineAsVariants(components, parent);
+
+  if (name) {
+    componentSet.name = name;
+  }
+
+  // Collect variant info
+  var variants = [];
+  for (var i = 0; i < componentSet.children.length; i++) {
+    var child = componentSet.children[i];
+    if (child.type === "COMPONENT") {
+      variants.push({
+        id: child.id,
+        name: child.name,
+      });
+    }
+  }
+
+  return {
+    id: componentSet.id,
+    name: componentSet.name,
+    type: "COMPONENT_SET",
+    variantCount: variants.length,
+    variants: variants,
+    width: componentSet.width,
+    height: componentSet.height,
   };
 }
 

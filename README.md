@@ -195,6 +195,7 @@ The MCP server provides the following tools for interacting with Figma:
 - `set_opacity` - Sets node opacity (0 = transparent, 1 = opaque)
 - `set_blend_mode` - Sets the blend mode of a node (NORMAL, MULTIPLY, SCREEN, OVERLAY, etc.)
 - `set_rotation` - Sets the rotation of a node in degrees (-180 to 180)
+- `set_mask` - Sets a node as a mask layer that clips subsequent siblings to its shape, with optional grouping to contain the effect
 
 ### Layout & Organization
 
@@ -221,6 +222,7 @@ The MCP server provides the following tools for interacting with Figma:
 - `set_instance_overrides` - Applies a source instance's overrides to one or more target instances, swapping them to match
 - `swap_instance_variant` - Swaps a component instance to a different component or variant while preserving compatible overrides
 - `set_component_properties` - Sets exposed component properties (text, boolean, instance swap, variant) on an instance using key#id pairs
+- `create_component_set` - Combines multiple component nodes into a variant set — each component becomes a variant with names following Figma's 'Property=Value' convention
 
 ### Component Introspection & AI Manipulation
 
