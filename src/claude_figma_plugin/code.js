@@ -4,6 +4,8 @@
 // Plugin state
 const state = {
   serverPort: 3055, // Default port
+  firstOnTop: true, // Default auto-layout stacking: first child on top
+  autoConnect: true, // Auto-connect on plugin launch
 };
 
 
@@ -92,7 +94,9 @@ figma.ui.onmessage = async (msg) => {
 
 // Listen for plugin commands from menu
 figma.on("run", ({ command }) => {
-  figma.ui.postMessage({ type: "auto-connect" });
+  if (state.autoConnect) {
+    figma.ui.postMessage({ type: "auto-connect" });
+  }
 });
 
 // Update plugin settings
@@ -100,9 +104,17 @@ function updateSettings(settings) {
   if (settings.serverPort) {
     state.serverPort = settings.serverPort;
   }
+  if (settings.firstOnTop !== undefined) {
+    state.firstOnTop = !!settings.firstOnTop;
+  }
+  if (settings.autoConnect !== undefined) {
+    state.autoConnect = !!settings.autoConnect;
+  }
 
   figma.clientStorage.setAsync("settings", {
     serverPort: state.serverPort,
+    firstOnTop: state.firstOnTop,
+    autoConnect: state.autoConnect,
   });
 }
 
@@ -948,6 +960,13 @@ async function createFrame(params) {
   if (layoutMode !== "NONE") {
     frame.layoutMode = layoutMode;
     frame.layoutWrap = layoutWrap;
+
+    // Apply first-on-top stacking default (can be overridden per-call)
+    if (params.itemReverseZIndex !== undefined) {
+      frame.itemReverseZIndex = !!params.itemReverseZIndex;
+    } else if (state.firstOnTop) {
+      frame.itemReverseZIndex = true;
+    }
 
     // Set padding values only when layoutMode is not NONE
     frame.paddingTop = paddingTop;
@@ -1884,6 +1903,12 @@ async function setTextContent(params) {
       if (savedSettings.serverPort) {
         state.serverPort = savedSettings.serverPort;
       }
+      if (savedSettings.firstOnTop !== undefined) {
+        state.firstOnTop = !!savedSettings.firstOnTop;
+      }
+      if (savedSettings.autoConnect !== undefined) {
+        state.autoConnect = !!savedSettings.autoConnect;
+      }
     }
 
     // Send initial settings to UI
@@ -1891,6 +1916,8 @@ async function setTextContent(params) {
       type: "init-settings",
       settings: {
         serverPort: state.serverPort,
+        firstOnTop: state.firstOnTop,
+        autoConnect: state.autoConnect,
       },
     });
   } catch (error) {
@@ -3912,9 +3939,16 @@ async function setLayoutMode(params) {
   // Set layout mode
   node.layoutMode = layoutMode;
 
-  // Set layoutWrap if applicable
+  // Set layoutWrap and stacking order if applicable
   if (layoutMode !== "NONE") {
     node.layoutWrap = layoutWrap;
+
+    // Apply first-on-top stacking default (can be overridden per-call)
+    if (params.itemReverseZIndex !== undefined) {
+      node.itemReverseZIndex = !!params.itemReverseZIndex;
+    } else if (state.firstOnTop) {
+      node.itemReverseZIndex = true;
+    }
   }
 
   return {
@@ -3922,6 +3956,7 @@ async function setLayoutMode(params) {
     name: node.name,
     layoutMode: node.layoutMode,
     layoutWrap: node.layoutWrap,
+    itemReverseZIndex: node.itemReverseZIndex,
   };
 }
 
@@ -4808,6 +4843,9 @@ async function createComponent(params) {
   }
   if (node.layoutMode) {
     component.layoutMode = node.layoutMode;
+    if (node.itemReverseZIndex !== undefined) {
+      component.itemReverseZIndex = node.itemReverseZIndex;
+    }
   }
   if (node.paddingTop !== undefined) {
     component.paddingTop = node.paddingTop;
