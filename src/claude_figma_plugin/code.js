@@ -1053,6 +1053,7 @@ async function createFrame(params) {
     strokeWeight: frame.strokeWeight,
     layoutMode: frame.layoutMode,
     layoutWrap: frame.layoutWrap,
+    itemReverseZIndex: frame.itemReverseZIndex,
     parentId: frame.parent ? frame.parent.id : undefined,
   };
 }
