@@ -140,7 +140,10 @@ export type FigmaCommand =
   | "set_constraints"
   | "set_min_max_size"
   | "set_mask"
-  | "create_component_set";
+  | "create_component_set"
+  | "diff_components"
+  | "migrate_instance"
+  | "batch_migrate";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -556,6 +559,29 @@ export type CommandParams = {
   create_component_set: {
     componentIds: string[];
     name?: string;
+  };
+  diff_components: {
+    sourceId: string;
+    targetId: string;
+    matchStrategy?: "auto" | "name" | "position" | "manual";
+    manualMappings?: Record<string, string>;
+  };
+  migrate_instance: {
+    instanceId: string;
+    targetComponentId: string;
+    propertyMapping?: Record<string, string>;
+    preservePosition?: boolean;
+    preserveSize?: boolean;
+    dryRun?: boolean;
+  };
+  batch_migrate: {
+    sourceComponentName?: string;
+    sourceComponentId?: string;
+    targetComponentId: string;
+    propertyMapping?: Record<string, string>;
+    parentId?: string;
+    limit?: number;
+    dryRun?: boolean;
   };
 };
 

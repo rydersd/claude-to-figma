@@ -416,6 +416,24 @@ async function handleCommand(command, params) {
         throw new Error("Missing required parameter: nodeId");
       }
       return await optimizeStructure(params);
+    case "diff_components":
+      if (!params || !params.sourceId || !params.targetId) {
+        throw new Error("Missing required parameters: sourceId and targetId");
+      }
+      return await diffComponents(params);
+    case "migrate_instance":
+      if (!params || !params.instanceId || !params.targetComponentId) {
+        throw new Error("Missing required parameters: instanceId and targetComponentId");
+      }
+      return await migrateInstance(params);
+    case "batch_migrate":
+      if (!params || !params.targetComponentId) {
+        throw new Error("Missing required parameter: targetComponentId");
+      }
+      if (!params.sourceComponentName && !params.sourceComponentId) {
+        throw new Error("Missing required parameter: sourceComponentName or sourceComponentId");
+      }
+      return await batchMigrate(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -7205,6 +7223,29 @@ async function introspectNode(params) {
     return false;
   }
 
+  async function resolveBoundVariableName(node, field) {
+    try {
+      var bindings = node.boundVariables;
+      if (!bindings || !bindings[field]) return null;
+      var binding = bindings[field];
+      // fills/strokes are arrays of bindings
+      var varId = null;
+      if (Array.isArray(binding) && binding.length > 0) {
+        varId = binding[0].id;
+      } else if (binding && binding.id) {
+        varId = binding.id;
+      }
+      if (!varId) return null;
+      var variable = await figma.variables.getVariableByIdAsync(varId);
+      if (!variable) return null;
+      var collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+      var collectionName = collection ? collection.name : "Unknown";
+      return collectionName + "/" + variable.name;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function rgbToHex(r, g, b) {
     var rr = Math.round(r * 255).toString(16).padStart(2, "0");
     var gg = Math.round(g * 255).toString(16).padStart(2, "0");
@@ -7313,13 +7354,17 @@ async function introspectNode(params) {
       for (var fi = 0; fi < node.fills.length; fi++) {
         var fill = node.fills[fi];
         if (fill.visible !== false && fill.type === "SOLID") {
-          addProperty(baseKey, "fill", {
+          var fillBound = hasBoundVariable(node, "fills");
+          var fillVarName = fillBound ? await resolveBoundVariableName(node, "fills") : null;
+          var fillProp = {
             type: "color",
             value: rgbToHex(fill.color.r, fill.color.g, fill.color.b),
             nodeId: node.id,
             target: "fill",
-            boundVariable: hasBoundVariable(node, "fills"),
-          });
+            boundVariable: fillBound,
+          };
+          if (fillVarName) fillProp.boundVariableName = fillVarName;
+          addProperty(baseKey, "fill", fillProp);
           break; // Only first visible solid fill
         }
       }
@@ -7330,13 +7375,17 @@ async function introspectNode(params) {
       for (var si = 0; si < node.strokes.length; si++) {
         var stroke = node.strokes[si];
         if (stroke.visible !== false && stroke.type === "SOLID") {
-          addProperty(baseKey, "stroke", {
+          var strokeBound = hasBoundVariable(node, "strokes");
+          var strokeVarName = strokeBound ? await resolveBoundVariableName(node, "strokes") : null;
+          var strokeProp = {
             type: "color",
             value: rgbToHex(stroke.color.r, stroke.color.g, stroke.color.b),
             nodeId: node.id,
             target: "stroke",
-            boundVariable: hasBoundVariable(node, "strokes"),
-          });
+            boundVariable: strokeBound,
+          };
+          if (strokeVarName) strokeProp.boundVariableName = strokeVarName;
+          addProperty(baseKey, "stroke", strokeProp);
           break;
         }
       }
@@ -7720,5 +7769,501 @@ async function optimizeStructure(params) {
     totalChanges: changes.length,
     changes: changes,
     appliedCount: appliedCount,
+  };
+}
+
+// --- autoMapProperties: 4-pass matching algorithm for property mapping ---
+function autoMapProperties(sourceProps, targetProps, strategy) {
+  if (!strategy) strategy = "auto";
+
+  var mapping = {};
+  var usedTargetKeys = {};
+
+  var sourceKeys = Object.keys(sourceProps);
+  var targetKeys = Object.keys(targetProps);
+
+  function lastSegment(key) {
+    var parts = key.split(".");
+    return parts[parts.length - 1];
+  }
+
+  function propType(props, key) {
+    return props[key] ? props[key].type : null;
+  }
+
+  // Similarity score between two strings (Jaccard on character bigrams)
+  function similarity(a, b) {
+    a = a.toLowerCase();
+    b = b.toLowerCase();
+    if (a === b) return 1.0;
+    if (a.length < 2 || b.length < 2) return 0;
+    var aBigrams = {};
+    var bBigrams = {};
+    var aCount = 0;
+    var bCount = 0;
+    for (var i = 0; i < a.length - 1; i++) {
+      var bg = a.substring(i, i + 2);
+      aBigrams[bg] = (aBigrams[bg] || 0) + 1;
+      aCount++;
+    }
+    for (var i = 0; i < b.length - 1; i++) {
+      var bg = b.substring(i, i + 2);
+      bBigrams[bg] = (bBigrams[bg] || 0) + 1;
+      bCount++;
+    }
+    var intersection = 0;
+    for (var bg in aBigrams) {
+      if (bBigrams[bg]) {
+        intersection += Math.min(aBigrams[bg], bBigrams[bg]);
+      }
+    }
+    return (2.0 * intersection) / (aCount + bCount);
+  }
+
+  function tryAssign(sourceKey, targetKey, confidence, matchType) {
+    if (usedTargetKeys[targetKey]) return false;
+    if (mapping[sourceKey]) return false;
+    mapping[sourceKey] = {
+      targetKey: targetKey,
+      confidence: confidence,
+      matchType: matchType,
+    };
+    usedTargetKeys[targetKey] = true;
+    return true;
+  }
+
+  // Pass 1: Exact key match (confidence 1.0)
+  if (strategy === "auto" || strategy === "name") {
+    for (var i = 0; i < sourceKeys.length; i++) {
+      var sk = sourceKeys[i];
+      if (targetProps[sk] && propType(sourceProps, sk) === propType(targetProps, sk)) {
+        tryAssign(sk, sk, 1.0, "exact");
+      }
+    }
+  }
+
+  // Pass 2: Suffix match — last segment (confidence 0.8)
+  if (strategy === "auto" || strategy === "name") {
+    for (var i = 0; i < sourceKeys.length; i++) {
+      var sk = sourceKeys[i];
+      if (mapping[sk]) continue;
+      var sSuffix = lastSegment(sk);
+      var sType = propType(sourceProps, sk);
+      for (var j = 0; j < targetKeys.length; j++) {
+        var tk = targetKeys[j];
+        if (usedTargetKeys[tk]) continue;
+        if (propType(targetProps, tk) !== sType) continue;
+        if (lastSegment(tk) === sSuffix) {
+          tryAssign(sk, tk, 0.8, "suffix");
+          break;
+        }
+      }
+    }
+  }
+
+  // Pass 3: Type + name similarity within type groups (confidence 0.6)
+  if (strategy === "auto" || strategy === "name") {
+    for (var i = 0; i < sourceKeys.length; i++) {
+      var sk = sourceKeys[i];
+      if (mapping[sk]) continue;
+      var sType = propType(sourceProps, sk);
+      var bestScore = 0;
+      var bestTarget = null;
+      for (var j = 0; j < targetKeys.length; j++) {
+        var tk = targetKeys[j];
+        if (usedTargetKeys[tk]) continue;
+        if (propType(targetProps, tk) !== sType) continue;
+        var score = similarity(sk, tk);
+        if (score > bestScore && score > 0.3) {
+          bestScore = score;
+          bestTarget = tk;
+        }
+      }
+      if (bestTarget) {
+        tryAssign(sk, bestTarget, 0.6, "similarity");
+      }
+    }
+  }
+
+  // Pass 4: Positional fallback — nth text to nth text, etc. (confidence 0.3)
+  if (strategy === "auto" || strategy === "position") {
+    var sourceByType = {};
+    var targetByType = {};
+    for (var i = 0; i < sourceKeys.length; i++) {
+      var sk = sourceKeys[i];
+      if (mapping[sk]) continue;
+      var t = propType(sourceProps, sk);
+      if (!sourceByType[t]) sourceByType[t] = [];
+      sourceByType[t].push(sk);
+    }
+    for (var j = 0; j < targetKeys.length; j++) {
+      var tk = targetKeys[j];
+      if (usedTargetKeys[tk]) continue;
+      var t = propType(targetProps, tk);
+      if (!targetByType[t]) targetByType[t] = [];
+      targetByType[t].push(tk);
+    }
+    for (var t in sourceByType) {
+      if (!targetByType[t]) continue;
+      var sArr = sourceByType[t];
+      var tArr = targetByType[t];
+      var len = Math.min(sArr.length, tArr.length);
+      for (var k = 0; k < len; k++) {
+        tryAssign(sArr[k], tArr[k], 0.3, "position");
+      }
+    }
+  }
+
+  return mapping;
+}
+
+// --- diff_components: Compare two components and produce a mapping ---
+async function diffComponents(params) {
+  var sourceId = params.sourceId;
+  var targetId = params.targetId;
+  var strategy = params.matchStrategy || "auto";
+  var manualMappings = params.manualMappings;
+
+  var sourceResult = await introspectNode({ nodeId: sourceId });
+  var targetResult = await introspectNode({ nodeId: targetId });
+
+  var mapping;
+
+  if (strategy === "manual" && manualMappings) {
+    mapping = {};
+    for (var sk in manualMappings) {
+      if (manualMappings.hasOwnProperty(sk)) {
+        mapping[sk] = {
+          targetKey: manualMappings[sk],
+          confidence: 1.0,
+          matchType: "manual",
+        };
+      }
+    }
+  } else {
+    mapping = autoMapProperties(sourceResult.properties, targetResult.properties, strategy);
+
+    if (manualMappings) {
+      for (var sk in manualMappings) {
+        if (manualMappings.hasOwnProperty(sk)) {
+          mapping[sk] = {
+            targetKey: manualMappings[sk],
+            confidence: 1.0,
+            matchType: "manual",
+          };
+        }
+      }
+    }
+  }
+
+  var mappedSourceKeys = {};
+  var mappedTargetKeys = {};
+  for (var sk in mapping) {
+    if (mapping.hasOwnProperty(sk)) {
+      mappedSourceKeys[sk] = true;
+      mappedTargetKeys[mapping[sk].targetKey] = true;
+    }
+  }
+
+  var unmappedSource = [];
+  for (var sk in sourceResult.properties) {
+    if (sourceResult.properties.hasOwnProperty(sk) && !mappedSourceKeys[sk]) {
+      unmappedSource.push(sk);
+    }
+  }
+
+  var unmappedTarget = [];
+  for (var tk in targetResult.properties) {
+    if (targetResult.properties.hasOwnProperty(tk) && !mappedTargetKeys[tk]) {
+      unmappedTarget.push(tk);
+    }
+  }
+
+  return {
+    sourceComponent: sourceResult.name,
+    targetComponent: targetResult.name,
+    mapping: mapping,
+    unmappedSource: unmappedSource,
+    unmappedTarget: unmappedTarget,
+    structuralChanges: {
+      depthChange: {
+        source: sourceResult.depth,
+        target: targetResult.depth,
+      },
+      wrapperFramesDelta: targetResult.wrapperFrames - sourceResult.wrapperFrames,
+      sourcePropertyCount: sourceResult.propertyCount,
+      targetPropertyCount: targetResult.propertyCount,
+    },
+  };
+}
+
+// --- migrateInstance: Swap one instance with override preservation ---
+async function migrateInstance(params) {
+  var instanceId = params.instanceId;
+  var targetComponentId = params.targetComponentId;
+  var propertyMapping = params.propertyMapping;
+  var preservePosition = params.preservePosition !== undefined ? params.preservePosition : true;
+  var preserveSize = params.preserveSize !== undefined ? params.preserveSize : false;
+  var dryRun = params.dryRun !== undefined ? params.dryRun : false;
+
+  // 1. Get the instance node
+  var instance = await figma.getNodeByIdAsync(instanceId);
+  if (!instance) throw new Error("Instance not found: " + instanceId);
+  if (instance.type !== "INSTANCE") throw new Error("Node is not an INSTANCE: " + instanceId);
+
+  // 2. Get the target component
+  var targetComponent = await figma.getNodeByIdAsync(targetComponentId);
+  if (!targetComponent) throw new Error("Target component not found: " + targetComponentId);
+  if (targetComponent.type !== "COMPONENT" && targetComponent.type !== "COMPONENT_SET") {
+    throw new Error("Target is not a COMPONENT or COMPONENT_SET: " + targetComponentId);
+  }
+  if (targetComponent.type === "COMPONENT_SET") {
+    if (!targetComponent.children || targetComponent.children.length === 0) {
+      throw new Error("COMPONENT_SET has no children");
+    }
+    targetComponent = targetComponent.children[0];
+  }
+
+  // 3. Introspect current instance to capture override values
+  var sourceIntrospection = await introspectNode({ nodeId: instanceId });
+  var sourceProps = sourceIntrospection.properties;
+
+  // 4. If no mapping provided, auto-generate by introspecting target
+  if (!propertyMapping) {
+    var targetIntrospection = await introspectNode({ nodeId: targetComponentId });
+    var autoMapping = autoMapProperties(sourceProps, targetIntrospection.properties, "auto");
+    propertyMapping = {};
+    for (var sk in autoMapping) {
+      if (autoMapping.hasOwnProperty(sk)) {
+        propertyMapping[sk] = autoMapping[sk].targetKey;
+      }
+    }
+  }
+
+  // 5. Build the override values to apply
+  var overridesToApply = {};
+  var mappedCount = 0;
+  var unmappedKeys = [];
+  for (var sk in sourceProps) {
+    if (!sourceProps.hasOwnProperty(sk)) continue;
+    if (propertyMapping[sk]) {
+      overridesToApply[propertyMapping[sk]] = sourceProps[sk].value;
+      mappedCount++;
+    } else {
+      unmappedKeys.push(sk);
+    }
+  }
+
+  // 6. Capture position/size info
+  var position = { x: instance.x, y: instance.y };
+  var size = { width: instance.width, height: instance.height };
+  var parentNode = instance.parent;
+  var childIndex = parentNode ? Array.prototype.indexOf.call(parentNode.children, instance) : 0;
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      instanceId: instanceId,
+      instanceName: instance.name,
+      targetComponent: targetComponent.name,
+      position: position,
+      size: size,
+      overridesToApply: overridesToApply,
+      mappedCount: mappedCount,
+      unmappedKeys: unmappedKeys,
+    };
+  }
+
+  // 7. Detect if instance is nested inside another instance
+  var isNested = false;
+  var checkParent = instance.parent;
+  while (checkParent) {
+    if (checkParent.type === "INSTANCE") {
+      isNested = true;
+      break;
+    }
+    checkParent = checkParent.parent;
+  }
+
+  var newInstanceId;
+  var errorResults = [];
+
+  if (isNested) {
+    try {
+      instance.swapComponent(targetComponent);
+      newInstanceId = instance.id;
+    } catch (e) {
+      throw new Error("Failed to swap nested instance: " + (e.message || String(e)));
+    }
+  } else {
+    var newInstance = targetComponent.createInstance();
+    newInstanceId = newInstance.id;
+
+    if (parentNode && "insertChild" in parentNode) {
+      parentNode.insertChild(childIndex, newInstance);
+    }
+
+    if (preservePosition) {
+      newInstance.x = position.x;
+      newInstance.y = position.y;
+    }
+
+    if (preserveSize) {
+      newInstance.resize(size.width, size.height);
+    }
+
+    instance.remove();
+  }
+
+  // 8. Apply mapped overrides via setProperties
+  var applyResult = { successCount: 0, failureCount: 0, results: [] };
+  if (Object.keys(overridesToApply).length > 0) {
+    try {
+      applyResult = await setProperties({
+        nodeId: newInstanceId,
+        properties: overridesToApply,
+      });
+    } catch (e) {
+      errorResults.push("Failed to apply overrides: " + (e.message || String(e)));
+    }
+  }
+
+  return {
+    success: true,
+    instanceId: newInstanceId,
+    targetComponent: targetComponent.name,
+    isNested: isNested,
+    mappedCount: mappedCount,
+    unmappedKeys: unmappedKeys,
+    overridesApplied: applyResult.successCount || 0,
+    overridesFailed: applyResult.failureCount || 0,
+    errors: errorResults.length > 0 ? errorResults : undefined,
+  };
+}
+
+// --- batchMigrate: Apply migration across entire file ---
+async function batchMigrate(params) {
+  var sourceComponentName = params.sourceComponentName;
+  var sourceComponentId = params.sourceComponentId;
+  var targetComponentId = params.targetComponentId;
+  var propertyMapping = params.propertyMapping;
+  var parentId = params.parentId;
+  var limit = params.limit;
+  var dryRun = params.dryRun !== undefined ? params.dryRun : false;
+
+  var searchRoot;
+  if (parentId) {
+    searchRoot = await figma.getNodeByIdAsync(parentId);
+    if (!searchRoot) throw new Error("Parent node not found: " + parentId);
+  } else {
+    searchRoot = figma.currentPage;
+  }
+
+  var instances = [];
+
+  async function findInstances(node) {
+    if (limit && instances.length >= limit) return;
+
+    if (node.type === "INSTANCE") {
+      var match = false;
+      if (sourceComponentId) {
+        try {
+          var mainComp = await node.getMainComponentAsync();
+          if (mainComp && mainComp.id === sourceComponentId) match = true;
+          if (!match && mainComp && mainComp.parent && mainComp.parent.type === "COMPONENT_SET" && mainComp.parent.id === sourceComponentId) match = true;
+        } catch (e) {}
+      }
+      if (!match && sourceComponentName) {
+        try {
+          var mainComp = await node.getMainComponentAsync();
+          if (mainComp && mainComp.name.indexOf(sourceComponentName) !== -1) match = true;
+          if (!match && mainComp && mainComp.parent && mainComp.parent.type === "COMPONENT_SET" && mainComp.parent.name.indexOf(sourceComponentName) !== -1) match = true;
+        } catch (e) {}
+      }
+      if (match) {
+        instances.push(node);
+      }
+    }
+
+    if ("children" in node && node.children) {
+      for (var i = 0; i < node.children.length; i++) {
+        if (limit && instances.length >= limit) break;
+        await findInstances(node.children[i]);
+      }
+    }
+  }
+
+  await findInstances(searchRoot);
+
+  if (dryRun) {
+    var dryResults = [];
+    for (var i = 0; i < instances.length; i++) {
+      dryResults.push({
+        instanceId: instances[i].id,
+        instanceName: instances[i].name,
+        success: true,
+      });
+    }
+    return {
+      totalFound: instances.length,
+      migrated: 0,
+      failed: 0,
+      dryRun: true,
+      results: dryResults,
+    };
+  }
+
+  var results = [];
+  var migratedCount = 0;
+  var failedCount = 0;
+
+  for (var i = 0; i < instances.length; i++) {
+    var inst = instances[i];
+    try {
+      if (typeof sendProgressUpdate === "function") {
+        sendProgressUpdate(
+          "batch_migrate",
+          "in_progress",
+          Math.round((i / instances.length) * 100),
+          instances.length,
+          i,
+          "Migrating instance " + (i + 1) + " of " + instances.length + ": " + inst.name
+        );
+      }
+
+      var result = await migrateInstance({
+        instanceId: inst.id,
+        targetComponentId: targetComponentId,
+        propertyMapping: propertyMapping,
+        preservePosition: true,
+        preserveSize: false,
+        dryRun: false,
+      });
+
+      results.push({
+        instanceId: result.instanceId,
+        instanceName: inst.name,
+        success: true,
+        mappedCount: result.mappedCount,
+        overridesApplied: result.overridesApplied,
+      });
+      migratedCount++;
+    } catch (e) {
+      results.push({
+        instanceId: inst.id,
+        instanceName: inst.name,
+        success: false,
+        error: e.message || String(e),
+      });
+      failedCount++;
+    }
+  }
+
+  return {
+    totalFound: instances.length,
+    migrated: migratedCount,
+    failed: failedCount,
+    dryRun: false,
+    results: results,
   };
 }

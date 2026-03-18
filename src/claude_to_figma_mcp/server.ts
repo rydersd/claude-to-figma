@@ -23,6 +23,7 @@ import { registerTools as registerBatchMutateTools } from "./tools/batch-mutate.
 import { registerTools as registerLintTools } from "./tools/lint.js";
 import { registerTools as registerIntrospectTools } from "./tools/introspect.js";
 import { registerTools as registerVisualTools } from "./tools/visual.js";
+import { registerTools as registerMigrationTools } from "./tools/migration.js";
 import { registerPrompts } from "./tools/prompts.js";
 
 // Create MCP server
@@ -49,6 +50,7 @@ registerBatchMutateTools(server, sendCommandToFigma);
 registerLintTools(server, sendCommandToFigma);
 registerIntrospectTools(server, sendCommandToFigma);
 registerVisualTools(server, sendCommandToFigma);
+registerMigrationTools(server, sendCommandToFigma);
 
 // Register prompts
 registerPrompts(server);
