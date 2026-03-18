@@ -292,6 +292,8 @@
           Not connected to MCP server
         </div>
 
+        <div style="margin-top: 8px; font-size: 11px; color: #666; text-align: right;">v1.3.0</div>
+
         <div id="mcp-config" class="section hidden">
           <h2>MCP Configuration</h2>
           <p>
@@ -356,15 +358,22 @@
         <div class="section">
           <h2>About Claude to Figma Plugin</h2>
           <p>
-            This plugin allows Claude Code to communicate with Figma, enabling
-            AI-assisted design operations.
-            <a
-              class="link"
-              onclick="window.open(`https://github.com/rydersd/claude-to-figma`, '_blank')"
-              >Github</a
-            >
+            MCP bridge between Claude Code and Figma — enabling
+            AI-assisted design creation, manipulation, and inspection.
           </p>
-          <p>Version: 1.1.0</p>
+          <p>Version: 1.3.0</p>
+
+          <h2>Credits</h2>
+          <p>
+            Originally created by <strong>sonnylazuardi</strong> as
+            <a class="link" onclick="window.open('https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp', '_blank')">cursor-talk-to-figma-mcp</a>.
+          </p>
+          <p>
+            Extended by <strong>Ryan Booth</strong> and <strong>Claude</strong> with 90+ tools covering
+            batch operations, component introspection, native text formatting,
+            effects, auto-layout positioning, and more.
+            <a class="link" onclick="window.open('https://github.com/rydersd/claude-to-figma', '_blank')">Github</a>
+          </p>
 
           <h2>How to Use</h2>
           <ol>
@@ -422,6 +431,19 @@
           isConnected ? "connected" : "disconnected"
         }`;
 
+        // Attach click-to-copy on channel name
+        const channelEl = connectionStatus.querySelector(".channel-name");
+        if (channelEl) {
+          channelEl.addEventListener("click", () => {
+            const text = `channel changed to '${channelEl.textContent}'`;
+            navigator.clipboard.writeText(text).then(() => {
+              const original = channelEl.textContent;
+              channelEl.textContent = "Copied!";
+              setTimeout(() => { channelEl.textContent = original; }, 1500);
+            });
+          });
+        }
+
         // Update connect button text and style based on connection state
         connectButton.textContent = isConnected ? "Disconnect" : "Connect";
         connectButton.className = isConnected ? "secondary" : "primary";
@@ -477,7 +499,7 @@
                   const channelName = data.channel;
                   updateConnectionStatus(
                     true,
-                    `Connected to server in channel: <strong>${channelName}</strong>`
+                    `Connected to server in channel: <strong class="channel-name" style="cursor:pointer; text-decoration:underline; text-decoration-style:dotted;" title="Click to copy channel to clipboard">${channelName}</strong>`
                   );
 
                   // Notify the plugin code

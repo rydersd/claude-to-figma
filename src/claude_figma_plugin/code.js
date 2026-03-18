@@ -253,6 +253,11 @@ async function handleCommand(command, params) {
       return await createComponent(params);
     case "create_vector":
       return await createVector(params);
+    case "create_svg":
+      if (!params || !params.svg) {
+        throw new Error("Missing required parameter: svg");
+      }
+      return await createSvg(params);
     case "set_stroke_dash":
       return await setStrokeDash(params);
     case "set_stroke_properties":
@@ -324,11 +329,108 @@ async function handleCommand(command, params) {
         throw new Error("Missing required parameter: operations array");
       }
       return await batchMutate(params);
+    case "set_text_align":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setTextAlign(params);
+    case "set_text_format":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setTextFormat(params);
+    case "set_text_list":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setTextList(params);
+    case "set_range_format":
+      if (!params || !params.nodeId || !params.ranges) {
+        throw new Error("Missing required parameters: nodeId and ranges");
+      }
+      return await setRangeFormat(params);
+    case "set_clips_content":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setClipsContent(params);
+    case "set_effects":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setEffects(params);
+    case "set_opacity":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setOpacity(params);
+    case "set_blend_mode":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setBlendMode(params);
+    case "set_layout_positioning":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setLayoutPositioning(params);
+    case "set_rotation":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setRotation(params);
+    case "create_ellipse":
+      return await createEllipse(params);
+    case "set_constraints":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setConstraints(params);
+    case "set_min_max_size":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setMinMaxSize(params);
+    case "set_mask":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await setMask(params);
+    case "create_component_set":
+      if (!params || !params.componentIds || !Array.isArray(params.componentIds)) {
+        throw new Error("Missing required parameter: componentIds array");
+      }
+      return await createComponentSet(params);
     case "scan_node_styles":
       if (!params || !params.nodeId) {
         throw new Error("Missing required parameter: nodeId");
       }
       return await scanNodeStyles(params);
+    case "introspect_node":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await introspectNode(params);
+    case "set_properties":
+      if (!params || !params.nodeId || !params.properties) {
+        throw new Error("Missing required parameters: nodeId and properties");
+      }
+      return await setProperties(params);
+    case "optimize_structure":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await optimizeStructure(params);
+    case "design_query":
+      if (!params || !params.select) {
+        throw new Error("Missing required parameter: select");
+      }
+      return await designQuery(params);
+    case "figma_eval":
+      if (!params || !params.code) {
+        throw new Error("Missing required parameter: code");
+      }
+      return await figmaEval(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -452,7 +554,7 @@ function filterFigmaNode(node) {
   }
 
   if (node.cornerRadius !== undefined) {
-    filtered.cornerRadius = node.cornerRadius;
+    filtered.cornerRadius = safeMixed(node.cornerRadius);
   }
 
   if (node.absoluteBoundingBox) {
@@ -596,9 +698,9 @@ async function getReactions(nodeIds) {
     
     // Function to apply animated highlight effect to a node
     async function highlightNodeWithAnimation(node) {
-      // Save original stroke properties
-      const originalStrokeWeight = node.strokeWeight;
-      const originalStrokes = node.strokes ? [...node.strokes] : [];
+      // Save original stroke properties (guard against figma.mixed Symbol)
+      const originalStrokeWeight = typeof node.strokeWeight === "number" ? node.strokeWeight : 1;
+      const originalStrokes = (node.strokes && node.strokes !== figma.mixed) ? [...node.strokes] : [];
       
       try {
         // Apply orange border stroke
@@ -753,6 +855,7 @@ async function createRectangle(params) {
     height = 100,
     name = "Rectangle",
     parentId,
+    fillColor,
   } = params || {};
 
   const rect = figma.createRectangle();
@@ -761,19 +864,21 @@ async function createRectangle(params) {
   rect.resize(width, height);
   rect.name = name;
 
-  // If parentId is provided, append to that node, otherwise append to current page
-  if (parentId) {
-    const parentNode = await figma.getNodeByIdAsync(parentId);
-    if (!parentNode) {
-      throw new Error(`Parent node not found with ID: ${parentId}`);
-    }
-    if (!("appendChild" in parentNode)) {
-      throw new Error(`Parent node does not support children: ${parentId}`);
-    }
-    parentNode.appendChild(rect);
-  } else {
-    figma.currentPage.appendChild(rect);
+  // Set fill color if provided
+  if (fillColor) {
+    const paintStyle = {
+      type: "SOLID",
+      color: {
+        r: parseFloat(fillColor.r) || 0,
+        g: parseFloat(fillColor.g) || 0,
+        b: parseFloat(fillColor.b) || 0,
+      },
+      opacity: parseFloat(fillColor.a) || 1,
+    };
+    rect.fills = [paintStyle];
   }
+
+  await appendOrInsertChild(rect, parentId, params.insertAt);
 
   return {
     id: rect.id,
@@ -816,6 +921,11 @@ async function createFrame(params) {
   frame.resize(width, height);
   frame.name = name;
 
+  // Set clipsContent if provided
+  if (params.clipsContent !== undefined) {
+    frame.clipsContent = !!params.clipsContent;
+  }
+
   // Set layout mode if provided
   if (layoutMode !== "NONE") {
     frame.layoutMode = layoutMode;
@@ -831,9 +941,11 @@ async function createFrame(params) {
     frame.primaryAxisAlignItems = primaryAxisAlignItems;
     frame.counterAxisAlignItems = counterAxisAlignItems;
 
-    // Set layout sizing only when layoutMode is not NONE
-    frame.layoutSizingHorizontal = layoutSizingHorizontal;
-    frame.layoutSizingVertical = layoutSizingVertical;
+    // Set layout sizing (defer FILL until after parenting — it requires an auto-layout parent)
+    if (layoutSizingHorizontal !== "FILL" && layoutSizingVertical !== "FILL") {
+      frame.layoutSizingHorizontal = layoutSizingHorizontal;
+      frame.layoutSizingVertical = layoutSizingVertical;
+    }
 
     // Set item spacing only when layoutMode is not NONE
     frame.itemSpacing = itemSpacing;
@@ -872,18 +984,24 @@ async function createFrame(params) {
     frame.strokeWeight = strokeWeight;
   }
 
-  // If parentId is provided, append to that node, otherwise append to current page
-  if (parentId) {
-    const parentNode = await figma.getNodeByIdAsync(parentId);
-    if (!parentNode) {
-      throw new Error(`Parent node not found with ID: ${parentId}`);
+  await appendOrInsertChild(frame, parentId, params.insertAt);
+
+  // Now set FILL sizing after the frame has been parented (FILL requires auto-layout parent)
+  if (layoutMode !== "NONE") {
+    if (layoutSizingHorizontal === "FILL" || layoutSizingVertical === "FILL") {
+      try {
+        frame.layoutSizingHorizontal = layoutSizingHorizontal;
+        frame.layoutSizingVertical = layoutSizingVertical;
+      } catch (e) {
+        // FILL may fail if parent is not auto-layout — fall back to FIXED
+        if (layoutSizingHorizontal === "FILL") {
+          try { frame.layoutSizingHorizontal = "FILL"; } catch (e2) { frame.layoutSizingHorizontal = "FIXED"; }
+        }
+        if (layoutSizingVertical === "FILL") {
+          try { frame.layoutSizingVertical = "FILL"; } catch (e2) { frame.layoutSizingVertical = "FIXED"; }
+        }
+      }
     }
-    if (!("appendChild" in parentNode)) {
-      throw new Error(`Parent node does not support children: ${parentId}`);
-    }
-    parentNode.appendChild(frame);
-  } else {
-    figma.currentPage.appendChild(frame);
   }
 
   return {
@@ -941,19 +1059,31 @@ async function createText(params) {
     }
   };
 
+  // Accept optional fontFamily and fontStyle params
+  const userFontFamily = params.fontFamily || "Inter";
+  const userFontStyle = params.fontStyle || getFontStyle(fontWeight);
+
   const textNode = figma.createText();
   textNode.x = x;
   textNode.y = y;
   textNode.name = name || text;
   try {
     await figma.loadFontAsync({
-      family: "Inter",
-      style: getFontStyle(fontWeight),
+      family: userFontFamily,
+      style: userFontStyle,
     });
-    textNode.fontName = { family: "Inter", style: getFontStyle(fontWeight) };
+    textNode.fontName = { family: userFontFamily, style: userFontStyle };
     textNode.fontSize = parseInt(fontSize);
   } catch (error) {
-    console.error("Error setting font size", error);
+    console.error("Error setting font", error);
+    // Fallback to Inter if the requested font is not available
+    try {
+      await figma.loadFontAsync({ family: "Inter", style: getFontStyle(fontWeight) });
+      textNode.fontName = { family: "Inter", style: getFontStyle(fontWeight) };
+      textNode.fontSize = parseInt(fontSize);
+    } catch (fallbackError) {
+      console.error("Error setting fallback font", fallbackError);
+    }
   }
   setCharacters(textNode, text);
 
@@ -975,19 +1105,7 @@ async function createText(params) {
     textNode.textAutoResize = "HEIGHT";
   }
 
-  // If parentId is provided, append to that node, otherwise append to current page
-  if (parentId) {
-    const parentNode = await figma.getNodeByIdAsync(parentId);
-    if (!parentNode) {
-      throw new Error(`Parent node not found with ID: ${parentId}`);
-    }
-    if (!("appendChild" in parentNode)) {
-      throw new Error(`Parent node does not support children: ${parentId}`);
-    }
-    parentNode.appendChild(textNode);
-  } else {
-    figma.currentPage.appendChild(textNode);
-  }
+  await appendOrInsertChild(textNode, parentId, params.insertAt);
 
   return {
     id: textNode.id,
@@ -1182,7 +1300,7 @@ async function setStrokeColor(params) {
     id: node.id,
     name: node.name,
     strokes: node.strokes,
-    strokeWeight: "strokeWeight" in node ? node.strokeWeight : undefined,
+    strokeWeight: "strokeWeight" in node ? safeMixed(node.strokeWeight) : undefined,
   };
 }
 
@@ -1417,15 +1535,32 @@ async function createComponentInstance(params) {
     instance.x = x;
     instance.y = y;
 
-    if (parentId) {
-      const parent = await figma.getNodeByIdAsync(parentId);
-      if (parent && "appendChild" in parent) {
-        parent.appendChild(instance);
-      } else {
-        figma.currentPage.appendChild(instance);
+    await appendOrInsertChild(instance, parentId, params.insertAt);
+
+    // Apply component property overrides if provided
+    if (params.properties && typeof params.properties === "object") {
+      try {
+        instance.setProperties(params.properties);
+      } catch (e) {
+        // Non-fatal — instance is created, overrides just failed
+        console.error("Error setting component properties:", e);
       }
-    } else {
-      figma.currentPage.appendChild(instance);
+    }
+
+    // Apply text overrides by child name if provided
+    if (params.textOverrides && typeof params.textOverrides === "object") {
+      async function applyTextOverrides(node, overrides) {
+        if (node.type === "TEXT" && overrides[node.name] !== undefined) {
+          await loadAllFonts(node);
+          await setCharacters(node, String(overrides[node.name]));
+        }
+        if ("children" in node && node.children) {
+          for (var i = 0; i < node.children.length; i++) {
+            await applyTextOverrides(node.children[i], overrides);
+          }
+        }
+      }
+      await applyTextOverrides(instance, params.textOverrides);
     }
 
     const mainComponent = await instance.getMainComponentAsync();
@@ -1660,11 +1795,11 @@ async function setCornerRadius(params) {
   // If corners array is provided, set individual corner radii
   if (corners && Array.isArray(corners) && corners.length === 4) {
     if ("topLeftRadius" in node) {
-      // Node supports individual corner radii
-      if (corners[0]) node.topLeftRadius = radius;
-      if (corners[1]) node.topRightRadius = radius;
-      if (corners[2]) node.bottomRightRadius = radius;
-      if (corners[3]) node.bottomLeftRadius = radius;
+      // Node supports individual corner radii — set each explicitly
+      node.topLeftRadius = corners[0] ? radius : 0;
+      node.topRightRadius = corners[1] ? radius : 0;
+      node.bottomRightRadius = corners[2] ? radius : 0;
+      node.bottomLeftRadius = corners[3] ? radius : 0;
     } else {
       // Node only supports uniform corner radius
       node.cornerRadius = radius;
@@ -1677,7 +1812,7 @@ async function setCornerRadius(params) {
   return {
     id: node.id,
     name: node.name,
-    cornerRadius: "cornerRadius" in node ? node.cornerRadius : undefined,
+    cornerRadius: safeMixed("cornerRadius" in node ? node.cornerRadius : undefined),
     topLeftRadius: "topLeftRadius" in node ? node.topLeftRadius : undefined,
     topRightRadius: "topRightRadius" in node ? node.topRightRadius : undefined,
     bottomRightRadius:
@@ -1708,7 +1843,7 @@ async function setTextContent(params) {
   }
 
   try {
-    await figma.loadFontAsync(node.fontName);
+    await loadAllFonts(node);
 
     await setCharacters(node, text);
 
@@ -1716,7 +1851,7 @@ async function setTextContent(params) {
       id: node.id,
       name: node.name,
       characters: node.characters,
-      fontName: node.fontName,
+      fontName: safeMixed(node.fontName),
     };
   } catch (error) {
     throw new Error(`Error setting text content: ${error.message}`);
@@ -1963,7 +2098,7 @@ const setCharactersWithSmartMatchFont = async (
 
 // Add the cloneNode function implementation
 async function cloneNode(params) {
-  const { nodeId, x, y } = params || {};
+  const { nodeId, x, y, parentId } = params || {};
 
   if (!nodeId) {
     throw new Error("Missing nodeId parameter");
@@ -1986,11 +2121,36 @@ async function cloneNode(params) {
     clone.y = y;
   }
 
-  // Add the clone to the same parent as the original node
-  if (node.parent) {
-    node.parent.appendChild(clone);
+  // Determine where to place the clone
+  // If parentId is explicitly provided, use that
+  // Otherwise try the source's parent — but if it's inside an instance, fall back to the page
+  if (parentId) {
+    const targetParent = await figma.getNodeByIdAsync(parentId);
+    if (!targetParent) {
+      throw new Error(`Parent node not found with ID: ${parentId}`);
+    }
+    if (!("appendChild" in targetParent)) {
+      throw new Error(`Parent node does not support children: ${parentId}`);
+    }
+    targetParent.appendChild(clone);
   } else {
-    figma.currentPage.appendChild(clone);
+    // Check if source parent is safe to clone into (not inside an instance)
+    let safeParent = node.parent;
+    if (safeParent) {
+      let ancestor = safeParent;
+      while (ancestor) {
+        if (ancestor.type === "INSTANCE") {
+          safeParent = null; // Can't place inside an instance
+          break;
+        }
+        ancestor = ancestor.parent;
+      }
+    }
+    if (safeParent && "appendChild" in safeParent) {
+      safeParent.appendChild(clone);
+    } else {
+      figma.currentPage.appendChild(clone);
+    }
   }
 
   return {
@@ -2413,7 +2573,7 @@ async function processTextNode(node, parentPath, depth) {
 
     // Highlight the node briefly (optional visual feedback)
     try {
-      const originalFills = JSON.parse(JSON.stringify(node.fills));
+      const originalFills = node.fills !== figma.mixed ? JSON.parse(JSON.stringify(node.fills)) : [];
       node.fills = [
         {
           type: "SOLID",
@@ -2488,7 +2648,7 @@ async function findTextNodes(node, parentPath = [], depth = 0, textNodes = []) {
       // Only highlight the node if it's not being done via API
       try {
         // Safe way to create a temporary highlight without causing serialization issues
-        const originalFills = JSON.parse(JSON.stringify(node.fills));
+        const originalFills = node.fills !== figma.mixed ? JSON.parse(JSON.stringify(node.fills)) : [];
         node.fills = [
           {
             type: "SOLID",
@@ -3641,7 +3801,7 @@ async function setInstanceOverrides(targetInstances, sourceResult) {
                 }
               } else if (field === "characters" && overrideNode.type === "TEXT") {
                 // For text nodes, need to load fonts first
-                await figma.loadFontAsync(overrideNode.fontName);
+                await loadAllFonts(overrideNode);
                 overrideNode.characters = sourceNode.characters;
                 fieldApplied = true;
               } else if (field in overrideNode) {
@@ -4516,8 +4676,8 @@ async function setTextAutoResize(params) {
     throw new Error(`Node is not a text node: ${nodeId}`);
   }
 
-  // Load the font before changing auto-resize (required by Figma API)
-  await figma.loadFontAsync(node.fontName);
+  // Load all fonts before changing auto-resize (required by Figma API)
+  await loadAllFonts(node);
   node.textAutoResize = textAutoResize;
 
   return {
@@ -4619,10 +4779,10 @@ async function createComponent(params) {
   if (node.fills && node.fills !== figma.mixed) {
     component.fills = JSON.parse(JSON.stringify(node.fills));
   }
-  if (node.strokes) {
+  if (node.strokes && node.strokes !== figma.mixed) {
     component.strokes = JSON.parse(JSON.stringify(node.strokes));
   }
-  if (node.strokeWeight !== undefined) {
+  if (node.strokeWeight !== undefined && node.strokeWeight !== figma.mixed) {
     component.strokeWeight = node.strokeWeight;
   }
   if (node.cornerRadius !== undefined && node.cornerRadius !== figma.mixed) {
@@ -4671,12 +4831,127 @@ async function createComponent(params) {
 }
 
 // Create Vector from SVG path data
-async function createVector(params) {
-  const { pathData, x = 0, y = 0, width, height, name = "Vector", parentId, fillColor, strokeColor, strokeWeight, strokeCap } = params || {};
+// Normalize SVG path data to commands Figma supports (M, L, C, Q, Z only)
+// Converts H/V to L, normalizes compact notation (M16.8 → M 16.8)
+function normalizeSvgPath(pathData) {
+  // First, insert spaces between command letters and numbers where missing
+  // e.g., "M16.8504" → "M 16.8504", "L10-5" → "L 10 -5"
+  var normalized = pathData
+    .replace(/([a-zA-Z])(\d)/g, "$1 $2")
+    .replace(/([a-zA-Z])(-)/g, "$1 $2")
+    .replace(/(\d)([a-zA-Z])/g, "$1 $2");
 
-  if (!pathData) {
+  // Tokenize
+  var tokens = normalized.match(/[a-zA-Z]|[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g);
+  if (!tokens) return pathData;
+
+  var result = [];
+  var cx = 0, cy = 0; // current point
+  var sx = 0, sy = 0; // start of subpath
+  var i = 0;
+
+  function num() {
+    if (i >= tokens.length) return 0;
+    return parseFloat(tokens[i++]);
+  }
+
+  while (i < tokens.length) {
+    var cmd = tokens[i];
+
+    // If it's a number, it's an implicit repeat of the previous command
+    if (/^[+-]?\d/.test(cmd) || cmd === ".") {
+      // implicit repeat — reuse last command
+      i--; // back up so the number is consumed by the loop below
+      cmd = result.length > 0 ? "L" : "M"; // default to L, or M if first
+      // Actually we need to handle implicit repeats properly
+      // For now just skip
+      i++;
+      continue;
+    }
+
+    i++; // consume command
+
+    switch (cmd) {
+      case "M": cx = num(); cy = num(); sx = cx; sy = cy; result.push("M " + cx + " " + cy); break;
+      case "m": cx += num(); cy += num(); sx = cx; sy = cy; result.push("M " + cx + " " + cy); break;
+      case "L": cx = num(); cy = num(); result.push("L " + cx + " " + cy); break;
+      case "l": cx += num(); cy += num(); result.push("L " + cx + " " + cy); break;
+      case "H": cx = num(); result.push("L " + cx + " " + cy); break;
+      case "h": cx += num(); result.push("L " + cx + " " + cy); break;
+      case "V": cy = num(); result.push("L " + cx + " " + cy); break;
+      case "v": cy += num(); result.push("L " + cx + " " + cy); break;
+      case "C": {
+        var x1 = num(), y1 = num(), x2 = num(), y2 = num(); cx = num(); cy = num();
+        result.push("C " + x1 + " " + y1 + " " + x2 + " " + y2 + " " + cx + " " + cy);
+        break;
+      }
+      case "c": {
+        var x1 = cx+num(), y1 = cy+num(), x2 = cx+num(), y2 = cy+num();
+        cx += num(); cy += num();
+        result.push("C " + x1 + " " + y1 + " " + x2 + " " + y2 + " " + cx + " " + cy);
+        break;
+      }
+      case "S": case "s": {
+        // Smooth cubic — reflect previous control point
+        // For simplicity, treat as cubic with first control = current point
+        var abs = cmd === "S";
+        var x2 = abs ? num() : cx+num();
+        var y2 = abs ? num() : cy+num();
+        var ex = abs ? num() : cx+num();
+        var ey = abs ? num() : cy+num();
+        result.push("C " + cx + " " + cy + " " + x2 + " " + y2 + " " + ex + " " + ey);
+        cx = ex; cy = ey;
+        break;
+      }
+      case "Q": {
+        var qx = num(), qy = num(); cx = num(); cy = num();
+        result.push("Q " + qx + " " + qy + " " + cx + " " + cy);
+        break;
+      }
+      case "q": {
+        var qx = cx+num(), qy = cy+num(); cx += num(); cy += num();
+        result.push("Q " + qx + " " + qy + " " + cx + " " + cy);
+        break;
+      }
+      case "T": case "t": {
+        // Smooth quadratic — reflect previous control
+        var abs = cmd === "T";
+        cx = abs ? num() : cx+num();
+        cy = abs ? num() : cy+num();
+        result.push("L " + cx + " " + cy); // approximate as line
+        break;
+      }
+      case "A": case "a": {
+        // Arc — approximate as line to endpoint
+        var abs = cmd === "A";
+        num(); num(); num(); num(); num(); // rx, ry, rotation, large-arc, sweep
+        cx = abs ? num() : cx+num();
+        cy = abs ? num() : cy+num();
+        result.push("L " + cx + " " + cy);
+        break;
+      }
+      case "Z": case "z":
+        cx = sx; cy = sy;
+        result.push("Z");
+        break;
+      default:
+        // Unknown command — skip
+        break;
+    }
+  }
+
+  return result.join(" ");
+}
+
+async function createVector(params) {
+  const { pathData: rawPathData, x = 0, y = 0, width, height, name = "Vector", parentId, fillColor, strokeColor, strokeWeight, strokeCap } = params || {};
+
+  if (!rawPathData) {
     throw new Error("Missing pathData parameter");
   }
+
+  // Normalize SVG path to Figma-compatible commands
+  const pathData = normalizeSvgPath(rawPathData);
 
   const vector = figma.createVector();
   vector.name = name;
@@ -4731,7 +5006,7 @@ async function createVector(params) {
           const updatedVertices = network.vertices.map(function(v) {
             return Object.assign({}, v, { strokeCap: strokeCap });
           });
-          vector.vectorNetwork = Object.assign({}, network, { vertices: updatedVertices });
+          await vector.setVectorNetworkAsync(Object.assign({}, network, { vertices: updatedVertices }));
         }
       } catch (e) {
         // strokeCap on vertices may not be supported for all vector types; fall back silently
@@ -4742,18 +5017,7 @@ async function createVector(params) {
   }
 
   // Append to parent or current page
-  if (parentId) {
-    const parentNode = await figma.getNodeByIdAsync(parentId);
-    if (!parentNode) {
-      throw new Error(`Parent node not found with ID: ${parentId}`);
-    }
-    if (!("appendChild" in parentNode)) {
-      throw new Error(`Parent node does not support children: ${parentId}`);
-    }
-    parentNode.appendChild(vector);
-  } else {
-    figma.currentPage.appendChild(vector);
-  }
+  await appendOrInsertChild(vector, parentId, params.insertAt);
 
   return {
     id: vector.id,
@@ -4794,14 +5058,14 @@ async function createLine(params) {
   vec.y = originY;
 
   // Set the vector network with per-vertex stroke caps
-  vec.vectorNetwork = {
+  await vec.setVectorNetworkAsync({
     vertices: [
       { x: v0x, y: v0y, strokeCap: startCap },
       { x: v1x, y: v1y, strokeCap: endCap },
     ],
     segments: [{ start: 0, end: 1 }],
     regions: [],
-  };
+  });
 
   // Resolve stroke color
   var resolvedColor = null;
@@ -4932,11 +5196,11 @@ async function setStrokeProperties(params) {
   return {
     id: node.id,
     name: node.name,
-    strokeWeight: node.strokeWeight,
-    strokeCap: node.strokeCap,
-    strokeJoin: node.strokeJoin,
+    strokeWeight: safeMixed(node.strokeWeight),
+    strokeCap: safeMixed(node.strokeCap),
+    strokeJoin: safeMixed(node.strokeJoin),
     strokeAlign: node.strokeAlign,
-    dashPattern: node.dashPattern,
+    dashPattern: safeMixed(node.dashPattern),
   };
 }
 
@@ -5013,8 +5277,8 @@ async function setTextDecoration(params) {
     throw new Error(`Node is not a text node: ${nodeId}`);
   }
 
-  // Load the font before changing decoration (required by Figma API)
-  await figma.loadFontAsync(node.fontName);
+  // Load all fonts (handles mixed font text)
+  await loadAllFonts(node);
   node.textDecoration = decoration;
 
   return {
@@ -5711,7 +5975,7 @@ async function setVectorPath(params) {
 
   node.vectorPaths = [{
     windingRule: "NONZERO",
-    data: pathData,
+    data: normalizeSvgPath(pathData),
   }];
 
   // Optionally resize to new dimensions (useful when path changes shape)
@@ -5845,11 +6109,11 @@ async function setVectorNetwork(params) {
     };
   });
 
-  node.vectorNetwork = {
+  await node.setVectorNetworkAsync({
     vertices: figmaVertices,
     segments: figmaSegments,
     regions: figmaRegions,
-  };
+  });
 
   // Read back the result
   var updatedNetwork = node.vectorNetwork;
@@ -6017,7 +6281,7 @@ async function batchMutate(params) {
           var textNode = await figma.getNodeByIdAsync(op.nodeId);
           if (!textNode) throw new Error("Node not found: " + op.nodeId);
           if (textNode.type !== "TEXT") throw new Error("Node is not TEXT: " + op.nodeId);
-          await figma.loadFontAsync(textNode.fontName);
+          await loadAllFonts(textNode);
           textNode.characters = op.text;
           result = { op: "set_text", nodeId: op.nodeId, name: textNode.name };
           break;
@@ -6029,11 +6293,31 @@ async function batchMutate(params) {
           result = { op: "set_visible", nodeId: op.nodeId, name: visNode.name, visible: visNode.visible };
           break;
 
+        case "set_font":
+          var fontNode = await figma.getNodeByIdAsync(op.nodeId);
+          if (!fontNode) throw new Error("Node not found: " + op.nodeId);
+          if (fontNode.type !== "TEXT") throw new Error("Node is not TEXT: " + op.nodeId);
+          var batchFontFamily = op.fontFamily || "Inter";
+          var batchFontStyle = op.fontStyle || "Regular";
+          await figma.loadFontAsync({ family: batchFontFamily, style: batchFontStyle });
+          fontNode.fontName = { family: batchFontFamily, style: batchFontStyle };
+          result = { op: "set_font", nodeId: op.nodeId, name: fontNode.name, fontFamily: batchFontFamily, fontStyle: batchFontStyle };
+          break;
+
+        case "set_text_align":
+          var alignNode = await figma.getNodeByIdAsync(op.nodeId);
+          if (!alignNode) throw new Error("Node not found: " + op.nodeId);
+          if (alignNode.type !== "TEXT") throw new Error("Node is not TEXT: " + op.nodeId);
+          if (op.horizontal !== undefined) alignNode.textAlignHorizontal = op.horizontal;
+          if (op.vertical !== undefined) alignNode.textAlignVertical = op.vertical;
+          result = { op: "set_text_align", nodeId: op.nodeId, name: alignNode.name, horizontal: alignNode.textAlignHorizontal, vertical: alignNode.textAlignVertical };
+          break;
+
         case "set_vector_path":
           var vpNode = await figma.getNodeByIdAsync(op.nodeId);
           if (!vpNode) throw new Error("Node not found: " + op.nodeId);
           if (vpNode.type !== "VECTOR") throw new Error("Node is not a VECTOR (type: " + vpNode.type + ")");
-          vpNode.vectorPaths = [{ windingRule: "NONZERO", data: op.pathData }];
+          vpNode.vectorPaths = [{ windingRule: "NONZERO", data: normalizeSvgPath(op.pathData) }];
           if (op.width !== undefined && op.height !== undefined) {
             vpNode.resize(op.width, op.height);
           }
@@ -6062,6 +6346,667 @@ async function batchMutate(params) {
     successCount: successCount,
     failureCount: failureCount,
     results: results,
+  };
+}
+
+// --- set_text_align: Set text alignment on a text node ---
+async function setTextAlign(params) {
+  var nodeId = params.nodeId;
+  var horizontal = params.horizontal;
+  var vertical = params.vertical;
+
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
+
+  if (horizontal !== undefined) {
+    var validH = ["LEFT", "CENTER", "RIGHT", "JUSTIFIED"];
+    if (validH.indexOf(horizontal) === -1) throw new Error("Invalid horizontal alignment: " + horizontal + ". Must be one of: " + validH.join(", "));
+    node.textAlignHorizontal = horizontal;
+  }
+  if (vertical !== undefined) {
+    var validV = ["TOP", "CENTER", "BOTTOM"];
+    if (validV.indexOf(vertical) === -1) throw new Error("Invalid vertical alignment: " + vertical + ". Must be one of: " + validV.join(", "));
+    node.textAlignVertical = vertical;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    textAlignHorizontal: node.textAlignHorizontal,
+    textAlignVertical: node.textAlignVertical,
+  };
+}
+
+// --- set_text_format: Set paragraph/node-level formatting on a text node ---
+async function setTextFormat(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
+
+  // Load all fonts used in the text node
+  await loadAllFonts(node);
+
+  if (params.lineHeight !== undefined) {
+    if (params.lineHeight === "AUTO") {
+      node.lineHeight = { unit: "AUTO" };
+    } else if (typeof params.lineHeight === "number") {
+      node.lineHeight = { value: params.lineHeight, unit: "PIXELS" };
+    } else if (params.lineHeight.value !== undefined && params.lineHeight.unit !== undefined) {
+      node.lineHeight = params.lineHeight;
+    }
+  }
+  if (params.paragraphIndent !== undefined) {
+    node.paragraphIndent = params.paragraphIndent;
+  }
+  if (params.paragraphSpacing !== undefined) {
+    node.paragraphSpacing = params.paragraphSpacing;
+  }
+  if (params.letterSpacing !== undefined) {
+    if (typeof params.letterSpacing === "number") {
+      node.letterSpacing = { value: params.letterSpacing, unit: "PIXELS" };
+    } else if (params.letterSpacing.value !== undefined && params.letterSpacing.unit !== undefined) {
+      node.letterSpacing = params.letterSpacing;
+    }
+  }
+  if (params.textCase !== undefined) {
+    node.textCase = params.textCase;
+  }
+  if (params.leadingTrim !== undefined) {
+    node.leadingTrim = params.leadingTrim;
+  }
+  if (params.hangingPunctuation !== undefined) {
+    node.hangingPunctuation = !!params.hangingPunctuation;
+  }
+  if (params.hangingList !== undefined) {
+    node.hangingList = !!params.hangingList;
+  }
+  if (params.listSpacing !== undefined) {
+    node.listSpacing = params.listSpacing;
+  }
+  if (params.textTruncation !== undefined) {
+    node.textTruncation = params.textTruncation;
+  }
+  if (params.maxLines !== undefined) {
+    node.maxLines = params.maxLines;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    lineHeight: safeMixed(node.lineHeight),
+    paragraphIndent: node.paragraphIndent,
+    paragraphSpacing: node.paragraphSpacing,
+    letterSpacing: safeMixed(node.letterSpacing),
+    textCase: safeMixed(node.textCase),
+    hangingPunctuation: node.hangingPunctuation,
+    hangingList: node.hangingList,
+    listSpacing: node.listSpacing,
+    textTruncation: node.textTruncation,
+    maxLines: node.maxLines,
+  };
+}
+
+// Helper: append or insert a child into a parent at optional index
+async function appendOrInsertChild(child, parentId, insertAt) {
+  if (parentId) {
+    var parentNode = await figma.getNodeByIdAsync(parentId);
+    if (!parentNode) throw new Error("Parent node not found with ID: " + parentId);
+    if (!("appendChild" in parentNode)) throw new Error("Parent node does not support children: " + parentId);
+    if (insertAt !== undefined && insertAt !== null && "insertChild" in parentNode) {
+      parentNode.insertChild(insertAt, child);
+    } else {
+      parentNode.appendChild(child);
+    }
+  } else {
+    figma.currentPage.appendChild(child);
+  }
+}
+
+// Helper: sanitize figma.mixed (Symbol) values for postMessage serialization
+function safeMixed(val) {
+  if (typeof val === "symbol") return "mixed";
+  return val;
+}
+
+// Helper: load all fonts used in a text node (handles mixed fonts)
+async function loadAllFonts(textNode) {
+  if (textNode.fontName === figma.mixed) {
+    // Get all unique fonts used in the text
+    var segments = textNode.getStyledTextSegments(["fontName"]);
+    for (var i = 0; i < segments.length; i++) {
+      try {
+        await figma.loadFontAsync(segments[i].fontName);
+      } catch (e) {}
+    }
+  } else {
+    try {
+      await figma.loadFontAsync(textNode.fontName);
+    } catch (e) {}
+  }
+}
+
+// --- set_text_list: Set native list formatting on a text node ---
+async function setTextList(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
+
+  await loadAllFonts(node);
+
+  var lines = params.lines;
+  var listType = params.listType || "UNORDERED";
+  var start = 0;
+  var end = node.characters.length;
+
+  // If specific lines are provided, apply per-line
+  if (lines && Array.isArray(lines)) {
+    // Split text into lines to find character ranges
+    var text = node.characters;
+    var lineStarts = [0];
+    for (var i = 0; i < text.length; i++) {
+      if (text[i] === "\n") lineStarts.push(i + 1);
+    }
+    lineStarts.push(text.length); // sentinel
+
+    for (var li = 0; li < lines.length; li++) {
+      var lineSpec = lines[li];
+      var lineIdx = lineSpec.line; // 0-based line index
+      if (lineIdx < 0 || lineIdx >= lineStarts.length - 1) continue;
+
+      var ls = lineStarts[lineIdx];
+      var le = lineStarts[lineIdx + 1];
+      // Don't include trailing newline in range
+      if (le > ls && text[le - 1] === "\n") le--;
+      if (le <= ls) continue;
+
+      var lt = lineSpec.type || listType;
+      node.setRangeListOptions(ls, le, { type: lt });
+
+      if (lineSpec.indentation !== undefined) {
+        node.setRangeIndentation(ls, le, lineSpec.indentation);
+      }
+    }
+  } else {
+    // Apply to entire text
+    node.setRangeListOptions(start, end, { type: listType });
+    if (params.indentation !== undefined) {
+      node.setRangeIndentation(start, end, params.indentation);
+    }
+  }
+
+  // Node-level list properties
+  if (params.listSpacing !== undefined) {
+    node.listSpacing = params.listSpacing;
+  }
+  if (params.hangingList !== undefined) {
+    node.hangingList = !!params.hangingList;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    characters: node.characters,
+    listSpacing: node.listSpacing,
+    hangingList: node.hangingList,
+  };
+}
+
+// --- set_range_format: Per-range text formatting ---
+async function setRangeFormat(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
+
+  await loadAllFonts(node);
+
+  var ranges = params.ranges;
+  if (!ranges || !Array.isArray(ranges) || ranges.length === 0) {
+    throw new Error("Missing or empty ranges array");
+  }
+
+  var results = [];
+
+  for (var ri = 0; ri < ranges.length; ri++) {
+    var range = ranges[ri];
+    var start = range.start;
+    var end = range.end;
+
+    if (start === undefined || end === undefined) {
+      results.push({ index: ri, success: false, error: "Missing start or end" });
+      continue;
+    }
+    if (start < 0 || end > node.characters.length || start >= end) {
+      results.push({ index: ri, success: false, error: "Invalid range: start=" + start + " end=" + end + " length=" + node.characters.length });
+      continue;
+    }
+
+    try {
+      // Font family + style
+      if (range.fontFamily !== undefined) {
+        var fontStyle = range.fontStyle || "Regular";
+        await figma.loadFontAsync({ family: range.fontFamily, style: fontStyle });
+        node.setRangeFontName(start, end, { family: range.fontFamily, style: fontStyle });
+      }
+
+      // Font size
+      if (range.fontSize !== undefined) {
+        node.setRangeFontSize(start, end, range.fontSize);
+      }
+
+      // Text color (fills)
+      if (range.color !== undefined) {
+        var color = range.color;
+        if (typeof color === "string") {
+          color = hexToFigmaColor(color);
+          if (!color) throw new Error("Invalid hex color");
+        }
+        node.setRangeFills(start, end, [{
+          type: "SOLID",
+          color: { r: color.r, g: color.g, b: color.b },
+          opacity: color.a !== undefined ? color.a : 1,
+        }]);
+      }
+
+      // Text case
+      if (range.textCase !== undefined) {
+        node.setRangeTextCase(start, end, range.textCase);
+      }
+
+      // Text decoration
+      if (range.textDecoration !== undefined) {
+        node.setRangeTextDecoration(start, end, range.textDecoration);
+      }
+
+      // Letter spacing
+      if (range.letterSpacing !== undefined) {
+        if (typeof range.letterSpacing === "number") {
+          node.setRangeLetterSpacing(start, end, { value: range.letterSpacing, unit: "PIXELS" });
+        } else {
+          node.setRangeLetterSpacing(start, end, range.letterSpacing);
+        }
+      }
+
+      // Line height
+      if (range.lineHeight !== undefined) {
+        if (range.lineHeight === "AUTO") {
+          node.setRangeLineHeight(start, end, { unit: "AUTO" });
+        } else if (typeof range.lineHeight === "number") {
+          node.setRangeLineHeight(start, end, { value: range.lineHeight, unit: "PIXELS" });
+        } else {
+          node.setRangeLineHeight(start, end, range.lineHeight);
+        }
+      }
+
+      // List options
+      if (range.listType !== undefined) {
+        node.setRangeListOptions(start, end, { type: range.listType });
+      }
+
+      // Indentation (for nested lists)
+      if (range.indentation !== undefined) {
+        node.setRangeIndentation(start, end, range.indentation);
+      }
+
+      // Hyperlink
+      if (range.hyperlink !== undefined) {
+        node.setRangeHyperlink(start, end, range.hyperlink);
+      }
+
+      results.push({ index: ri, success: true, start: start, end: end });
+    } catch (e) {
+      results.push({ index: ri, success: false, start: start, end: end, error: e.message || String(e) });
+    }
+  }
+
+  var successCount = 0;
+  var failureCount = 0;
+  for (var i = 0; i < results.length; i++) {
+    if (results[i].success) successCount++;
+    else failureCount++;
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    totalRanges: ranges.length,
+    successCount: successCount,
+    failureCount: failureCount,
+    results: results,
+  };
+}
+
+// --- set_clips_content: Set frame clipping ---
+async function setClipsContent(params) {
+  var nodeId = params.nodeId;
+  var clipsContent = params.clipsContent;
+
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("clipsContent" in node)) throw new Error("Node does not support clipsContent (type: " + node.type + ")");
+
+  node.clipsContent = !!clipsContent;
+
+  return {
+    id: node.id,
+    name: node.name,
+    clipsContent: node.clipsContent,
+  };
+}
+
+// --- set_effects: Set effects (shadows, blurs) on a node ---
+async function setEffects(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("effects" in node)) throw new Error("Node does not support effects (type: " + node.type + ")");
+
+  var effects = params.effects;
+  if (!effects || !Array.isArray(effects)) throw new Error("Missing or invalid effects array");
+
+  var figmaEffects = [];
+  for (var i = 0; i < effects.length; i++) {
+    var e = effects[i];
+    var effect = {
+      type: e.type,
+      visible: e.visible !== false,
+    };
+
+    if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
+      var color = e.color || { r: 0, g: 0, b: 0, a: 0.25 };
+      if (typeof color === "string") {
+        var parsed = hexToFigmaColor(color);
+        if (parsed) color = parsed;
+        else color = { r: 0, g: 0, b: 0, a: 0.25 };
+      }
+      effect.color = { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== undefined ? color.a : 0.25 };
+      effect.offset = { x: (e.offset && e.offset.x) || 0, y: (e.offset && e.offset.y) || 4 };
+      effect.radius = e.radius !== undefined ? e.radius : 4;
+      effect.spread = e.spread !== undefined ? e.spread : 0;
+      if (e.blendMode) effect.blendMode = e.blendMode;
+    } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+      effect.radius = e.radius !== undefined ? e.radius : 4;
+    }
+
+    figmaEffects.push(effect);
+  }
+
+  node.effects = figmaEffects;
+
+  return {
+    id: node.id,
+    name: node.name,
+    effectCount: figmaEffects.length,
+    effects: figmaEffects,
+  };
+}
+
+// --- set_opacity: Set node opacity ---
+async function setOpacity(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("opacity" in node)) throw new Error("Node does not support opacity (type: " + node.type + ")");
+
+  node.opacity = params.opacity;
+
+  return {
+    id: node.id,
+    name: node.name,
+    opacity: node.opacity,
+  };
+}
+
+// --- set_blend_mode: Set node blend mode ---
+async function setBlendMode(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("blendMode" in node)) throw new Error("Node does not support blendMode (type: " + node.type + ")");
+
+  node.blendMode = params.blendMode;
+
+  return {
+    id: node.id,
+    name: node.name,
+    blendMode: node.blendMode,
+  };
+}
+
+// --- set_layout_positioning: Set absolute/auto positioning in auto-layout ---
+async function setLayoutPositioning(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("layoutPositioning" in node)) throw new Error("Node does not support layoutPositioning (type: " + node.type + ")");
+
+  node.layoutPositioning = params.positioning;
+
+  // If setting to ABSOLUTE, also set x/y constraints if provided
+  if (params.positioning === "ABSOLUTE" && params.constraints) {
+    if ("constraints" in node) {
+      var c = params.constraints;
+      node.constraints = {
+        horizontal: c.horizontal || "MIN",
+        vertical: c.vertical || "MIN",
+      };
+    }
+  }
+
+  return {
+    id: node.id,
+    name: node.name,
+    layoutPositioning: node.layoutPositioning,
+    constraints: "constraints" in node ? node.constraints : undefined,
+  };
+}
+
+// --- set_rotation: Set node rotation ---
+async function setRotation(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("rotation" in node)) throw new Error("Node does not support rotation (type: " + node.type + ")");
+
+  node.rotation = params.rotation;
+
+  return {
+    id: node.id,
+    name: node.name,
+    rotation: node.rotation,
+  };
+}
+
+// --- create_ellipse: Create an ellipse/circle ---
+async function createEllipse(params) {
+  var x = params.x || 0;
+  var y = params.y || 0;
+  var width = params.width || 100;
+  var height = params.height || 100;
+  var name = params.name || "Ellipse";
+  var parentId = params.parentId;
+
+  var ellipse = figma.createEllipse();
+  ellipse.x = x;
+  ellipse.y = y;
+  ellipse.resize(width, height);
+  ellipse.name = name;
+
+  // Set fill color if provided
+  if (params.fillColor) {
+    var fc = params.fillColor;
+    if (typeof fc === "string") {
+      fc = hexToFigmaColor(fc) || { r: 0.85, g: 0.85, b: 0.85, a: 1 };
+    }
+    ellipse.fills = [{
+      type: "SOLID",
+      color: { r: fc.r || 0, g: fc.g || 0, b: fc.b || 0 },
+      opacity: fc.a !== undefined ? fc.a : 1,
+    }];
+  }
+
+  // Set arc data if provided (for arcs/donuts)
+  if (params.arcData) {
+    ellipse.arcData = {
+      startingAngle: params.arcData.startingAngle || 0,
+      endingAngle: params.arcData.endingAngle || 6.2831853,
+      innerRadius: params.arcData.innerRadius || 0,
+    };
+  }
+
+  await appendOrInsertChild(ellipse, parentId, params.insertAt);
+
+  return {
+    id: ellipse.id,
+    name: ellipse.name,
+    x: ellipse.x,
+    y: ellipse.y,
+    width: ellipse.width,
+    height: ellipse.height,
+  };
+}
+
+// --- set_constraints: Set horizontal/vertical constraints ---
+async function setConstraints(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("constraints" in node)) throw new Error("Node does not support constraints (type: " + node.type + ")");
+
+  var c = {};
+  var current = node.constraints;
+  c.horizontal = params.horizontal || current.horizontal;
+  c.vertical = params.vertical || current.vertical;
+  node.constraints = c;
+
+  return {
+    id: node.id,
+    name: node.name,
+    constraints: node.constraints,
+  };
+}
+
+// --- set_min_max_size: Set min/max width/height on auto-layout children ---
+async function setMinMaxSize(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+
+  if (params.minWidth !== undefined) node.minWidth = params.minWidth;
+  if (params.maxWidth !== undefined) node.maxWidth = params.maxWidth;
+  if (params.minHeight !== undefined) node.minHeight = params.minHeight;
+  if (params.maxHeight !== undefined) node.maxHeight = params.maxHeight;
+
+  return {
+    id: node.id,
+    name: node.name,
+    minWidth: node.minWidth,
+    maxWidth: node.maxWidth,
+    minHeight: node.minHeight,
+    maxHeight: node.maxHeight,
+  };
+}
+
+// --- set_mask: Set a node as a mask for its siblings ---
+async function setMask(params) {
+  var nodeId = params.nodeId;
+  var isMask = params.isMask !== false; // default true
+
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found with ID: " + nodeId);
+  if (!("isMask" in node)) throw new Error("Node does not support isMask (type: " + node.type + ")");
+
+  // If enabling mask and shouldGroup is requested, group the mask with its siblings
+  if (isMask && params.groupWithIds && Array.isArray(params.groupWithIds)) {
+    var siblings = [node];
+    for (var i = 0; i < params.groupWithIds.length; i++) {
+      var sibling = await figma.getNodeByIdAsync(params.groupWithIds[i]);
+      if (sibling) siblings.push(sibling);
+    }
+    if (siblings.length > 1) {
+      var group = figma.group(siblings, node.parent);
+      if (params.groupName) group.name = params.groupName;
+      // The mask node is now inside the group — set isMask on it
+      // After grouping, node reference may be stale, refetch
+      var maskNode = await figma.getNodeByIdAsync(nodeId);
+      if (maskNode && "isMask" in maskNode) {
+        maskNode.isMask = true;
+      }
+      return {
+        maskNodeId: nodeId,
+        isMask: true,
+        groupId: group.id,
+        groupName: group.name,
+        childCount: group.children.length,
+      };
+    }
+  }
+
+  node.isMask = isMask;
+
+  return {
+    id: node.id,
+    name: node.name,
+    isMask: node.isMask,
+  };
+}
+
+// --- create_component_set: Combine components into a variant set ---
+async function createComponentSet(params) {
+  var componentIds = params.componentIds;
+  var name = params.name;
+
+  // Fetch all component nodes
+  var components = [];
+  for (var i = 0; i < componentIds.length; i++) {
+    var comp = await figma.getNodeByIdAsync(componentIds[i]);
+    if (!comp) throw new Error("Component not found with ID: " + componentIds[i]);
+    if (comp.type !== "COMPONENT") throw new Error("Node " + componentIds[i] + " is not a COMPONENT (type: " + comp.type + "). Convert frames to components first with create_component.");
+    components.push(comp);
+  }
+
+  if (components.length < 2) {
+    throw new Error("Need at least 2 components to create a component set. Got " + components.length);
+  }
+
+  // All components must share the same parent
+  var parent = components[0].parent;
+  for (var i = 1; i < components.length; i++) {
+    if (components[i].parent !== parent) {
+      throw new Error("All components must share the same parent. Component " + components[i].id + " has a different parent.");
+    }
+  }
+
+  // Combine into variants
+  var componentSet = figma.combineAsVariants(components, parent);
+
+  if (name) {
+    componentSet.name = name;
+  }
+
+  // Collect variant info
+  var variants = [];
+  for (var i = 0; i < componentSet.children.length; i++) {
+    var child = componentSet.children[i];
+    if (child.type === "COMPONENT") {
+      variants.push({
+        id: child.id,
+        name: child.name,
+      });
+    }
+  }
+
+  return {
+    id: componentSet.id,
+    name: componentSet.name,
+    type: "COMPONENT_SET",
+    variantCount: variants.length,
+    variants: variants,
+    width: componentSet.width,
+    height: componentSet.height,
   };
 }
 
@@ -6131,17 +7076,17 @@ async function scanNodeStyles(params) {
     if (node.type !== "TEXT") return null;
     try {
       return {
-        fontSize: node.fontSize,
+        fontSize: safeMixed(node.fontSize),
         fontFamily: typeof node.fontName === "object" ? node.fontName.family : null,
         fontStyle: typeof node.fontName === "object" ? node.fontName.style : null,
-        fontWeight: node.fontWeight,
-        lineHeight: node.lineHeight,
-        letterSpacing: node.letterSpacing,
+        fontWeight: safeMixed(node.fontWeight),
+        lineHeight: safeMixed(node.lineHeight),
+        letterSpacing: safeMixed(node.letterSpacing),
         textAlignHorizontal: node.textAlignHorizontal,
         textAlignVertical: node.textAlignVertical,
       };
     } catch (e) {
-      return { fontSize: node.fontSize };
+      return { fontSize: safeMixed(node.fontSize) };
     }
   }
 
@@ -6162,11 +7107,11 @@ async function scanNodeStyles(params) {
     if (fills) entry.fills = fills;
     var strokes = extractStrokes(node);
     if (strokes) entry.strokes = strokes;
-    if ("strokeWeight" in node && node.strokeWeight) entry.strokeWeight = node.strokeWeight;
+    if ("strokeWeight" in node && node.strokeWeight) entry.strokeWeight = safeMixed(node.strokeWeight);
 
     // Corner radius
     if ("cornerRadius" in node && node.cornerRadius !== undefined && node.cornerRadius !== 0) {
-      entry.cornerRadius = node.cornerRadius;
+      entry.cornerRadius = safeMixed(node.cornerRadius);
     }
 
     // Auto layout
@@ -6212,4 +7157,853 @@ async function scanNodeStyles(params) {
     totalNodes: results.length,
     nodes: results,
   };
+}
+
+// --- introspect_node: Discover the full manipulation surface of a component/frame ---
+async function introspectNode(params) {
+  var nodeId = params.nodeId;
+  var maxDepth = params.maxDepth !== undefined ? params.maxDepth : 20;
+
+  var root = await figma.getNodeByIdAsync(nodeId);
+  if (!root) {
+    throw new Error("Node not found with ID: " + nodeId);
+  }
+
+  var properties = {};
+  var wrapperFrameCount = 0;
+  var nameCollisions = {};
+  var treeDepth = 0;
+  var componentName = null;
+
+  // Generic names to skip when building semantic keys
+  var GENERIC_NAMES = new Set([
+    "Frame", "Group", "Rectangle", "Ellipse", "Vector", "Component",
+    "Instance", "frame", "group", "rectangle", "ellipse", "vector",
+  ]);
+
+  function isGenericName(name) {
+    if (GENERIC_NAMES.has(name)) return true;
+    // Pure numbers like "1", "42"
+    if (/^\d+$/.test(name)) return true;
+    // "Frame 123" style
+    if (/^(Frame|Group|Rectangle|Ellipse|Vector|Component|Instance)\s+\d+$/i.test(name)) return true;
+    return false;
+  }
+
+  function isWrapperFrame(node) {
+    if (node.type !== "FRAME") return false;
+    if (!("children" in node) || node.children.length !== 1) return false;
+    // Has visible fills?
+    if ("fills" in node && Array.isArray(node.fills)) {
+      for (var i = 0; i < node.fills.length; i++) {
+        if (node.fills[i].visible !== false && node.fills[i].type === "SOLID") return false;
+      }
+    }
+    // Has layout mode?
+    if ("layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") return false;
+    // Has effects?
+    if ("effects" in node && Array.isArray(node.effects) && node.effects.length > 0) {
+      for (var i = 0; i < node.effects.length; i++) {
+        if (node.effects[i].visible !== false) return false;
+      }
+    }
+    return true;
+  }
+
+  function hasBoundVariable(node, field) {
+    try {
+      var bindings = node.boundVariables;
+      if (bindings && bindings[field]) {
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function rgbToHex(r, g, b) {
+    var rr = Math.round(r * 255).toString(16).padStart(2, "0");
+    var gg = Math.round(g * 255).toString(16).padStart(2, "0");
+    var bb = Math.round(b * 255).toString(16).padStart(2, "0");
+    return "#" + rr + gg + bb;
+  }
+
+  function buildSemanticKey(pathSegments) {
+    // Filter out generic names, take last 2-3 meaningful ones
+    var meaningful = [];
+    for (var i = 0; i < pathSegments.length; i++) {
+      if (!isGenericName(pathSegments[i])) {
+        meaningful.push(pathSegments[i]);
+      }
+    }
+    if (meaningful.length === 0) {
+      // All generic — use last segment
+      meaningful = [pathSegments[pathSegments.length - 1] || "node"];
+    }
+    // Take last 2-3
+    var start = Math.max(0, meaningful.length - 3);
+    var parts = meaningful.slice(start);
+    // Clean up each part: lowercase, replace spaces with camelCase
+    for (var i = 0; i < parts.length; i++) {
+      parts[i] = parts[i]
+        .replace(/[^a-zA-Z0-9_ -]/g, "")
+        .replace(/\s+(.)/g, function(_, c) { return c.toUpperCase(); })
+        .replace(/^\s+/, "");
+      if (parts[i].length === 0) parts[i] = "node";
+    }
+    return parts.join(".");
+  }
+
+  function addProperty(baseKey, propSuffix, propDef) {
+    var key = propSuffix ? baseKey + "." + propSuffix : baseKey;
+
+    // Handle collisions
+    if (properties[key]) {
+      // Track collision on base name
+      var baseName = baseKey.split(".").pop();
+      nameCollisions[baseName] = (nameCollisions[baseName] || 1) + 1;
+      key = key + "_" + nameCollisions[baseName];
+    }
+
+    properties[key] = propDef;
+  }
+
+  async function walkNode(node, depth, pathSegments) {
+    if (depth > maxDepth) return;
+    if (depth > treeDepth) treeDepth = depth;
+
+    var currentPath = pathSegments.concat([node.name]);
+
+    // Check for wrapper frame
+    if (depth > 0 && isWrapperFrame(node)) {
+      wrapperFrameCount++;
+    }
+
+    var baseKey = buildSemanticKey(currentPath);
+
+    // 1. TEXT nodes
+    if (node.type === "TEXT") {
+      var textExtra = { fontSize: null, fontFamily: null };
+      try {
+        if (node.fontSize !== figma.mixed) textExtra.fontSize = node.fontSize;
+        if (node.fontName !== figma.mixed && typeof node.fontName === "object") {
+          textExtra.fontFamily = node.fontName.family;
+        }
+      } catch (e) {}
+      addProperty(baseKey, "text", {
+        type: "text",
+        value: node.characters,
+        nodeId: node.id,
+        fontSize: textExtra.fontSize,
+        fontFamily: textExtra.fontFamily,
+      });
+    }
+
+    // 2. INSTANCE nodes
+    if (node.type === "INSTANCE") {
+      try {
+        var mainComp = await node.getMainComponentAsync();
+        if (mainComp) {
+          var variants = [];
+          if (mainComp.parent && mainComp.parent.type === "COMPONENT_SET") {
+            var siblings = mainComp.parent.children;
+            for (var i = 0; i < siblings.length; i++) {
+              if (siblings[i].type === "COMPONENT") {
+                variants.push(siblings[i].name);
+              }
+            }
+          }
+          addProperty(baseKey, "instance", {
+            type: "instance",
+            value: mainComp.name,
+            nodeId: node.id,
+            componentId: mainComp.id,
+            variants: variants.length > 0 ? variants : undefined,
+          });
+        }
+      } catch (e) {}
+    }
+
+    // 3. Visible solid fills
+    if ("fills" in node && Array.isArray(node.fills)) {
+      for (var fi = 0; fi < node.fills.length; fi++) {
+        var fill = node.fills[fi];
+        if (fill.visible !== false && fill.type === "SOLID") {
+          addProperty(baseKey, "fill", {
+            type: "color",
+            value: rgbToHex(fill.color.r, fill.color.g, fill.color.b),
+            nodeId: node.id,
+            target: "fill",
+            boundVariable: hasBoundVariable(node, "fills"),
+          });
+          break; // Only first visible solid fill
+        }
+      }
+    }
+
+    // 4. Visible solid strokes
+    if ("strokes" in node && Array.isArray(node.strokes)) {
+      for (var si = 0; si < node.strokes.length; si++) {
+        var stroke = node.strokes[si];
+        if (stroke.visible !== false && stroke.type === "SOLID") {
+          addProperty(baseKey, "stroke", {
+            type: "color",
+            value: rgbToHex(stroke.color.r, stroke.color.g, stroke.color.b),
+            nodeId: node.id,
+            target: "stroke",
+            boundVariable: hasBoundVariable(node, "strokes"),
+          });
+          break;
+        }
+      }
+    }
+
+    // 5. Hidden nodes (visibility toggle)
+    if (depth > 0 && node.visible === false) {
+      addProperty(baseKey, "visible", {
+        type: "boolean",
+        value: false,
+        nodeId: node.id,
+      });
+    }
+
+    // 6. Component properties (on INSTANCE nodes)
+    if (node.type === "INSTANCE" && node.componentProperties) {
+      var compProps = node.componentProperties;
+      for (var propName in compProps) {
+        if (compProps.hasOwnProperty(propName)) {
+          var prop = compProps[propName];
+          addProperty(baseKey, "prop." + propName.split("#")[0], {
+            type: "component_property",
+            value: prop.value,
+            nodeId: node.id,
+            propertyType: prop.type,
+            key: propName,
+          });
+        }
+      }
+    }
+
+    // Recurse into children
+    if ("children" in node && node.children) {
+      for (var ci = 0; ci < node.children.length; ci++) {
+        await walkNode(node.children[ci], depth + 1, currentPath);
+      }
+    }
+  }
+
+  // Get component name if root is an instance or component
+  if (root.type === "INSTANCE") {
+    try {
+      var mc = await root.getMainComponentAsync();
+      if (mc) componentName = mc.name;
+    } catch (e) {}
+  } else if (root.type === "COMPONENT") {
+    componentName = root.name;
+  } else if (root.type === "COMPONENT_SET") {
+    componentName = root.name;
+  }
+
+  await walkNode(root, 0, []);
+
+  var propertyCount = 0;
+  for (var k in properties) {
+    if (properties.hasOwnProperty(k)) propertyCount++;
+  }
+
+  return {
+    id: root.id,
+    name: root.name,
+    component: componentName,
+    depth: treeDepth,
+    wrapperFrames: wrapperFrameCount,
+    nameCollisions: nameCollisions,
+    propertyCount: propertyCount,
+    properties: properties,
+  };
+}
+
+// --- set_properties: Modify multiple properties by semantic key ---
+async function setProperties(params) {
+  var nodeId = params.nodeId;
+  var newValues = params.properties;
+  var propertyMap = params.propertyMap;
+
+  // If no property map provided, introspect to discover it
+  if (!propertyMap) {
+    var introspection = await introspectNode({ nodeId: nodeId });
+    propertyMap = introspection.properties;
+  }
+
+  var results = [];
+  var successCount = 0;
+  var failureCount = 0;
+
+  for (var key in newValues) {
+    if (!newValues.hasOwnProperty(key)) continue;
+
+    var newValue = newValues[key];
+    var propDef = propertyMap[key];
+
+    if (!propDef) {
+      results.push({ key: key, success: false, error: "Property key not found in property map" });
+      failureCount++;
+      continue;
+    }
+
+    try {
+      var targetNode = await figma.getNodeByIdAsync(propDef.nodeId);
+      if (!targetNode) {
+        throw new Error("Node not found: " + propDef.nodeId);
+      }
+
+      var oldValue = propDef.value;
+
+      switch (propDef.type) {
+        case "text":
+          if (targetNode.type !== "TEXT") throw new Error("Node is not TEXT");
+          await loadAllFonts(targetNode);
+          await setCharacters(targetNode, String(newValue));
+          results.push({ key: key, success: true, oldValue: oldValue, newValue: String(newValue) });
+          break;
+
+        case "color":
+          var hexColor = String(newValue);
+          var parsed = hexToFigmaColor(hexColor);
+          if (!parsed) throw new Error("Invalid hex color: " + hexColor);
+          if (propDef.target === "stroke") {
+            if (!("strokes" in targetNode)) throw new Error("Node does not support strokes");
+            targetNode.strokes = [{
+              type: "SOLID",
+              color: { r: parsed.r, g: parsed.g, b: parsed.b },
+              opacity: parsed.a !== undefined ? parsed.a : 1,
+            }];
+          } else {
+            if (!("fills" in targetNode)) throw new Error("Node does not support fills");
+            targetNode.fills = [{
+              type: "SOLID",
+              color: { r: parsed.r, g: parsed.g, b: parsed.b },
+              opacity: parsed.a !== undefined ? parsed.a : 1,
+            }];
+          }
+          results.push({ key: key, success: true, oldValue: oldValue, newValue: hexColor });
+          break;
+
+        case "instance":
+          if (targetNode.type !== "INSTANCE") throw new Error("Node is not an INSTANCE");
+          var variantName = String(newValue);
+          var mainComp = await targetNode.getMainComponentAsync();
+          if (!mainComp) throw new Error("Could not get main component");
+
+          var swapTarget = null;
+          if (mainComp.parent && mainComp.parent.type === "COMPONENT_SET") {
+            var siblings = mainComp.parent.children;
+            for (var si = 0; si < siblings.length; si++) {
+              if (siblings[si].type === "COMPONENT") {
+                // Use indexOf match to handle "Type=Dashboard" style names
+                if (siblings[si].name === variantName || siblings[si].name.indexOf(variantName) !== -1) {
+                  swapTarget = siblings[si];
+                  break;
+                }
+              }
+            }
+          }
+          if (!swapTarget) throw new Error("Variant not found: " + variantName);
+          targetNode.swapComponent(swapTarget);
+          results.push({ key: key, success: true, oldValue: oldValue, newValue: variantName });
+          break;
+
+        case "boolean":
+          targetNode.visible = !!newValue;
+          results.push({ key: key, success: true, oldValue: oldValue, newValue: !!newValue });
+          break;
+
+        case "component_property":
+          // Need to find the instance node that owns this property
+          if (targetNode.type !== "INSTANCE") throw new Error("Node is not an INSTANCE");
+          var propKey = propDef.key;
+          var propObj = {};
+          propObj[propKey] = newValue;
+          targetNode.setProperties(propObj);
+          results.push({ key: key, success: true, oldValue: oldValue, newValue: newValue });
+          break;
+
+        default:
+          throw new Error("Unknown property type: " + propDef.type);
+      }
+
+      successCount++;
+    } catch (e) {
+      results.push({
+        key: key,
+        success: false,
+        error: e.message || String(e),
+      });
+      failureCount++;
+    }
+  }
+
+  return {
+    nodeId: nodeId,
+    totalProperties: results.length,
+    successCount: successCount,
+    failureCount: failureCount,
+    results: results,
+  };
+}
+
+// --- optimize_structure: Analyze and optionally restructure for AI efficiency ---
+async function optimizeStructure(params) {
+  var nodeId = params.nodeId;
+  var options = params.options || {};
+  var dryRun = options.dryRun !== false; // default true
+  var maxDepth = options.maxDepth !== undefined ? options.maxDepth : 20;
+  var doFlatten = options.flatten !== false; // default true
+  var doRename = options.rename !== false; // default true
+  var doExposeProperties = options.exposeProperties === true; // default false
+  var doExtractComponents = options.extractComponents === true; // default false
+
+  var root = await figma.getNodeByIdAsync(nodeId);
+  if (!root) {
+    throw new Error("Node not found with ID: " + nodeId);
+  }
+
+  var changes = [];
+  var appliedCount = 0;
+
+  function isWrapperFrame(node) {
+    if (node.type !== "FRAME") return false;
+    if (!("children" in node) || node.children.length !== 1) return false;
+    if ("fills" in node && Array.isArray(node.fills)) {
+      for (var i = 0; i < node.fills.length; i++) {
+        if (node.fills[i].visible !== false && node.fills[i].type === "SOLID") return false;
+      }
+    }
+    if ("layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") return false;
+    if ("effects" in node && Array.isArray(node.effects) && node.effects.length > 0) {
+      for (var i = 0; i < node.effects.length; i++) {
+        if (node.effects[i].visible !== false) return false;
+      }
+    }
+    return true;
+  }
+
+  // Pass 1: Find wrapper frames to flatten (collect bottom-up)
+  var wrappers = [];
+  if (doFlatten) {
+    async function findWrappers(node, depth) {
+      if (depth > maxDepth) return;
+      // Recurse first (bottom-up processing)
+      if ("children" in node && node.children) {
+        for (var i = 0; i < node.children.length; i++) {
+          await findWrappers(node.children[i], depth + 1);
+        }
+      }
+      if (depth > 0 && isWrapperFrame(node)) {
+        wrappers.push(node);
+      }
+    }
+    await findWrappers(root, 0);
+
+    for (var wi = 0; wi < wrappers.length; wi++) {
+      var wrapper = wrappers[wi];
+      var childName = ("children" in wrapper && wrapper.children.length > 0) ? wrapper.children[0].name : "unknown";
+      changes.push({
+        action: "flatten",
+        nodeId: wrapper.id,
+        nodeName: wrapper.name,
+        description: "Remove wrapper, promote child '" + childName + "'",
+      });
+    }
+  }
+
+  // Pass 2: Find text nodes to rename
+  var textNodesToRename = [];
+  if (doRename) {
+    async function findTextNodes(node, depth) {
+      if (depth > maxDepth) return;
+      if (node.type === "TEXT" && !node.name.startsWith("_")) {
+        textNodesToRename.push(node);
+      }
+      if ("children" in node && node.children) {
+        for (var i = 0; i < node.children.length; i++) {
+          await findTextNodes(node.children[i], depth + 1);
+        }
+      }
+    }
+    await findTextNodes(root, 0);
+
+    for (var ti = 0; ti < textNodesToRename.length; ti++) {
+      var textNode = textNodesToRename[ti];
+      changes.push({
+        action: "rename",
+        nodeId: textNode.id,
+        oldName: textNode.name,
+        newName: "_" + textNode.name,
+      });
+    }
+  }
+
+  // Pass 3: Expose properties (report-only for v1)
+  if (doExposeProperties && (root.type === "COMPONENT" || root.type === "COMPONENT_SET")) {
+    async function findExposeCandidates(node, depth) {
+      if (depth > maxDepth) return;
+      if (node.type === "TEXT") {
+        changes.push({
+          action: "expose_property",
+          nodeId: node.id,
+          nodeName: node.name,
+          description: "TEXT node could be exposed as a component text property",
+          propertyType: "TEXT",
+        });
+      }
+      if (node.type === "INSTANCE") {
+        changes.push({
+          action: "expose_property",
+          nodeId: node.id,
+          nodeName: node.name,
+          description: "INSTANCE node could be exposed as an instance-swap property",
+          propertyType: "INSTANCE_SWAP",
+        });
+      }
+      if ("children" in node && node.children) {
+        for (var i = 0; i < node.children.length; i++) {
+          await findExposeCandidates(node.children[i], depth + 1);
+        }
+      }
+    }
+    await findExposeCandidates(root, 0);
+  }
+
+  // Pass 4: Extract components (stubbed for v2)
+  // doExtractComponents is accepted but returns no results in v1
+
+  // Apply changes if not dry run
+  if (!dryRun) {
+    // Apply flattening (bottom-up order — wrappers array is already bottom-up)
+    if (doFlatten) {
+      for (var ai = 0; ai < wrappers.length; ai++) {
+        var w = wrappers[ai];
+        try {
+          // Verify wrapper still exists and is still a wrapper
+          if (w.removed) continue;
+          if (!isWrapperFrame(w)) continue;
+          var parent = w.parent;
+          if (!parent || !("children" in parent)) continue;
+
+          var child = w.children[0];
+          // Find wrapper's index in parent
+          var wrapperIndex = -1;
+          for (var pi = 0; pi < parent.children.length; pi++) {
+            if (parent.children[pi].id === w.id) {
+              wrapperIndex = pi;
+              break;
+            }
+          }
+          if (wrapperIndex === -1) continue;
+
+          // Preserve child's absolute position
+          child.x = child.x + w.x;
+          child.y = child.y + w.y;
+
+          // Reparent child to wrapper's parent at wrapper's position
+          parent.insertChild(wrapperIndex, child);
+          // Remove wrapper (now empty)
+          w.remove();
+          appliedCount++;
+        } catch (e) {
+          // Skip failures silently — node may have been removed
+        }
+      }
+    }
+
+    // Apply renaming
+    if (doRename) {
+      for (var ri = 0; ri < textNodesToRename.length; ri++) {
+        try {
+          var tn = textNodesToRename[ri];
+          if (tn.removed) continue;
+          tn.name = "_" + tn.name;
+          appliedCount++;
+        } catch (e) {}
+      }
+    }
+  }
+
+  return {
+    nodeId: nodeId,
+    dryRun: dryRun,
+    totalChanges: changes.length,
+    changes: changes,
+    appliedCount: appliedCount,
+  };
+}
+
+// --- create_svg: Create nodes from a complete SVG string ---
+async function createSvg(params) {
+  var svgString = params.svg;
+  var frame = figma.createNodeFromSvg(svgString);
+
+  if (params.name) frame.name = params.name;
+  if (params.x !== undefined) frame.x = params.x;
+  if (params.y !== undefined) frame.y = params.y;
+  if (params.width && params.height) frame.resize(params.width, params.height);
+
+  await appendOrInsertChild(frame, params.parentId, params.insertAt);
+
+  return {
+    id: frame.id,
+    name: frame.name,
+    x: frame.x,
+    y: frame.y,
+    width: frame.width,
+    height: frame.height,
+    childCount: frame.children.length,
+  };
+}
+
+// --- design_query: Query and optionally update nodes matching criteria ---
+async function designQuery(params) {
+  var select = params.select;
+  var update = params.update;
+  var limit = params.limit;
+  var includeProperties = params.includeProperties === true;
+
+  // Determine root
+  var rootNode;
+  if (select.parentId) {
+    rootNode = await figma.getNodeByIdAsync(select.parentId);
+    if (!rootNode) throw new Error("Parent node not found: " + select.parentId);
+  } else {
+    rootNode = figma.currentPage;
+  }
+
+  // Prepare filters
+  var typeFilter = null;
+  if (select.type) {
+    if (Array.isArray(select.type)) {
+      typeFilter = new Set(select.type);
+    } else {
+      typeFilter = new Set([select.type]);
+    }
+  }
+
+  var nameFilter = select.name || null;
+  var nameRegex = null;
+  if (select.nameRegex) {
+    try {
+      nameRegex = new RegExp(select.nameRegex);
+    } catch (e) {
+      throw new Error("Invalid regex pattern: " + e.message);
+    }
+  }
+
+  var componentFilter = select.component || null;
+  var whereFilter = select.where || null;
+  var maxDepth = select.maxDepth || 100;
+
+  if (!typeFilter && !nameFilter && !nameRegex && !componentFilter && !whereFilter && !select.parentId) {
+    throw new Error("At least one selection filter is required to prevent unintended bulk operations");
+  }
+
+  var matches = [];
+  var totalScanned = 0;
+  var startTime = Date.now();
+  var TIMEOUT_MS = 120000;
+
+  async function walkTree(node, depth) {
+    if (depth > maxDepth) return;
+    if (limit && matches.length >= limit) return;
+    if (Date.now() - startTime > TIMEOUT_MS) return;
+
+    totalScanned++;
+
+    // Send progress every 50 nodes
+    if (totalScanned % 50 === 0) {
+      figma.ui.postMessage({
+        type: "command_progress",
+        status: "in_progress",
+        message: "Scanned " + totalScanned + " nodes, " + matches.length + " matches so far...",
+      });
+      await new Promise(function(r) { setTimeout(r, 0); });
+    }
+
+    // Skip the root node itself (depth 0 is the container)
+    if (depth > 0 || !select.parentId) {
+      var passed = true;
+
+      // Type filter
+      if (passed && typeFilter) {
+        if (!typeFilter.has(node.type)) passed = false;
+      }
+
+      // Name filter (substring)
+      if (passed && nameFilter) {
+        if (!node.name || node.name.indexOf(nameFilter) === -1) passed = false;
+      }
+
+      // Name regex filter
+      if (passed && nameRegex) {
+        if (!node.name || !nameRegex.test(node.name)) passed = false;
+      }
+
+      // Component filter (for INSTANCE nodes only)
+      if (passed && componentFilter) {
+        if (node.type !== "INSTANCE") {
+          passed = false;
+        } else {
+          try {
+            var mainComp = await node.getMainComponentAsync();
+            if (!mainComp || mainComp.name.indexOf(componentFilter) === -1) {
+              passed = false;
+            }
+          } catch (e) {
+            passed = false;
+          }
+        }
+      }
+
+      // Where filter (introspect + match properties)
+      if (passed && whereFilter) {
+        try {
+          var intro = await introspectNode({ nodeId: node.id, maxDepth: 5 });
+          var props = intro.properties;
+          for (var wKey in whereFilter) {
+            if (!whereFilter.hasOwnProperty(wKey)) continue;
+            var expectedVal = whereFilter[wKey];
+            var found = false;
+            for (var pKey in props) {
+              if (!props.hasOwnProperty(pKey)) continue;
+              if (pKey === wKey || pKey.indexOf(wKey) !== -1) {
+                if (props[pKey].value === expectedVal) {
+                  found = true;
+                  break;
+                }
+              }
+            }
+            if (!found) {
+              passed = false;
+              break;
+            }
+          }
+        } catch (e) {
+          passed = false;
+        }
+      }
+
+      if (passed && depth > 0) {
+        if (!limit || matches.length < limit) {
+          matches.push(node);
+        }
+      }
+    }
+
+    // Recurse into children
+    if ("children" in node && node.children) {
+      for (var i = 0; i < node.children.length; i++) {
+        if (limit && matches.length >= limit) break;
+        await walkTree(node.children[i], depth + 1);
+      }
+    }
+  }
+
+  await walkTree(rootNode, 0);
+
+  // Process results
+  var results = [];
+  var updatedCount = 0;
+  var failedCount = 0;
+
+  for (var mi = 0; mi < matches.length; mi++) {
+    var matchNode = matches[mi];
+    var resultEntry = {
+      id: matchNode.id,
+      name: matchNode.name,
+      type: matchNode.type,
+    };
+
+    // Include properties if requested
+    if (includeProperties) {
+      try {
+        var introResult = await introspectNode({ nodeId: matchNode.id, maxDepth: 5 });
+        resultEntry.properties = introResult.properties;
+      } catch (e) {
+        resultEntry.properties = { error: e.message || String(e) };
+      }
+    }
+
+    // Apply updates if provided
+    if (update) {
+      try {
+        var setResult = await setProperties({
+          nodeId: matchNode.id,
+          properties: update,
+        });
+        resultEntry.updateResult = {
+          successCount: setResult.successCount,
+          failureCount: setResult.failureCount,
+        };
+        if (setResult.successCount > 0) updatedCount++;
+        if (setResult.failureCount > 0) failedCount++;
+      } catch (e) {
+        resultEntry.updateResult = {
+          successCount: 0,
+          failureCount: 1,
+          error: e.message || String(e),
+        };
+        failedCount++;
+      }
+    }
+
+    results.push(resultEntry);
+  }
+
+  return {
+    totalScanned: totalScanned,
+    matched: matches.length,
+    updated: update ? updatedCount : undefined,
+    failed: update ? failedCount : undefined,
+    results: results,
+  };
+}
+
+function safeSerialize(value, depth) {
+  if (depth === undefined) depth = 0;
+  if (depth > 20) return "[max depth]";
+  if (value === null || value === undefined) return value;
+  var t = typeof value;
+  if (t === "string" || t === "number" || t === "boolean") return value;
+  // Figma node detection
+  if (value.id && value.type && typeof value.remove === "function") {
+    return { __nodeRef: true, id: value.id, name: value.name, type: value.type };
+  }
+  if (value instanceof Uint8Array) {
+    return { __binary: true, length: value.length };
+  }
+  if (Array.isArray(value)) {
+    return value.map(function(item) { return safeSerialize(item, depth + 1); });
+  }
+  if (t === "object") {
+    var result = {};
+    for (var key in value) {
+      if (value.hasOwnProperty(key)) result[key] = safeSerialize(value[key], depth + 1);
+    }
+    return result;
+  }
+  return String(value);
+}
+
+async function figmaEval(params) {
+  var AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  var fn = new AsyncFunction("figma", "hexToFigmaColor", "appendOrInsertChild",
+    "loadAllFonts", "getVariableByName", "bindVariableToColor",
+    "resolveColorValue", "sendProgressUpdate", "introspectNode", "setProperties",
+    params.code);
+  try {
+    var rawResult = await fn(figma, hexToFigmaColor, appendOrInsertChild,
+      loadAllFonts, getVariableByName, bindVariableToColor,
+      resolveColorValue, sendProgressUpdate, introspectNode, setProperties);
+    return { success: true, result: safeSerialize(rawResult) };
+  } catch (error) {
+    return { success: false, error: error.message || String(error) };
+  }
 }

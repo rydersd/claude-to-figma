@@ -30,15 +30,18 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
-  server.tool("create_component_instance", "Create an instance of a component in Figma. For LOCAL components (from get_local_components), use componentId with the id field. For published LIBRARY components, use componentKey with the publishedKey field.", {
+  server.tool("create_component_instance", "Create an instance of a component in Figma. For LOCAL components (from get_local_components), use componentId with the id field. For published LIBRARY components, use componentKey with the publishedKey field. Optionally set component properties and text overrides in the same call.", {
     componentId: z.string().optional().describe("ID of a local component (use the id field from get_local_components result). Use this for unpublished/local components."),
     componentKey: z.string().optional().describe("Key of a published library component to instantiate (use the publishedKey field from get_local_components result). Only works for published components."),
     x: z.number().describe("X position"),
     y: z.number().describe("Y position"),
     parentId: z.string().optional().describe("Optional parent node ID to place the instance into"),
-  }, async ({ componentId, componentKey, x, y, parentId }: any) => {
+    insertAt: z.number().int().min(0).optional().describe("Optional child index to insert at (0 = first/top). If omitted, appends as last child."),
+    properties: z.record(z.string(), z.union([z.string(), z.boolean()])).optional().describe("Component property overrides using key#id pairs (e.g. {'Text#12345': 'Hello', 'Visible#67890': true})"),
+    textOverrides: z.record(z.string(), z.string()).optional().describe("Text overrides keyed by child node name (e.g. {'Title': 'My Title', 'Description': 'My desc'}). Walks the instance tree and sets text on matching names."),
+  }, async ({ componentId, componentKey, x, y, parentId, insertAt, properties, textOverrides }: any) => {
     try {
-      const result = await sendCommandToFigma("create_component_instance", { componentId, componentKey, x, y, parentId });
+      const result = await sendCommandToFigma("create_component_instance", { componentId, componentKey, x, y, parentId, insertAt, properties, textOverrides });
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Error creating component instance: ${error instanceof Error ? error.message : String(error)}` }] };

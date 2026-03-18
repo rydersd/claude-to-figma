@@ -122,7 +122,28 @@ export type FigmaCommand =
   | "set_vector_network"
   | "screenshot_region"
   | "batch_mutate"
-  | "scan_node_styles";
+  | "scan_node_styles"
+  | "introspect_node"
+  | "set_properties"
+  | "optimize_structure"
+  | "set_text_align"
+  | "set_text_format"
+  | "set_text_list"
+  | "set_range_format"
+  | "set_clips_content"
+  | "set_effects"
+  | "set_opacity"
+  | "set_blend_mode"
+  | "set_layout_positioning"
+  | "set_rotation"
+  | "create_ellipse"
+  | "set_constraints"
+  | "set_min_max_size"
+  | "set_mask"
+  | "create_component_set"
+  | "create_svg"
+  | "design_query"
+  | "figma_eval";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -408,6 +429,163 @@ export type CommandParams = {
   scan_node_styles: {
     nodeId: string;
     maxDepth?: number;
+  };
+  introspect_node: {
+    nodeId: string;
+    maxDepth?: number;
+  };
+  set_properties: {
+    nodeId: string;
+    properties: Record<string, any>;
+    propertyMap?: Record<string, any>;
+  };
+  optimize_structure: {
+    nodeId: string;
+    options?: {
+      dryRun?: boolean;
+      maxDepth?: number;
+      flatten?: boolean;
+      rename?: boolean;
+      exposeProperties?: boolean;
+      extractComponents?: boolean;
+    };
+  };
+  set_text_align: {
+    nodeId: string;
+    horizontal?: "LEFT" | "CENTER" | "RIGHT" | "JUSTIFIED";
+    vertical?: "TOP" | "CENTER" | "BOTTOM";
+  };
+  set_text_format: {
+    nodeId: string;
+    lineHeight?: number | "AUTO" | { value: number; unit: "PIXELS" | "PERCENT" | "AUTO" };
+    paragraphIndent?: number;
+    paragraphSpacing?: number;
+    letterSpacing?: number | { value: number; unit: "PIXELS" | "PERCENT" };
+    textCase?: "ORIGINAL" | "UPPER" | "LOWER" | "TITLE" | "SMALL_CAPS" | "SMALL_CAPS_FORCED";
+    leadingTrim?: "NONE" | "CAP_HEIGHT";
+    hangingPunctuation?: boolean;
+    hangingList?: boolean;
+    listSpacing?: number;
+    textTruncation?: "DISABLED" | "ENDING";
+    maxLines?: number | null;
+  };
+  set_text_list: {
+    nodeId: string;
+    listType?: "ORDERED" | "UNORDERED" | "NONE";
+    indentation?: number;
+    listSpacing?: number;
+    hangingList?: boolean;
+    lines?: Array<{ line: number; type?: "ORDERED" | "UNORDERED" | "NONE"; indentation?: number }>;
+  };
+  set_range_format: {
+    nodeId: string;
+    ranges: Array<{
+      start: number;
+      end: number;
+      fontFamily?: string;
+      fontStyle?: string;
+      fontSize?: number;
+      color?: string | { r: number; g: number; b: number; a?: number };
+      textCase?: string;
+      textDecoration?: string;
+      letterSpacing?: number | { value: number; unit: string };
+      lineHeight?: number | "AUTO" | { value: number; unit: string };
+      listType?: "ORDERED" | "UNORDERED" | "NONE";
+      indentation?: number;
+      hyperlink?: { type: "URL"; value: string } | null;
+    }>;
+  };
+  set_clips_content: {
+    nodeId: string;
+    clipsContent: boolean;
+  };
+  set_effects: {
+    nodeId: string;
+    effects: Array<{
+      type: "DROP_SHADOW" | "INNER_SHADOW" | "LAYER_BLUR" | "BACKGROUND_BLUR";
+      visible?: boolean;
+      color?: string | { r: number; g: number; b: number; a?: number };
+      offset?: { x: number; y: number };
+      radius?: number;
+      spread?: number;
+      blendMode?: string;
+    }>;
+  };
+  set_opacity: {
+    nodeId: string;
+    opacity: number;
+  };
+  set_blend_mode: {
+    nodeId: string;
+    blendMode: string;
+  };
+  set_layout_positioning: {
+    nodeId: string;
+    positioning: "ABSOLUTE" | "AUTO";
+    constraints?: { horizontal?: string; vertical?: string };
+  };
+  set_rotation: {
+    nodeId: string;
+    rotation: number;
+  };
+  create_ellipse: {
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    name?: string;
+    parentId?: string;
+    fillColor?: string | { r: number; g: number; b: number; a?: number };
+    arcData?: { startingAngle?: number; endingAngle?: number; innerRadius?: number };
+  };
+  set_constraints: {
+    nodeId: string;
+    horizontal?: "MIN" | "MAX" | "CENTER" | "STRETCH" | "SCALE";
+    vertical?: "MIN" | "MAX" | "CENTER" | "STRETCH" | "SCALE";
+  };
+  set_min_max_size: {
+    nodeId: string;
+    minWidth?: number | null;
+    maxWidth?: number | null;
+    minHeight?: number | null;
+    maxHeight?: number | null;
+  };
+  set_mask: {
+    nodeId: string;
+    isMask?: boolean;
+    groupWithIds?: string[];
+    groupName?: string;
+  };
+  create_component_set: {
+    componentIds: string[];
+    name?: string;
+  };
+  create_svg: {
+    svg: string;
+    name?: string;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    parentId?: string;
+    insertAt?: number;
+  };
+  design_query: {
+    select: {
+      type?: string | string[];
+      component?: string;
+      name?: string;
+      nameRegex?: string;
+      parentId?: string;
+      where?: Record<string, any>;
+      maxDepth?: number;
+    };
+    update?: Record<string, any>;
+    limit?: number;
+    includeProperties?: boolean;
+  };
+  figma_eval: {
+    code: string;
   };
 };
 

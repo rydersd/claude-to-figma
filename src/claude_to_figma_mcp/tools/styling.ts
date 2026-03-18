@@ -42,7 +42,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     corners: z.array(z.boolean()).length(4).optional().describe("Optional array of 4 booleans to specify which corners to round [topLeft, topRight, bottomRight, bottomLeft]"),
   }, async ({ nodeId, radius, corners }: any) => {
     try {
-      const result = await sendCommandToFigma("set_corner_radius", { nodeId, radius, corners: corners || [true, true, true, true] });
+      const result = await sendCommandToFigma("set_corner_radius", { nodeId, radius, corners });
       const typedResult = result as { name: string };
       return { content: [{ type: "text", text: `Set corner radius of node "${typedResult.name}" to ${radius}px` }] };
     } catch (error) {
