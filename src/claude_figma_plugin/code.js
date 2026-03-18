@@ -529,7 +529,7 @@ function filterFigmaNode(node) {
   }
 
   if (node.cornerRadius !== undefined) {
-    filtered.cornerRadius = node.cornerRadius;
+    filtered.cornerRadius = safeMixed(node.cornerRadius);
   }
 
   if (node.absoluteBoundingBox) {
@@ -673,9 +673,9 @@ async function getReactions(nodeIds) {
     
     // Function to apply animated highlight effect to a node
     async function highlightNodeWithAnimation(node) {
-      // Save original stroke properties
-      const originalStrokeWeight = node.strokeWeight;
-      const originalStrokes = node.strokes ? [...node.strokes] : [];
+      // Save original stroke properties (guard against figma.mixed Symbol)
+      const originalStrokeWeight = typeof node.strokeWeight === "number" ? node.strokeWeight : 1;
+      const originalStrokes = (node.strokes && node.strokes !== figma.mixed) ? [...node.strokes] : [];
       
       try {
         // Apply orange border stroke
@@ -1311,7 +1311,7 @@ async function setStrokeColor(params) {
     id: node.id,
     name: node.name,
     strokes: node.strokes,
-    strokeWeight: "strokeWeight" in node ? node.strokeWeight : undefined,
+    strokeWeight: "strokeWeight" in node ? safeMixed(node.strokeWeight) : undefined,
   };
 }
 
@@ -1803,15 +1803,10 @@ async function setCornerRadius(params) {
     node.cornerRadius = radius;
   }
 
-  // cornerRadius may be figma.mixed (a Symbol) after setting individual corners
-  // Symbols can't be serialized through postMessage, so convert to string
-  var cr = "cornerRadius" in node ? node.cornerRadius : undefined;
-  if (typeof cr === "symbol") cr = "mixed";
-
   return {
     id: node.id,
     name: node.name,
-    cornerRadius: cr,
+    cornerRadius: safeMixed("cornerRadius" in node ? node.cornerRadius : undefined),
     topLeftRadius: "topLeftRadius" in node ? node.topLeftRadius : undefined,
     topRightRadius: "topRightRadius" in node ? node.topRightRadius : undefined,
     bottomRightRadius:
@@ -1842,7 +1837,7 @@ async function setTextContent(params) {
   }
 
   try {
-    await figma.loadFontAsync(node.fontName);
+    await loadAllFonts(node);
 
     await setCharacters(node, text);
 
@@ -1850,7 +1845,7 @@ async function setTextContent(params) {
       id: node.id,
       name: node.name,
       characters: node.characters,
-      fontName: node.fontName,
+      fontName: safeMixed(node.fontName),
     };
   } catch (error) {
     throw new Error(`Error setting text content: ${error.message}`);
@@ -2572,7 +2567,7 @@ async function processTextNode(node, parentPath, depth) {
 
     // Highlight the node briefly (optional visual feedback)
     try {
-      const originalFills = JSON.parse(JSON.stringify(node.fills));
+      const originalFills = node.fills !== figma.mixed ? JSON.parse(JSON.stringify(node.fills)) : [];
       node.fills = [
         {
           type: "SOLID",
@@ -2647,7 +2642,7 @@ async function findTextNodes(node, parentPath = [], depth = 0, textNodes = []) {
       // Only highlight the node if it's not being done via API
       try {
         // Safe way to create a temporary highlight without causing serialization issues
-        const originalFills = JSON.parse(JSON.stringify(node.fills));
+        const originalFills = node.fills !== figma.mixed ? JSON.parse(JSON.stringify(node.fills)) : [];
         node.fills = [
           {
             type: "SOLID",
@@ -3800,7 +3795,7 @@ async function setInstanceOverrides(targetInstances, sourceResult) {
                 }
               } else if (field === "characters" && overrideNode.type === "TEXT") {
                 // For text nodes, need to load fonts first
-                await figma.loadFontAsync(overrideNode.fontName);
+                await loadAllFonts(overrideNode);
                 overrideNode.characters = sourceNode.characters;
                 fieldApplied = true;
               } else if (field in overrideNode) {
@@ -4675,8 +4670,8 @@ async function setTextAutoResize(params) {
     throw new Error(`Node is not a text node: ${nodeId}`);
   }
 
-  // Load the font before changing auto-resize (required by Figma API)
-  await figma.loadFontAsync(node.fontName);
+  // Load all fonts before changing auto-resize (required by Figma API)
+  await loadAllFonts(node);
   node.textAutoResize = textAutoResize;
 
   return {
@@ -4778,10 +4773,10 @@ async function createComponent(params) {
   if (node.fills && node.fills !== figma.mixed) {
     component.fills = JSON.parse(JSON.stringify(node.fills));
   }
-  if (node.strokes) {
+  if (node.strokes && node.strokes !== figma.mixed) {
     component.strokes = JSON.parse(JSON.stringify(node.strokes));
   }
-  if (node.strokeWeight !== undefined) {
+  if (node.strokeWeight !== undefined && node.strokeWeight !== figma.mixed) {
     component.strokeWeight = node.strokeWeight;
   }
   if (node.cornerRadius !== undefined && node.cornerRadius !== figma.mixed) {
@@ -5091,11 +5086,11 @@ async function setStrokeProperties(params) {
   return {
     id: node.id,
     name: node.name,
-    strokeWeight: node.strokeWeight,
-    strokeCap: node.strokeCap,
-    strokeJoin: node.strokeJoin,
+    strokeWeight: safeMixed(node.strokeWeight),
+    strokeCap: safeMixed(node.strokeCap),
+    strokeJoin: safeMixed(node.strokeJoin),
     strokeAlign: node.strokeAlign,
-    dashPattern: node.dashPattern,
+    dashPattern: safeMixed(node.dashPattern),
   };
 }
 
@@ -6176,7 +6171,7 @@ async function batchMutate(params) {
           var textNode = await figma.getNodeByIdAsync(op.nodeId);
           if (!textNode) throw new Error("Node not found: " + op.nodeId);
           if (textNode.type !== "TEXT") throw new Error("Node is not TEXT: " + op.nodeId);
-          await figma.loadFontAsync(textNode.fontName);
+          await loadAllFonts(textNode);
           textNode.characters = op.text;
           result = { op: "set_text", nodeId: op.nodeId, name: textNode.name };
           break;
@@ -6330,17 +6325,23 @@ async function setTextFormat(params) {
   return {
     id: node.id,
     name: node.name,
-    lineHeight: node.lineHeight,
+    lineHeight: safeMixed(node.lineHeight),
     paragraphIndent: node.paragraphIndent,
     paragraphSpacing: node.paragraphSpacing,
-    letterSpacing: node.letterSpacing,
-    textCase: node.textCase,
+    letterSpacing: safeMixed(node.letterSpacing),
+    textCase: safeMixed(node.textCase),
     hangingPunctuation: node.hangingPunctuation,
     hangingList: node.hangingList,
     listSpacing: node.listSpacing,
     textTruncation: node.textTruncation,
     maxLines: node.maxLines,
   };
+}
+
+// Helper: sanitize figma.mixed (Symbol) values for postMessage serialization
+function safeMixed(val) {
+  if (typeof val === "symbol") return "mixed";
+  return val;
 }
 
 // Helper: load all fonts used in a text node (handles mixed fonts)
@@ -6856,17 +6857,17 @@ async function scanNodeStyles(params) {
     if (node.type !== "TEXT") return null;
     try {
       return {
-        fontSize: node.fontSize,
+        fontSize: safeMixed(node.fontSize),
         fontFamily: typeof node.fontName === "object" ? node.fontName.family : null,
         fontStyle: typeof node.fontName === "object" ? node.fontName.style : null,
-        fontWeight: node.fontWeight,
-        lineHeight: node.lineHeight,
-        letterSpacing: node.letterSpacing,
+        fontWeight: safeMixed(node.fontWeight),
+        lineHeight: safeMixed(node.lineHeight),
+        letterSpacing: safeMixed(node.letterSpacing),
         textAlignHorizontal: node.textAlignHorizontal,
         textAlignVertical: node.textAlignVertical,
       };
     } catch (e) {
-      return { fontSize: node.fontSize };
+      return { fontSize: safeMixed(node.fontSize) };
     }
   }
 
@@ -6887,11 +6888,11 @@ async function scanNodeStyles(params) {
     if (fills) entry.fills = fills;
     var strokes = extractStrokes(node);
     if (strokes) entry.strokes = strokes;
-    if ("strokeWeight" in node && node.strokeWeight) entry.strokeWeight = node.strokeWeight;
+    if ("strokeWeight" in node && node.strokeWeight) entry.strokeWeight = safeMixed(node.strokeWeight);
 
     // Corner radius
     if ("cornerRadius" in node && node.cornerRadius !== undefined && node.cornerRadius !== 0) {
-      entry.cornerRadius = node.cornerRadius;
+      entry.cornerRadius = safeMixed(node.cornerRadius);
     }
 
     // Auto layout
@@ -7241,7 +7242,7 @@ async function setProperties(params) {
       switch (propDef.type) {
         case "text":
           if (targetNode.type !== "TEXT") throw new Error("Node is not TEXT");
-          await figma.loadFontAsync(targetNode.fontName);
+          await loadAllFonts(targetNode);
           await setCharacters(targetNode, String(newValue));
           results.push({ key: key, success: true, oldValue: oldValue, newValue: String(newValue) });
           break;
