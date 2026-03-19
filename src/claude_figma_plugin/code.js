@@ -894,18 +894,49 @@ async function createRectangle(params) {
   rect.resize(width, height);
   rect.name = name;
 
+  // Set corner radius if provided
+  if (params.cornerRadius !== undefined) {
+    rect.cornerRadius = params.cornerRadius;
+  }
+
   // Set fill color if provided
   if (fillColor) {
-    const paintStyle = {
+    if (fillColor.a !== undefined && parseFloat(fillColor.a) === 0) {
+      rect.fills = [];
+    } else {
+      const paintStyle = {
+        type: "SOLID",
+        color: {
+          r: parseFloat(fillColor.r) || 0,
+          g: parseFloat(fillColor.g) || 0,
+          b: parseFloat(fillColor.b) || 0,
+        },
+        opacity: fillColor.a !== undefined ? parseFloat(fillColor.a) : 1,
+      };
+      rect.fills = [paintStyle];
+    }
+  }
+
+  // Set stroke color and weight if provided
+  if (params.strokeColor) {
+    const strokeStyle = {
       type: "SOLID",
       color: {
-        r: parseFloat(fillColor.r) || 0,
-        g: parseFloat(fillColor.g) || 0,
-        b: parseFloat(fillColor.b) || 0,
+        r: parseFloat(params.strokeColor.r) || 0,
+        g: parseFloat(params.strokeColor.g) || 0,
+        b: parseFloat(params.strokeColor.b) || 0,
       },
-      opacity: parseFloat(fillColor.a) || 1,
+      opacity: params.strokeColor.a !== undefined ? parseFloat(params.strokeColor.a) : 1,
     };
-    rect.fills = [paintStyle];
+    rect.strokes = [strokeStyle];
+  }
+  if (params.strokeWeight !== undefined) {
+    rect.strokeWeight = params.strokeWeight;
+  }
+
+  // Set opacity if provided
+  if (params.opacity !== undefined) {
+    rect.opacity = params.opacity;
   }
 
   await appendOrInsertChild(rect, parentId, params.insertAt);
@@ -956,6 +987,16 @@ async function createFrame(params) {
     frame.clipsContent = !!params.clipsContent;
   }
 
+  // Set corner radius if provided
+  if (params.cornerRadius !== undefined) {
+    frame.cornerRadius = params.cornerRadius;
+  }
+
+  // Set opacity if provided
+  if (params.opacity !== undefined) {
+    frame.opacity = params.opacity;
+  }
+
   // Set layout mode if provided
   if (layoutMode !== "NONE") {
     frame.layoutMode = layoutMode;
@@ -986,20 +1027,29 @@ async function createFrame(params) {
 
     // Set item spacing only when layoutMode is not NONE
     frame.itemSpacing = itemSpacing;
+
+    // Set counter axis spacing when wrapping
+    if (params.counterAxisSpacing !== undefined && layoutWrap === "WRAP") {
+      frame.counterAxisSpacing = params.counterAxisSpacing;
+    }
   }
 
   // Set fill color if provided
   if (fillColor) {
-    const paintStyle = {
-      type: "SOLID",
-      color: {
-        r: parseFloat(fillColor.r) || 0,
-        g: parseFloat(fillColor.g) || 0,
-        b: parseFloat(fillColor.b) || 0,
-      },
-      opacity: parseFloat(fillColor.a) || 1,
-    };
-    frame.fills = [paintStyle];
+    if (fillColor.a !== undefined && parseFloat(fillColor.a) === 0) {
+      frame.fills = [];
+    } else {
+      const paintStyle = {
+        type: "SOLID",
+        color: {
+          r: parseFloat(fillColor.r) || 0,
+          g: parseFloat(fillColor.g) || 0,
+          b: parseFloat(fillColor.b) || 0,
+        },
+        opacity: fillColor.a !== undefined ? parseFloat(fillColor.a) : 1,
+      };
+      frame.fills = [paintStyle];
+    }
   }
 
   // Set stroke color and weight if provided
@@ -1011,7 +1061,7 @@ async function createFrame(params) {
         g: parseFloat(strokeColor.g) || 0,
         b: parseFloat(strokeColor.b) || 0,
       },
-      opacity: parseFloat(strokeColor.a) || 1,
+      opacity: strokeColor.a !== undefined ? parseFloat(strokeColor.a) : 1,
     };
     frame.strokes = [strokeStyle];
   }
@@ -1133,9 +1183,34 @@ async function createText(params) {
       g: parseFloat(fontColor.g) || 0,
       b: parseFloat(fontColor.b) || 0,
     },
-    opacity: parseFloat(fontColor.a) || 1,
+    opacity: fontColor.a !== undefined ? parseFloat(fontColor.a) : 1,
   };
   textNode.fills = [paintStyle];
+
+  // Set text alignment if provided
+  if (params.textAlignHorizontal) {
+    textNode.textAlignHorizontal = params.textAlignHorizontal;
+  }
+
+  // Set line height if provided
+  if (params.lineHeight !== undefined) {
+    textNode.lineHeight = { value: params.lineHeight, unit: "PIXELS" };
+  }
+
+  // Set letter spacing if provided
+  if (params.letterSpacing !== undefined) {
+    textNode.letterSpacing = { value: params.letterSpacing, unit: "PIXELS" };
+  }
+
+  // Set text case if provided
+  if (params.textCase) {
+    textNode.textCase = params.textCase;
+  }
+
+  // Set opacity if provided
+  if (params.opacity !== undefined) {
+    textNode.opacity = params.opacity;
+  }
 
   // If width is specified, set fixed width with auto-height (text wraps at this width)
   if (width) {
@@ -1198,7 +1273,7 @@ async function setFillColor(params) {
       g: parseFloat(rgbColor.g),
       b: parseFloat(rgbColor.b),
     },
-    opacity: parseFloat(rgbColor.a),
+    opacity: rgbColor.a !== undefined ? parseFloat(rgbColor.a) : 1,
   };
 
   console.log("paintStyle", paintStyle);
@@ -1389,11 +1464,15 @@ async function resizeNode(params) {
     throw new Error(`Node not found with ID: ${nodeId}`);
   }
 
-  if (!("resize" in node)) {
+  if (!("resize" in node) && !("resizeWithoutConstraints" in node)) {
     throw new Error(`Node does not support resizing: ${nodeId}`);
   }
 
-  node.resize(width, height);
+  if ("resize" in node) {
+    node.resize(width, height);
+  } else {
+    node.resizeWithoutConstraints(width, height);
+  }
 
   return {
     id: node.id,
@@ -5029,16 +5108,20 @@ async function createVector(params) {
 
   // Set fill color if provided
   if (fillColor) {
-    const paintStyle = {
-      type: "SOLID",
-      color: {
-        r: parseFloat(fillColor.r) || 0,
-        g: parseFloat(fillColor.g) || 0,
-        b: parseFloat(fillColor.b) || 0,
-      },
-      opacity: fillColor.a !== undefined ? parseFloat(fillColor.a) : 1,
-    };
-    vector.fills = [paintStyle];
+    if (fillColor.a !== undefined && parseFloat(fillColor.a) === 0) {
+      vector.fills = [];
+    } else {
+      const paintStyle = {
+        type: "SOLID",
+        color: {
+          r: parseFloat(fillColor.r) || 0,
+          g: parseFloat(fillColor.g) || 0,
+          b: parseFloat(fillColor.b) || 0,
+        },
+        opacity: fillColor.a !== undefined ? parseFloat(fillColor.a) : 1,
+      };
+      vector.fills = [paintStyle];
+    }
   }
 
   // Set inline stroke if provided (eliminates separate set_stroke_color call)
@@ -5071,6 +5154,11 @@ async function createVector(params) {
     }
   } else if (strokeWeight) {
     vector.strokeWeight = strokeWeight;
+  }
+
+  // Set opacity if provided
+  if (params.opacity !== undefined) {
+    vector.opacity = params.opacity;
   }
 
   // Append to parent or current page
@@ -5841,6 +5929,40 @@ async function createNodeTree(params) {
   // Expand all $repeat directives into a flat tree before creation
   const tree = expandRepeats(rawTree);
 
+  const startTime = Date.now();
+  let maxDepthSeen = 0;
+  const nodeTypeCounts = {};
+
+  // Warn if $repeat was used inside a non-auto-layout parent
+  function warnRepeatWithoutAutoLayout(node, hadRepeat) {
+    if (!node || typeof node !== "object") return;
+    if (node.children && Array.isArray(node.children)) {
+      var parentHasAutoLayout = node.layoutMode && node.layoutMode !== "NONE";
+      if (hadRepeat && !parentHasAutoLayout && node.children.length > 1) {
+        console.warn(
+          "[create_node_tree] $repeat produced " + node.children.length +
+          " children inside frame \"" + (node.name || "unnamed") +
+          "\" which has no auto-layout (layoutMode is NONE/missing). " +
+          "Children will stack at (0,0). Add layoutMode: \"VERTICAL\" or \"HORIZONTAL\" to fix."
+        );
+      }
+      for (var i = 0; i < node.children.length; i++) {
+        warnRepeatWithoutAutoLayout(node.children[i], false);
+      }
+    }
+  }
+  // Check if the raw tree had any $repeat directives that were expanded
+  function treeHadRepeat(node) {
+    if (!node || typeof node !== "object") return false;
+    if (node.children && Array.isArray(node.children)) {
+      for (var i = 0; i < node.children.length; i++) {
+        if (node.children[i] && node.children[i].$repeat) return true;
+      }
+    }
+    return false;
+  }
+  warnRepeatWithoutAutoLayout(tree, treeHadRepeat(rawTree));
+
   // Pre-count total nodes in the expanded tree
   function countNodes(node) {
     let count = 1;
@@ -5865,8 +5987,11 @@ async function createNodeTree(params) {
     fontColor: "fills", // text fill color
   };
 
-  async function createNode(spec, parentNodeId) {
+  async function createNode(spec, parentNodeId, depth) {
+    depth = depth || 0;
+    if (depth > maxDepthSeen) maxDepthSeen = depth;
     var type = spec.type;
+    nodeTypeCounts[type] = (nodeTypeCounts[type] || 0) + 1;
     var children = spec.children;
     var props = Object.assign({}, spec);
     delete props.type;
@@ -5975,7 +6100,7 @@ async function createNodeTree(params) {
     // Recurse into children (only frames should have them)
     if (children && Array.isArray(children)) {
       for (const child of children) {
-        await createNode(child, result.id);
+        await createNode(child, result.id, depth + 1);
       }
     }
   }
@@ -6015,6 +6140,11 @@ async function createNodeTree(params) {
     errorCount,
     nodes,
     errors: errors.length > 0 ? errors : undefined,
+    stats: {
+      durationMs: Date.now() - startTime,
+      maxDepth: maxDepthSeen,
+      nodesByType: nodeTypeCounts,
+    },
   };
 }
 
@@ -6286,11 +6416,15 @@ async function batchMutate(params) {
           if (!fillNode) throw new Error("Node not found: " + op.nodeId);
           if (!("fills" in fillNode)) throw new Error("Node does not support fills: " + op.nodeId);
           var fillColor = op.color;
-          fillNode.fills = [{
-            type: "SOLID",
-            color: { r: fillColor.r || 0, g: fillColor.g || 0, b: fillColor.b || 0 },
-            opacity: fillColor.a !== undefined ? fillColor.a : 1,
-          }];
+          if (fillColor.a !== undefined && parseFloat(fillColor.a) === 0) {
+            fillNode.fills = [];
+          } else {
+            fillNode.fills = [{
+              type: "SOLID",
+              color: { r: fillColor.r || 0, g: fillColor.g || 0, b: fillColor.b || 0 },
+              opacity: fillColor.a !== undefined ? fillColor.a : 1,
+            }];
+          }
           result = { op: "set_fill", nodeId: op.nodeId, name: fillNode.name };
           break;
 
@@ -6321,8 +6455,12 @@ async function batchMutate(params) {
         case "resize":
           var resizeNode = await figma.getNodeByIdAsync(op.nodeId);
           if (!resizeNode) throw new Error("Node not found: " + op.nodeId);
-          if (!("resize" in resizeNode)) throw new Error("Node does not support resize: " + op.nodeId);
-          resizeNode.resize(op.width, op.height);
+          if (!("resize" in resizeNode) && !("resizeWithoutConstraints" in resizeNode)) throw new Error("Node does not support resize: " + op.nodeId);
+          if ("resize" in resizeNode) {
+            resizeNode.resize(op.width, op.height);
+          } else {
+            resizeNode.resizeWithoutConstraints(op.width, op.height);
+          }
           result = { op: "resize", nodeId: op.nodeId, name: resizeNode.name, width: op.width, height: op.height };
           break;
 
@@ -6511,6 +6649,9 @@ async function appendOrInsertChild(child, parentId, insertAt) {
     var parentNode = await figma.getNodeByIdAsync(parentId);
     if (!parentNode) throw new Error("Parent node not found with ID: " + parentId);
     if (!("appendChild" in parentNode)) throw new Error("Parent node does not support children: " + parentId);
+    if (parentNode.type === "SECTION" && child.type !== "FRAME" && child.type !== "GROUP" && child.type !== "SECTION") {
+      throw new Error("SECTION nodes can only contain FRAME, GROUP, or SECTION children — got " + child.type + ". Wrap the node in a frame first, or use a frame as the parent.");
+    }
     if (insertAt !== undefined && insertAt !== null && "insertChild" in parentNode) {
       parentNode.insertChild(insertAt, child);
     } else {
