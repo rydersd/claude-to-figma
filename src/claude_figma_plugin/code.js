@@ -5989,9 +5989,6 @@ async function createNodeTree(params) {
   }
 
   const totalNodes = countNodes(tree);
-  const startTime = Date.now();
-  let maxDepthSeen = 0;
-  const nodeTypeCounts = {};
   let createdCount = 0;
   let errorCount = 0;
   const nodes = [];
