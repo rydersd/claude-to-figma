@@ -2,8 +2,6 @@
 
 This project implements a Model Context Protocol (MCP) integration between Claude Code and Figma, allowing Claude Code to communicate with Figma for reading designs and modifying them programmatically.
 
-https://github.com/user-attachments/assets/129a14d2-ed73-470f-9a4c-2240b2a4885c
-
 ## Project Structure
 
 - `src/claude_to_figma_mcp/` - TypeScript MCP server for Figma integration
@@ -32,15 +30,9 @@ bun socket
 
 4. Install Figma plugin from the Figma community page or [install locally](#figma-plugin)
 
-## Design Automation Example
+## Attribution
 
-**Bulk text content replacement**
-
-Thanks to [@dusskapark](https://github.com/dusskapark) for contributing the bulk text replacement feature. Here is the [demo video](https://www.youtube.com/watch?v=j05gGT3xfCs).
-
-**Instance Override Propagation**
-Another contribution from [@dusskapark](https://github.com/dusskapark)
-Propagate component instance overrides from a source instance to multiple target instances with a single command. This feature dramatically reduces repetitive design work when working with component instances that need similar customizations. Check out our [demo video](https://youtu.be/uvuT8LByroI).
+This project is a fork of [cursor-talk-to-figma-mcp](https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp) by [sonnylazuardi](https://github.com/sonnylazuardi), licensed under MIT. The original project provides the MCP server, WebSocket relay, and Figma plugin architecture that this project builds upon.
 
 ## Manual Setup and Installation
 
