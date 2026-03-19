@@ -1176,16 +1176,20 @@ async function createText(params) {
   setCharacters(textNode, text);
 
   // Set text color
-  const paintStyle = {
-    type: "SOLID",
-    color: {
-      r: parseFloat(fontColor.r) || 0,
-      g: parseFloat(fontColor.g) || 0,
-      b: parseFloat(fontColor.b) || 0,
-    },
-    opacity: fontColor.a !== undefined ? parseFloat(fontColor.a) : 1,
-  };
-  textNode.fills = [paintStyle];
+  if (fontColor.a !== undefined && parseFloat(fontColor.a) === 0) {
+    textNode.fills = [];
+  } else {
+    const paintStyle = {
+      type: "SOLID",
+      color: {
+        r: parseFloat(fontColor.r) || 0,
+        g: parseFloat(fontColor.g) || 0,
+        b: parseFloat(fontColor.b) || 0,
+      },
+      opacity: fontColor.a !== undefined ? parseFloat(fontColor.a) : 1,
+    };
+    textNode.fills = [paintStyle];
+  }
 
   // Set text alignment if provided
   if (params.textAlignHorizontal) {
@@ -1257,12 +1261,22 @@ async function setFillColor(params) {
     throw new Error(`Node does not support fills: ${nodeId}`);
   }
 
+  // Alpha 0 means "no fill" — clear the fills array
+  if (a !== undefined && parseFloat(a) === 0) {
+    node.fills = [];
+    return {
+      id: node.id,
+      name: node.name,
+      fills: [],
+    };
+  }
+
   // Create RGBA color
   const rgbColor = {
     r: parseFloat(r) || 0,
     g: parseFloat(g) || 0,
     b: parseFloat(b) || 0,
-    a: parseFloat(a) || 1,
+    a: a !== undefined ? parseFloat(a) : 1,
   };
 
   // Set fill
