@@ -146,7 +146,12 @@ export type FigmaCommand =
   | "figma_eval"
   | "diff_components"
   | "migrate_instance"
-  | "batch_migrate";
+  | "batch_migrate"
+  | "set_reactions"
+  | "add_reaction"
+  | "remove_reactions"
+  | "get_interactions"
+  | "batch_set_reactions";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -367,6 +372,54 @@ export type CommandParams = {
     parentId?: string;
     rootId?: string;
     prune?: boolean;
+  };
+  set_reactions: {
+    nodeId: string;
+    reactions: Array<{
+      trigger: { type: string; delay?: number; keyCodes?: number[] };
+      actions: Array<{
+        type: string;
+        navigation?: string;
+        destinationId?: string;
+        transition?: { type: string; duration?: number; easing?: { type: string }; direction?: string };
+        preserveScrollPosition?: boolean;
+        url?: string;
+      }>;
+    }>;
+  };
+  add_reaction: {
+    nodeId: string;
+    trigger: { type: string; delay?: number; keyCodes?: number[] };
+    action: {
+      type: string;
+      navigation?: string;
+      destinationId?: string;
+      transition?: { type: string; duration?: number; easing?: { type: string }; direction?: string };
+      url?: string;
+    };
+  };
+  remove_reactions: {
+    nodeId: string;
+    triggerType?: string;
+  };
+  get_interactions: {
+    nodeId: string;
+    recursive?: boolean;
+  };
+  batch_set_reactions: {
+    operations: Array<{
+      nodeId: string;
+      reactions: Array<{
+        trigger: { type: string; delay?: number };
+        actions: Array<{
+          type: string;
+          navigation?: string;
+          destinationId?: string;
+          transition?: { type: string; duration?: number; easing?: { type: string }; direction?: string };
+          url?: string;
+        }>;
+      }>;
+    }>;
   };
   get_local_variables: Record<string, never>;
   rename_node: {
