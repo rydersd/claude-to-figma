@@ -461,6 +461,31 @@ async function handleCommand(command, params) {
         throw new Error("Missing required parameter: sourceComponentName or sourceComponentId");
       }
       return await batchMigrate(params);
+    case "set_reactions":
+      if (!params || !params.nodeId || !params.reactions) {
+        throw new Error("Missing required parameters: nodeId and reactions");
+      }
+      return await setReactions(params);
+    case "add_reaction":
+      if (!params || !params.nodeId || !params.trigger || !params.action) {
+        throw new Error("Missing required parameters: nodeId, trigger, and action");
+      }
+      return await addReaction(params);
+    case "remove_reactions":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await removeReactions(params);
+    case "get_interactions":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await getInteractions(params);
+    case "batch_set_reactions":
+      if (!params || !params.operations || !Array.isArray(params.operations)) {
+        throw new Error("Missing or invalid operations parameter");
+      }
+      return await batchSetReactions(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -846,6 +871,227 @@ async function getReactions(nodeIds) {
   } catch (error) {
     throw new Error(`Failed to get reactions: ${error.message}`);
   }
+}
+
+// --- Prototyping interaction tools ---
+
+// Build a Figma Reaction object from a spec trigger+action pair
+function buildReaction(trigger, action) {
+  var reaction = { trigger: {}, actions: [] };
+
+  // Trigger
+  reaction.trigger.type = trigger.type;
+  if (trigger.delay !== undefined) reaction.trigger.delay = trigger.delay;
+  if (trigger.keyCodes) reaction.trigger.keyCodes = trigger.keyCodes;
+
+  // Action
+  var act = { type: action.type };
+  if (action.navigation) act.navigation = action.navigation;
+  if (action.destinationId) act.destinationId = action.destinationId;
+  if (action.url) act.url = action.url;
+  if (action.preserveScrollPosition !== undefined) act.preserveScrollPosition = action.preserveScrollPosition;
+  if (action.overlayRelativePosition) act.overlayRelativePosition = action.overlayRelativePosition;
+  if (action.variableId) act.variableId = action.variableId;
+  if (action.variableValue !== undefined) act.variableValue = action.variableValue;
+
+  // Transition
+  if (action.transition) {
+    var t = { type: action.transition.type };
+    if (action.transition.duration !== undefined) t.duration = action.transition.duration;
+    if (action.transition.direction) t.direction = action.transition.direction;
+    if (action.transition.easing) t.easing = action.transition.easing;
+    act.transition = t;
+  }
+
+  reaction.actions = [act];
+  return reaction;
+}
+
+// Build a full Figma Reaction from a spec reaction (trigger + actions array)
+function buildFullReaction(spec) {
+  var reaction = { trigger: {}, actions: [] };
+
+  reaction.trigger.type = spec.trigger.type;
+  if (spec.trigger.delay !== undefined) reaction.trigger.delay = spec.trigger.delay;
+  if (spec.trigger.keyCodes) reaction.trigger.keyCodes = spec.trigger.keyCodes;
+
+  reaction.actions = (spec.actions || []).map(function(action) {
+    var act = { type: action.type };
+    if (action.navigation) act.navigation = action.navigation;
+    if (action.destinationId) act.destinationId = action.destinationId;
+    if (action.url) act.url = action.url;
+    if (action.preserveScrollPosition !== undefined) act.preserveScrollPosition = action.preserveScrollPosition;
+    if (action.overlayRelativePosition) act.overlayRelativePosition = action.overlayRelativePosition;
+    if (action.variableId) act.variableId = action.variableId;
+    if (action.variableValue !== undefined) act.variableValue = action.variableValue;
+    if (action.transition) {
+      var t = { type: action.transition.type };
+      if (action.transition.duration !== undefined) t.duration = action.transition.duration;
+      if (action.transition.direction) t.direction = action.transition.direction;
+      if (action.transition.easing) t.easing = action.transition.easing;
+      act.transition = t;
+    }
+    return act;
+  });
+
+  return reaction;
+}
+
+async function setReactions(params) {
+  var nodeId = params.nodeId;
+  var reactions = params.reactions;
+
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("reactions" in node)) throw new Error("Node does not support reactions: " + nodeId);
+
+  var built = reactions.map(function(r) { return buildFullReaction(r); });
+  node.reactions = built;
+
+  return {
+    success: true,
+    nodeId: nodeId,
+    reactionsSet: built.length,
+  };
+}
+
+async function addReaction(params) {
+  var nodeId = params.nodeId;
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("reactions" in node)) throw new Error("Node does not support reactions: " + nodeId);
+
+  var existing = node.reactions ? [...node.reactions] : [];
+  var newReaction = buildReaction(params.trigger, params.action);
+  existing.push(newReaction);
+  node.reactions = existing;
+
+  return {
+    success: true,
+    nodeId: nodeId,
+    totalReactions: existing.length,
+  };
+}
+
+async function removeReactions(params) {
+  var nodeId = params.nodeId;
+  var triggerType = params.triggerType;
+
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+  if (!("reactions" in node)) throw new Error("Node does not support reactions: " + nodeId);
+
+  var existing = node.reactions ? [...node.reactions] : [];
+  var removedCount;
+
+  if (triggerType) {
+    var filtered = existing.filter(function(r) {
+      return r.trigger && r.trigger.type !== triggerType;
+    });
+    removedCount = existing.length - filtered.length;
+    node.reactions = filtered;
+  } else {
+    removedCount = existing.length;
+    node.reactions = [];
+  }
+
+  return {
+    success: true,
+    nodeId: nodeId,
+    removedCount: removedCount,
+    remainingCount: node.reactions.length,
+  };
+}
+
+async function getInteractions(params) {
+  var nodeId = params.nodeId;
+  var recursive = params.recursive || false;
+
+  var node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error("Node not found: " + nodeId);
+
+  var interactions = [];
+
+  async function extractInteractions(n) {
+    if ("reactions" in n && n.reactions && n.reactions.length > 0) {
+      for (var reaction of n.reactions) {
+        var actions = (reaction.actions || (reaction.action ? [reaction.action] : []));
+        var resolvedActions = [];
+
+        for (var act of actions) {
+          var resolved = {
+            type: act.type,
+            navigation: act.navigation || null,
+            destinationId: act.destinationId || null,
+            destinationName: null,
+            transition: act.transition || null,
+            url: act.url || null,
+          };
+
+          if (act.destinationId) {
+            try {
+              var destNode = await figma.getNodeByIdAsync(act.destinationId);
+              if (destNode) resolved.destinationName = destNode.name;
+            } catch (e) { /* ignore */ }
+          }
+
+          resolvedActions.push(resolved);
+        }
+
+        interactions.push({
+          nodeId: n.id,
+          nodeName: n.name,
+          trigger: reaction.trigger ? reaction.trigger.type : "UNKNOWN",
+          actions: resolvedActions,
+        });
+      }
+    }
+
+    if (recursive && "children" in n && n.children) {
+      for (var child of n.children) {
+        await extractInteractions(child);
+      }
+    }
+  }
+
+  await extractInteractions(node);
+
+  return {
+    nodeId: nodeId,
+    interactionCount: interactions.length,
+    interactions: interactions,
+  };
+}
+
+async function batchSetReactions(params) {
+  var operations = params.operations;
+  var results = [];
+  var successCount = 0;
+  var errorCount = 0;
+
+  for (var op of operations) {
+    try {
+      var node = await figma.getNodeByIdAsync(op.nodeId);
+      if (!node) throw new Error("Node not found: " + op.nodeId);
+      if (!("reactions" in node)) throw new Error("Node does not support reactions: " + op.nodeId);
+
+      var built = op.reactions.map(function(r) { return buildFullReaction(r); });
+      node.reactions = built;
+      results.push({ nodeId: op.nodeId, success: true, reactionsSet: built.length });
+      successCount++;
+    } catch (err) {
+      results.push({ nodeId: op.nodeId, success: false, error: err.message || String(err) });
+      errorCount++;
+    }
+  }
+
+  return {
+    success: errorCount === 0,
+    totalOperations: operations.length,
+    successCount: successCount,
+    errorCount: errorCount,
+    results: results,
+  };
 }
 
 async function readMyDesign() {
