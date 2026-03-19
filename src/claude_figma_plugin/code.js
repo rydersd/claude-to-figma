@@ -5870,8 +5870,10 @@ async function createNodeTree(params) {
 
   // --- Sync/reconciliation helpers ---
 
-  // Map font weight number to Figma font style string
-  function weightToStyle(weight) {
+  // Map font weight number to Figma font style string (sync/reconcile path).
+  // NOTE: Duplicates getFontStyle() inside createText(). Both must stay in sync
+  // until code.js is refactored to hoist a single shared helper to module scope.
+  function syncWeightToStyle(weight) {
     switch (weight) {
       case 100: return "Thin";
       case 200: return "Extra Light";
@@ -5904,7 +5906,7 @@ async function createNodeTree(params) {
   }
 
   // Update an existing node's properties to match the spec (without creating a new node)
-  async function updateNodeProperties(existingNode, spec, pendingVarBindings) {
+  async function updateNodeProperties(existingNode, spec) {
     const changedProps = [];
     const type = existingNode.type.toLowerCase();
 
@@ -6016,7 +6018,7 @@ async function createNodeTree(params) {
     // --- Text properties ---
     if (type === "text") {
       const userFontFamily = spec.fontFamily || "Inter";
-      const userFontStyle = spec.fontStyle || weightToStyle(spec.fontWeight || 400);
+      const userFontStyle = spec.fontStyle || syncWeightToStyle(spec.fontWeight || 400);
       const currentFontName = existingNode.fontName;
 
       // Load and set font if changed
@@ -6028,8 +6030,8 @@ async function createNodeTree(params) {
           changedProps.push("fontName");
         } catch (err) {
           try {
-            await figma.loadFontAsync({ family: "Inter", style: weightToStyle(spec.fontWeight || 400) });
-            existingNode.fontName = { family: "Inter", style: weightToStyle(spec.fontWeight || 400) };
+            await figma.loadFontAsync({ family: "Inter", style: syncWeightToStyle(spec.fontWeight || 400) });
+            existingNode.fontName = { family: "Inter", style: syncWeightToStyle(spec.fontWeight || 400) };
             changedProps.push("fontName");
           } catch (e2) { /* ignore */ }
         }
@@ -6197,7 +6199,7 @@ async function createNodeTree(params) {
 
     // 3. Update properties
     try {
-      var result = await updateNodeProperties(existingNode, resolvedSpec, pendingVarBindings);
+      var result = await updateNodeProperties(existingNode, resolvedSpec);
       if (result.changed) {
         updatedCount++;
       } else {

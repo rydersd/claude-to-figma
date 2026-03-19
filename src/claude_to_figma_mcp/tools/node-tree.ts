@@ -134,7 +134,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
   // Create Node Tree Tool - batch recursive node creation
   server.tool(
     "create_node_tree",
-    "Create an entire node hierarchy in Figma in one call. Accepts a nested JSON tree of frames, text, rectangles, and vectors. Only frames may have children. Features: (1) $repeat directives in children arrays for data-driven repetition: {\"$repeat\": {\"data\": [[\"a\",\"b\"]], \"template\": {\"type\": \"text\", \"text\": \"$[0]\"}}}. Array rows use $[0],$[1]; object rows use $key. (2) All color fields accept RGBA objects, hex strings (\"#3d6daa\"), or Figma variable references (\"$var:Colors/Primary\") which bind as real Figma variables. Call get_styles or get_local_variables first to discover available tokens. Performance: progress updates fire every 5 nodes, resetting the 60s inactivity timeout — there is no hard node limit. ~30 nodes per call is a soft guideline for simple layouts; data tables and $repeat structures up to ~150+ nodes work reliably. Response includes stats (durationMs, maxDepth, nodesByType) for performance analysis. Sync mode: pass rootId to reconcile an existing tree instead of creating. Matches nodes by name+type, updates changed properties in place, creates new nodes, preserves unmatched existing nodes (or removes them with prune:true). Node IDs are preserved — prototype connections survive updates.",
+    "Create an entire node hierarchy in Figma in one call. Accepts a nested JSON tree of frames, text, rectangles, and vectors. Only frames may have children. Features: (1) $repeat directives in children arrays for data-driven repetition: {\"$repeat\": {\"data\": [[\"a\",\"b\"]], \"template\": {\"type\": \"text\", \"text\": \"$[0]\"}}}. Array rows use $[0],$[1]; object rows use $key. (2) All color fields accept RGBA objects, hex strings (\"#3d6daa\"), or Figma variable references (\"$var:Colors/Primary\") which bind as real Figma variables. Call get_styles or get_local_variables first to discover available tokens. Performance: progress updates fire every 5 nodes, resetting the 60s inactivity timeout — there is no hard node limit. ~30 nodes per call is a soft guideline for simple layouts; data tables and $repeat structures up to ~150+ nodes work reliably. Response includes stats (durationMs, maxDepth, nodesByType) for performance analysis. Sync mode: pass rootId to reconcile an existing tree instead of creating. Matches nodes by name+type, updates changed properties in place, creates new nodes, preserves unmatched existing nodes (or removes them with prune:true). Node IDs are preserved — prototype connections survive updates. Sync mode limitations: child ordering is not reconciled (existing visual order is preserved); duplicate name+type siblings are matched FIFO.",
     {
       tree: NodeTreeSchema.describe("The root node of the tree to create or sync"),
       parentId: z.string().optional().describe("Parent node ID for create mode"),
@@ -142,6 +142,9 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       prune: z.boolean().optional().describe("In sync mode, remove existing children not present in the spec. Default false (preserve unmatched nodes)."),
     },
     async ({ tree, parentId, rootId, prune }: any) => {
+      if (rootId && parentId) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: "Cannot specify both rootId (sync mode) and parentId (create mode). Use rootId for sync/reconciliation or parentId for creating new nodes." }) }] };
+      }
       try {
         const result = await sendCommandToFigma("create_node_tree", { tree, parentId, rootId, prune }, 60000);
         return {

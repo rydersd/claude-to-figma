@@ -365,6 +365,8 @@ export type CommandParams = {
   create_node_tree: {
     tree: any;
     parentId?: string;
+    rootId?: string;
+    prune?: boolean;
   };
   get_local_variables: Record<string, never>;
   rename_node: {
