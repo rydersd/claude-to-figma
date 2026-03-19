@@ -5833,7 +5833,7 @@ function substituteString(str, row) {
 }
 
 async function createNodeTree(params) {
-  const { tree: rawTree, parentId, commandId } = params || {};
+  const { tree: rawTree, parentId, rootId, prune, commandId } = params || {};
   if (!rawTree) {
     throw new Error("Missing tree parameter");
   }
@@ -5853,6 +5853,9 @@ async function createNodeTree(params) {
   }
 
   const totalNodes = countNodes(tree);
+  const startTime = Date.now();
+  let maxDepthSeen = 0;
+  const nodeTypeCounts = {};
   let createdCount = 0;
   let errorCount = 0;
   const nodes = [];
@@ -5865,8 +5868,441 @@ async function createNodeTree(params) {
     fontColor: "fills", // text fill color
   };
 
-  async function createNode(spec, parentNodeId) {
+  // --- Sync/reconciliation helpers ---
+
+  // Map font weight number to Figma font style string
+  function weightToStyle(weight) {
+    switch (weight) {
+      case 100: return "Thin";
+      case 200: return "Extra Light";
+      case 300: return "Light";
+      case 400: return "Regular";
+      case 500: return "Medium";
+      case 600: return "Semi Bold";
+      case 700: return "Bold";
+      case 800: return "Extra Bold";
+      case 900: return "Black";
+      default: return "Regular";
+    }
+  }
+
+  // Apply a solid color paint to a node property (fills or strokes)
+  function applyColorPaint(node, field, colorObj) {
+    if (colorObj.a !== undefined && parseFloat(colorObj.a) === 0) {
+      node[field] = [];
+    } else {
+      node[field] = [{
+        type: "SOLID",
+        color: {
+          r: parseFloat(colorObj.r) || 0,
+          g: parseFloat(colorObj.g) || 0,
+          b: parseFloat(colorObj.b) || 0,
+        },
+        opacity: colorObj.a !== undefined ? parseFloat(colorObj.a) : 1,
+      }];
+    }
+  }
+
+  // Update an existing node's properties to match the spec (without creating a new node)
+  async function updateNodeProperties(existingNode, spec, pendingVarBindings) {
+    const changedProps = [];
+    const type = existingNode.type.toLowerCase();
+
+    // --- Common properties for all node types ---
+    if (spec.name !== undefined && existingNode.name !== spec.name) {
+      existingNode.name = spec.name;
+      changedProps.push("name");
+    }
+    if (spec.x !== undefined && existingNode.x !== spec.x) {
+      existingNode.x = spec.x;
+      changedProps.push("x");
+    }
+    if (spec.y !== undefined && existingNode.y !== spec.y) {
+      existingNode.y = spec.y;
+      changedProps.push("y");
+    }
+    if (spec.opacity !== undefined && existingNode.opacity !== spec.opacity) {
+      existingNode.opacity = spec.opacity;
+      changedProps.push("opacity");
+    }
+
+    // --- Frame properties ---
+    if (type === "frame") {
+      if (spec.width !== undefined && spec.height !== undefined) {
+        if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
+          existingNode.resize(spec.width, spec.height);
+          changedProps.push("size");
+        }
+      }
+      if (spec.fillColor !== undefined) {
+        applyColorPaint(existingNode, "fills", spec.fillColor);
+        changedProps.push("fillColor");
+      }
+      if (spec.strokeColor !== undefined) {
+        applyColorPaint(existingNode, "strokes", spec.strokeColor);
+        changedProps.push("strokeColor");
+      }
+      if (spec.strokeWeight !== undefined && existingNode.strokeWeight !== spec.strokeWeight) {
+        existingNode.strokeWeight = spec.strokeWeight;
+        changedProps.push("strokeWeight");
+      }
+      if (spec.cornerRadius !== undefined && existingNode.cornerRadius !== spec.cornerRadius) {
+        existingNode.cornerRadius = spec.cornerRadius;
+        changedProps.push("cornerRadius");
+      }
+      if (spec.clipsContent !== undefined && existingNode.clipsContent !== !!spec.clipsContent) {
+        existingNode.clipsContent = !!spec.clipsContent;
+        changedProps.push("clipsContent");
+      }
+      if (spec.layoutMode !== undefined && existingNode.layoutMode !== spec.layoutMode) {
+        existingNode.layoutMode = spec.layoutMode;
+        changedProps.push("layoutMode");
+      }
+      if (spec.layoutWrap !== undefined && existingNode.layoutWrap !== spec.layoutWrap) {
+        existingNode.layoutWrap = spec.layoutWrap;
+        changedProps.push("layoutWrap");
+      }
+      if (spec.paddingTop !== undefined && existingNode.paddingTop !== spec.paddingTop) {
+        existingNode.paddingTop = spec.paddingTop;
+        changedProps.push("paddingTop");
+      }
+      if (spec.paddingRight !== undefined && existingNode.paddingRight !== spec.paddingRight) {
+        existingNode.paddingRight = spec.paddingRight;
+        changedProps.push("paddingRight");
+      }
+      if (spec.paddingBottom !== undefined && existingNode.paddingBottom !== spec.paddingBottom) {
+        existingNode.paddingBottom = spec.paddingBottom;
+        changedProps.push("paddingBottom");
+      }
+      if (spec.paddingLeft !== undefined && existingNode.paddingLeft !== spec.paddingLeft) {
+        existingNode.paddingLeft = spec.paddingLeft;
+        changedProps.push("paddingLeft");
+      }
+      if (spec.primaryAxisAlignItems !== undefined && existingNode.primaryAxisAlignItems !== spec.primaryAxisAlignItems) {
+        existingNode.primaryAxisAlignItems = spec.primaryAxisAlignItems;
+        changedProps.push("primaryAxisAlignItems");
+      }
+      if (spec.counterAxisAlignItems !== undefined && existingNode.counterAxisAlignItems !== spec.counterAxisAlignItems) {
+        existingNode.counterAxisAlignItems = spec.counterAxisAlignItems;
+        changedProps.push("counterAxisAlignItems");
+      }
+      if (spec.itemSpacing !== undefined && existingNode.itemSpacing !== spec.itemSpacing) {
+        existingNode.itemSpacing = spec.itemSpacing;
+        changedProps.push("itemSpacing");
+      }
+      if (spec.counterAxisSpacing !== undefined && existingNode.counterAxisSpacing !== spec.counterAxisSpacing) {
+        existingNode.counterAxisSpacing = spec.counterAxisSpacing;
+        changedProps.push("counterAxisSpacing");
+      }
+      if (spec.itemReverseZIndex !== undefined && existingNode.itemReverseZIndex !== !!spec.itemReverseZIndex) {
+        existingNode.itemReverseZIndex = !!spec.itemReverseZIndex;
+        changedProps.push("itemReverseZIndex");
+      }
+      // Defer FILL sizing — applied after children reconciliation
+      if (spec.layoutSizingHorizontal !== undefined && spec.layoutSizingHorizontal !== "FILL") {
+        if (existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
+          existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
+          changedProps.push("layoutSizingHorizontal");
+        }
+      }
+      if (spec.layoutSizingVertical !== undefined && spec.layoutSizingVertical !== "FILL") {
+        if (existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
+          existingNode.layoutSizingVertical = spec.layoutSizingVertical;
+          changedProps.push("layoutSizingVertical");
+        }
+      }
+    }
+
+    // --- Text properties ---
+    if (type === "text") {
+      const userFontFamily = spec.fontFamily || "Inter";
+      const userFontStyle = spec.fontStyle || weightToStyle(spec.fontWeight || 400);
+      const currentFontName = existingNode.fontName;
+
+      // Load and set font if changed
+      if (!currentFontName || typeof currentFontName === "symbol" ||
+          currentFontName.family !== userFontFamily || currentFontName.style !== userFontStyle) {
+        try {
+          await figma.loadFontAsync({ family: userFontFamily, style: userFontStyle });
+          existingNode.fontName = { family: userFontFamily, style: userFontStyle };
+          changedProps.push("fontName");
+        } catch (err) {
+          try {
+            await figma.loadFontAsync({ family: "Inter", style: weightToStyle(spec.fontWeight || 400) });
+            existingNode.fontName = { family: "Inter", style: weightToStyle(spec.fontWeight || 400) };
+            changedProps.push("fontName");
+          } catch (e2) { /* ignore */ }
+        }
+      } else {
+        // Font unchanged, but still need to load it for setText/fontSize changes
+        try {
+          await figma.loadFontAsync({ family: userFontFamily, style: userFontStyle });
+        } catch (e) { /* ignore */ }
+      }
+
+      if (spec.text !== undefined && existingNode.characters !== spec.text) {
+        setCharacters(existingNode, spec.text);
+        changedProps.push("characters");
+      }
+      if (spec.fontSize !== undefined && existingNode.fontSize !== parseInt(spec.fontSize)) {
+        existingNode.fontSize = parseInt(spec.fontSize);
+        changedProps.push("fontSize");
+      }
+      if (spec.fontColor !== undefined) {
+        applyColorPaint(existingNode, "fills", spec.fontColor);
+        changedProps.push("fontColor");
+      }
+      if (spec.textAlignHorizontal !== undefined && existingNode.textAlignHorizontal !== spec.textAlignHorizontal) {
+        existingNode.textAlignHorizontal = spec.textAlignHorizontal;
+        changedProps.push("textAlignHorizontal");
+      }
+      if (spec.lineHeight !== undefined) {
+        existingNode.lineHeight = { value: spec.lineHeight, unit: "PIXELS" };
+        changedProps.push("lineHeight");
+      }
+      if (spec.letterSpacing !== undefined) {
+        existingNode.letterSpacing = { value: spec.letterSpacing, unit: "PIXELS" };
+        changedProps.push("letterSpacing");
+      }
+      if (spec.textCase !== undefined && existingNode.textCase !== spec.textCase) {
+        existingNode.textCase = spec.textCase;
+        changedProps.push("textCase");
+      }
+      if (spec.width !== undefined) {
+        existingNode.resize(spec.width, existingNode.height);
+        existingNode.textAutoResize = "HEIGHT";
+        changedProps.push("width");
+      }
+    }
+
+    // --- Rectangle properties ---
+    if (type === "rectangle") {
+      if (spec.width !== undefined && spec.height !== undefined) {
+        if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
+          existingNode.resize(spec.width, spec.height);
+          changedProps.push("size");
+        }
+      }
+      if (spec.fillColor !== undefined) {
+        applyColorPaint(existingNode, "fills", spec.fillColor);
+        changedProps.push("fillColor");
+      }
+      if (spec.strokeColor !== undefined) {
+        applyColorPaint(existingNode, "strokes", spec.strokeColor);
+        changedProps.push("strokeColor");
+      }
+      if (spec.strokeWeight !== undefined && existingNode.strokeWeight !== spec.strokeWeight) {
+        existingNode.strokeWeight = spec.strokeWeight;
+        changedProps.push("strokeWeight");
+      }
+      if (spec.cornerRadius !== undefined && existingNode.cornerRadius !== spec.cornerRadius) {
+        existingNode.cornerRadius = spec.cornerRadius;
+        changedProps.push("cornerRadius");
+      }
+    }
+
+    // --- Vector properties ---
+    if (type === "vector") {
+      if (spec.width !== undefined && spec.height !== undefined) {
+        if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
+          existingNode.resize(spec.width, spec.height);
+          changedProps.push("size");
+        }
+      }
+      if (spec.fillColor !== undefined) {
+        applyColorPaint(existingNode, "fills", spec.fillColor);
+        changedProps.push("fillColor");
+      }
+      if (spec.strokeColor !== undefined) {
+        applyColorPaint(existingNode, "strokes", spec.strokeColor);
+        changedProps.push("strokeColor");
+      }
+      if (spec.strokeWeight !== undefined && existingNode.strokeWeight !== spec.strokeWeight) {
+        existingNode.strokeWeight = spec.strokeWeight;
+        changedProps.push("strokeWeight");
+      }
+      if (spec.pathData !== undefined) {
+        existingNode.vectorPaths = [{ windingRule: "NONZERO", data: normalizeSvgPath(spec.pathData) }];
+        changedProps.push("pathData");
+      }
+      if (spec.strokeCap !== undefined) {
+        var network = existingNode.vectorNetwork;
+        if (network && network.vertices) {
+          var updatedVertices = network.vertices.map(function(v) {
+            return Object.assign({}, v, { strokeCap: spec.strokeCap });
+          });
+          existingNode.vectorNetwork = Object.assign({}, network, { vertices: updatedVertices });
+          changedProps.push("strokeCap");
+        }
+      }
+    }
+
+    return { changed: changedProps.length > 0, changedProps };
+  }
+
+  // Recursive sync: reconcile spec against existing node tree
+  let updatedCount = 0;
+  let unchangedCount = 0;
+  let prunedCount = 0;
+
+  async function syncNode(spec, existingNode, depth) {
+    depth = depth || 0;
+    if (depth > maxDepthSeen) maxDepthSeen = depth;
     var type = spec.type;
+    nodeTypeCounts[type] = (nodeTypeCounts[type] || 0) + 1;
+
+    // 1. Type check
+    if (existingNode.type.toLowerCase() !== type) {
+      errors.push({
+        type,
+        name: spec.name || "(unnamed)",
+        error: "Type mismatch: spec=" + type + " existing=" + existingNode.type.toLowerCase(),
+      });
+      return; // skip, don't delete
+    }
+
+    // 2. Resolve color strings in a copy of the spec
+    var resolvedSpec = Object.assign({}, spec);
+    delete resolvedSpec.type;
+    delete resolvedSpec.children;
+    var pendingVarBindings = [];
+
+    for (var _ref of Object.entries(COLOR_FIELDS)) {
+      var colorProp = _ref[0], figmaField = _ref[1];
+      if (resolvedSpec[colorProp] != null) {
+        var resolved = resolveColorValue(resolvedSpec[colorProp]);
+        if (resolved.varRef) {
+          var variable = await getVariableByName(resolved.varRef);
+          if (variable && variable.resolvedType === "COLOR") {
+            var modeIds = Object.keys(variable.valuesByMode);
+            if (modeIds.length > 0) {
+              var val = variable.valuesByMode[modeIds[0]];
+              if (val && typeof val === "object" && "r" in val) {
+                resolvedSpec[colorProp] = val;
+              } else {
+                delete resolvedSpec[colorProp];
+              }
+            } else {
+              delete resolvedSpec[colorProp];
+            }
+          } else {
+            delete resolvedSpec[colorProp];
+          }
+          pendingVarBindings.push({ colorProp: colorProp, figmaField: figmaField, varRef: resolved.varRef });
+        } else if (resolved.color) {
+          resolvedSpec[colorProp] = resolved.color;
+        }
+      }
+    }
+
+    // 3. Update properties
+    try {
+      var result = await updateNodeProperties(existingNode, resolvedSpec, pendingVarBindings);
+      if (result.changed) {
+        updatedCount++;
+      } else {
+        unchangedCount++;
+      }
+    } catch (err) {
+      errorCount++;
+      errors.push({
+        type,
+        name: spec.name || "(unnamed)",
+        error: "Update failed: " + (err.message || String(err)),
+      });
+      return;
+    }
+
+    // 4. Bind $var: references
+    if (pendingVarBindings.length > 0) {
+      for (var binding of pendingVarBindings) {
+        await bindVariableToColor(existingNode, binding.figmaField, binding.varRef);
+      }
+    }
+
+    // Track node
+    nodes.push({
+      id: existingNode.id,
+      name: existingNode.name,
+      type,
+      parentId: existingNode.parent ? existingNode.parent.id : null,
+    });
+
+    // 5. Reconcile children (frames only)
+    var specChildren = spec.children;
+    if (specChildren && Array.isArray(specChildren) && type === "frame") {
+      // Build match map from existing children: "name::type" → [node, ...]
+      var existingChildren = [];
+      for (var i = 0; i < existingNode.children.length; i++) {
+        existingChildren.push(existingNode.children[i]);
+      }
+      var matchMap = {};
+      for (var child of existingChildren) {
+        var key = (child.name || "") + "::" + child.type.toLowerCase();
+        if (!matchMap[key]) matchMap[key] = [];
+        matchMap[key].push(child);
+      }
+
+      var matchedExistingIds = new Set();
+
+      for (var specChild of specChildren) {
+        var specName = specChild.name || "";
+        var specType = specChild.type;
+        var matchKey = specName + "::" + specType;
+
+        if (matchMap[matchKey] && matchMap[matchKey].length > 0) {
+          // Matched — recurse
+          var matchedNode = matchMap[matchKey].shift();
+          matchedExistingIds.add(matchedNode.id);
+          await syncNode(specChild, matchedNode, depth + 1);
+        } else {
+          // Unmatched spec child — create new
+          await createNode(specChild, existingNode.id, depth + 1);
+        }
+      }
+
+      // Handle unmatched existing children
+      if (prune) {
+        for (var existChild of existingChildren) {
+          if (!matchedExistingIds.has(existChild.id)) {
+            existChild.remove();
+            prunedCount++;
+          }
+        }
+      }
+    }
+
+    // Apply deferred FILL sizing after children reconciliation
+    if (type === "frame" && existingNode.layoutMode && existingNode.layoutMode !== "NONE") {
+      if (spec.layoutSizingHorizontal === "FILL") {
+        try { existingNode.layoutSizingHorizontal = "FILL"; } catch (e) { /* ignore */ }
+      }
+      if (spec.layoutSizingVertical === "FILL") {
+        try { existingNode.layoutSizingVertical = "FILL"; } catch (e) { /* ignore */ }
+      }
+    }
+
+    // Send progress every 5 nodes
+    var processedCount = updatedCount + unchangedCount + createdCount;
+    if (commandId && processedCount % 5 === 0) {
+      var progress = Math.round((processedCount / totalNodes) * 100);
+      await sendProgressUpdate(
+        commandId,
+        "create_node_tree",
+        "in_progress",
+        progress,
+        totalNodes,
+        processedCount,
+        "Synced " + processedCount + "/" + totalNodes + " nodes"
+      );
+    }
+  }
+
+  async function createNode(spec, parentNodeId, depth) {
+    depth = depth || 0;
+    if (depth > maxDepthSeen) maxDepthSeen = depth;
+    var type = spec.type;
+    nodeTypeCounts[type] = (nodeTypeCounts[type] || 0) + 1;
     var children = spec.children;
     var props = Object.assign({}, spec);
     delete props.type;
@@ -5975,7 +6411,7 @@ async function createNodeTree(params) {
     // Recurse into children (only frames should have them)
     if (children && Array.isArray(children)) {
       for (const child of children) {
-        await createNode(child, result.id);
+        await createNode(child, result.id, depth + 1);
       }
     }
   }
@@ -5993,28 +6429,47 @@ async function createNodeTree(params) {
     );
   }
 
-  await createNode(tree, parentId || null);
+  if (rootId) {
+    // RECONCILE mode — sync existing tree against spec
+    const rootNode = await figma.getNodeByIdAsync(rootId);
+    if (!rootNode) throw new Error("Root node not found: " + rootId);
+    await syncNode(tree, rootNode, 0);
+  } else {
+    // CREATE mode (existing behavior)
+    await createNode(tree, parentId || null);
+  }
 
   // Send completion progress
   if (commandId) {
+    var processedTotal = rootId ? (updatedCount + unchangedCount + createdCount) : createdCount;
+    var modeLabel = rootId ? "sync" : "create";
     await sendProgressUpdate(
       commandId,
       "create_node_tree",
       "completed",
       100,
       totalNodes,
-      createdCount,
-      `Completed: ${createdCount} created, ${errorCount} errors`
+      processedTotal,
+      `Completed (${modeLabel}): ${createdCount} created, ${updatedCount} updated, ${unchangedCount} unchanged, ${prunedCount} pruned, ${errorCount} errors`
     );
   }
 
   return {
     success: errorCount === 0,
+    mode: rootId ? "sync" : "create",
     totalNodes,
     createdCount,
+    updatedCount,
+    unchangedCount,
+    prunedCount,
     errorCount,
     nodes,
     errors: errors.length > 0 ? errors : undefined,
+    stats: {
+      durationMs: Date.now() - startTime,
+      maxDepth: maxDepthSeen,
+      nodesByType: nodeTypeCounts,
+    },
   };
 }
 

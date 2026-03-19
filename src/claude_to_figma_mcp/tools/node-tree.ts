@@ -37,6 +37,11 @@ const BaseFrameSchema = z.object({
   layoutSizingHorizontal: z.enum(["FIXED", "HUG", "FILL"]).optional(),
   layoutSizingVertical: z.enum(["FIXED", "HUG", "FILL"]).optional(),
   itemSpacing: z.number().optional(),
+  cornerRadius: z.number().optional().describe("Uniform corner radius"),
+  clipsContent: z.boolean().optional().describe("Clip content that overflows the frame bounds"),
+  counterAxisSpacing: z.number().optional().describe("Spacing between wrapped rows/columns when layoutWrap is WRAP"),
+  itemReverseZIndex: z.boolean().optional().describe("Reverse z-index order (first child on top)"),
+  opacity: z.number().min(0).max(1).optional().describe("Node opacity (0-1)"),
 });
 
 const TextNodeSchema = z.object({
@@ -49,6 +54,13 @@ const TextNodeSchema = z.object({
   fontColor: ColorSchema.optional(),
   name: z.string().optional(),
   width: z.number().optional().describe("Optional fixed width for the text node"),
+  fontFamily: z.string().optional().describe("Font family name (default: Inter)"),
+  fontStyle: z.string().optional().describe("Font style (default: derived from fontWeight, e.g. 'Bold', 'Medium')"),
+  textAlignHorizontal: z.enum(["LEFT", "CENTER", "RIGHT", "JUSTIFIED"]).optional(),
+  lineHeight: z.number().optional().describe("Line height in pixels"),
+  letterSpacing: z.number().optional().describe("Letter spacing in pixels"),
+  textCase: z.enum(["ORIGINAL", "UPPER", "LOWER", "TITLE"]).optional(),
+  opacity: z.number().min(0).max(1).optional().describe("Node opacity (0-1)"),
 });
 
 const RectangleNodeSchema = z.object({
@@ -61,6 +73,8 @@ const RectangleNodeSchema = z.object({
   fillColor: ColorSchema.optional(),
   strokeColor: ColorSchema.optional(),
   strokeWeight: z.number().positive().optional(),
+  cornerRadius: z.number().optional().describe("Uniform corner radius"),
+  opacity: z.number().min(0).max(1).optional().describe("Node opacity (0-1)"),
 });
 
 const VectorNodeSchema = z.object({
@@ -76,6 +90,7 @@ const VectorNodeSchema = z.object({
   strokeWeight: z.number().positive().optional().describe("Stroke weight (default 1 when strokeColor is set)"),
   strokeCap: z.enum(["NONE", "ROUND", "SQUARE", "ARROW_LINES", "ARROW_EQUILATERAL", "TRIANGLE_FILLED", "DIAMOND_FILLED", "CIRCLE_FILLED"]).optional().describe("Stroke cap applied to all vector vertices"),
   strokeDash: z.array(z.number()).optional().describe("Dash pattern array, e.g. [10, 5] for dashed, [] for solid"),
+  opacity: z.number().min(0).max(1).optional().describe("Node opacity (0-1)"),
 });
 
 const RepeatDirectiveSchema = z.object({
@@ -119,14 +134,16 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
   // Create Node Tree Tool - batch recursive node creation
   server.tool(
     "create_node_tree",
-    "Create an entire node hierarchy in Figma in one call. Accepts a nested JSON tree of frames, text, rectangles, and vectors. Only frames may have children. Features: (1) $repeat directives in children arrays for data-driven repetition: {\"$repeat\": {\"data\": [[\"a\",\"b\"]], \"template\": {\"type\": \"text\", \"text\": \"$[0]\"}}}. Array rows use $[0],$[1]; object rows use $key. (2) All color fields accept RGBA objects, hex strings (\"#3d6daa\"), or Figma variable references (\"$var:Colors/Primary\") which bind as real Figma variables. Call get_styles or get_local_variables first to discover available tokens.",
+    "Create an entire node hierarchy in Figma in one call. Accepts a nested JSON tree of frames, text, rectangles, and vectors. Only frames may have children. Features: (1) $repeat directives in children arrays for data-driven repetition: {\"$repeat\": {\"data\": [[\"a\",\"b\"]], \"template\": {\"type\": \"text\", \"text\": \"$[0]\"}}}. Array rows use $[0],$[1]; object rows use $key. (2) All color fields accept RGBA objects, hex strings (\"#3d6daa\"), or Figma variable references (\"$var:Colors/Primary\") which bind as real Figma variables. Call get_styles or get_local_variables first to discover available tokens. Performance: progress updates fire every 5 nodes, resetting the 60s inactivity timeout — there is no hard node limit. ~30 nodes per call is a soft guideline for simple layouts; data tables and $repeat structures up to ~150+ nodes work reliably. Response includes stats (durationMs, maxDepth, nodesByType) for performance analysis. Sync mode: pass rootId to reconcile an existing tree instead of creating. Matches nodes by name+type, updates changed properties in place, creates new nodes, preserves unmatched existing nodes (or removes them with prune:true). Node IDs are preserved — prototype connections survive updates.",
     {
-      tree: NodeTreeSchema.describe("The root node of the tree to create"),
-      parentId: z.string().optional().describe("Optional parent node ID to append the tree root to"),
+      tree: NodeTreeSchema.describe("The root node of the tree to create or sync"),
+      parentId: z.string().optional().describe("Parent node ID for create mode"),
+      rootId: z.string().optional().describe("Existing root node ID for sync/reconcile mode. When provided, matches existing children by name+type and updates in place instead of creating new nodes. Node IDs are preserved."),
+      prune: z.boolean().optional().describe("In sync mode, remove existing children not present in the spec. Default false (preserve unmatched nodes)."),
     },
-    async ({ tree, parentId }: any) => {
+    async ({ tree, parentId, rootId, prune }: any) => {
       try {
-        const result = await sendCommandToFigma("create_node_tree", { tree, parentId }, 60000);
+        const result = await sendCommandToFigma("create_node_tree", { tree, parentId, rootId, prune }, 60000);
         return {
           content: [{ type: "text", text: JSON.stringify(result) }],
         };
