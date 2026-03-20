@@ -885,22 +885,38 @@ function buildReaction(trigger, action) {
   if (trigger.keyCodes) reaction.trigger.keyCodes = trigger.keyCodes;
 
   // Action
-  var act = { type: action.type };
-  if (action.navigation) act.navigation = action.navigation;
-  if (action.destinationId) act.destinationId = action.destinationId;
-  if (action.url) act.url = action.url;
-  if (action.preserveScrollPosition !== undefined) act.preserveScrollPosition = action.preserveScrollPosition;
-  if (action.overlayRelativePosition) act.overlayRelativePosition = action.overlayRelativePosition;
-  if (action.variableId) act.variableId = action.variableId;
-  if (action.variableValue !== undefined) act.variableValue = action.variableValue;
-
-  // Transition
-  if (action.transition) {
-    var t = { type: action.transition.type };
-    if (action.transition.duration !== undefined) t.duration = action.transition.duration;
-    if (action.transition.direction) t.direction = action.transition.direction;
-    if (action.transition.easing) t.easing = action.transition.easing;
-    act.transition = t;
+  var act;
+  if (action.type === "NODE" && action.navigation) {
+    act = {
+      type: "NODE",
+      navigation: action.navigation,
+      destinationId: action.destinationId || null,
+      preserveScrollPosition: action.preserveScrollPosition || false,
+      resetScrollPosition: action.resetScrollPosition || false,
+      resetInteractiveComponents: action.resetInteractiveComponents || false,
+      resetVideoPosition: action.resetVideoPosition || false,
+    };
+    if (action.overlayRelativePosition) act.overlayRelativePosition = action.overlayRelativePosition;
+    if (action.transition) {
+      var dur = action.transition.duration !== undefined ? action.transition.duration : 0.3;
+      if (dur > 10) dur = dur / 1000;
+      act.transition = {
+        type: action.transition.type,
+        duration: dur,
+        easing: action.transition.easing || { type: "EASE_IN_AND_OUT" },
+      };
+      if (action.transition.direction) {
+        act.transition.direction = action.transition.direction;
+        act.transition.matchLayers = action.transition.matchLayers || false;
+      }
+    } else {
+      act.transition = { type: "DISSOLVE", duration: 0.3, easing: { type: "EASE_IN_AND_OUT" } };
+    }
+  } else {
+    act = { type: action.type };
+    if (action.url) act.url = action.url;
+    if (action.variableId) act.variableId = action.variableId;
+    if (action.variableValue !== undefined) act.variableValue = action.variableValue;
   }
 
   reaction.actions = [act];
@@ -916,60 +932,99 @@ function buildFullReaction(spec) {
   if (spec.trigger.keyCodes) reaction.trigger.keyCodes = spec.trigger.keyCodes;
 
   reaction.actions = (spec.actions || []).map(function(action) {
+    if (action.type === "NODE" && action.navigation) {
+      var act = {
+        type: "NODE",
+        navigation: action.navigation,
+        destinationId: action.destinationId || null,
+        preserveScrollPosition: action.preserveScrollPosition || false,
+        resetScrollPosition: action.resetScrollPosition || false,
+        resetInteractiveComponents: action.resetInteractiveComponents || false,
+        resetVideoPosition: action.resetVideoPosition || false,
+      };
+      if (action.overlayRelativePosition) act.overlayRelativePosition = action.overlayRelativePosition;
+      if (action.transition) {
+        var dur = action.transition.duration !== undefined ? action.transition.duration : 0.3;
+        // Convert ms to seconds if value looks like ms (>10)
+        if (dur > 10) dur = dur / 1000;
+        act.transition = {
+          type: action.transition.type,
+          duration: dur,
+          easing: action.transition.easing || { type: "EASE_IN_AND_OUT" },
+        };
+        if (action.transition.direction) {
+          act.transition.direction = action.transition.direction;
+          act.transition.matchLayers = action.transition.matchLayers || false;
+        }
+      } else {
+        act.transition = { type: "DISSOLVE", duration: 0.3, easing: { type: "EASE_IN_AND_OUT" } };
+      }
+      return act;
+    }
+    // Non-NODE actions: BACK, CLOSE, URL, SET_VARIABLE, etc.
     var act = { type: action.type };
-    if (action.navigation) act.navigation = action.navigation;
-    if (action.destinationId) act.destinationId = action.destinationId;
     if (action.url) act.url = action.url;
-    if (action.preserveScrollPosition !== undefined) act.preserveScrollPosition = action.preserveScrollPosition;
-    if (action.overlayRelativePosition) act.overlayRelativePosition = action.overlayRelativePosition;
     if (action.variableId) act.variableId = action.variableId;
     if (action.variableValue !== undefined) act.variableValue = action.variableValue;
-    if (action.transition) {
-      var t = { type: action.transition.type };
-      if (action.transition.duration !== undefined) t.duration = action.transition.duration;
-      if (action.transition.direction) t.direction = action.transition.direction;
-      if (action.transition.easing) t.easing = action.transition.easing;
-      act.transition = t;
-    }
     return act;
   });
 
   return reaction;
 }
 
+// Helper: execute reactions code via dynamic function (same mechanism as figma_eval)
+// This is needed because node.setReactionsAsync is only accessible via dynamic execution
+async function execReactionsCode(code) {
+  var AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  var fn = new AsyncFunction("figma", code);
+  try {
+    return await fn(figma);
+  } catch (e) {
+    throw new Error("in execReactionsCode: " + (e.message || String(e)));
+  }
+}
+
 async function setReactions(params) {
   var nodeId = params.nodeId;
   var reactions = params.reactions;
-
-  var node = await figma.getNodeByIdAsync(nodeId);
-  if (!node) throw new Error("Node not found: " + nodeId);
-  if (!("reactions" in node)) throw new Error("Node does not support reactions: " + nodeId);
-
   var built = reactions.map(function(r) { return buildFullReaction(r); });
-  node.reactions = built;
+  var reactionsJson = JSON.stringify(built);
 
-  return {
-    success: true,
-    nodeId: nodeId,
-    reactionsSet: built.length,
-  };
+  var result = await execReactionsCode(
+    'var node = await figma.getNodeByIdAsync("' + nodeId + '");' +
+    'if (!node) throw new Error("Node not found: ' + nodeId + '");' +
+    'var reactions = ' + reactionsJson + ';' +
+    // Clear existing reactions first to avoid "Reaction was invalid" on replacement
+    'await node.setReactionsAsync([]);' +
+    'await node.setReactionsAsync(reactions);' +
+    'return { success: true, nodeId: "' + nodeId + '", nodeName: node.name, reactionsSet: reactions.length };'
+  );
+  return result;
 }
 
 async function addReaction(params) {
   var nodeId = params.nodeId;
   var node = await figma.getNodeByIdAsync(nodeId);
   if (!node) throw new Error("Node not found: " + nodeId);
-  if (!("reactions" in node)) throw new Error("Node does not support reactions: " + nodeId);
 
-  var existing = node.reactions ? [...node.reactions] : [];
   var newReaction = buildReaction(params.trigger, params.action);
-  existing.push(newReaction);
-  node.reactions = existing;
+  var newReactionJson = JSON.stringify(newReaction);
+
+  // Read existing + append inside dynamic context to avoid format round-trip
+  var result = await execReactionsCode(
+    'var node = await figma.getNodeByIdAsync("' + nodeId + '");' +
+    'var existing = JSON.parse(JSON.stringify(node.reactions || []));' +
+    'var newR = ' + newReactionJson + ';' +
+    'existing.push(newR);' +
+    'await node.setReactionsAsync(existing);' +
+    'return existing.length;'
+  );
 
   return {
     success: true,
     nodeId: nodeId,
-    totalReactions: existing.length,
+    nodeName: node.name,
+    totalReactions: result || 1,
   };
 }
 
@@ -979,27 +1034,31 @@ async function removeReactions(params) {
 
   var node = await figma.getNodeByIdAsync(nodeId);
   if (!node) throw new Error("Node not found: " + nodeId);
-  if (!("reactions" in node)) throw new Error("Node does not support reactions: " + nodeId);
 
-  var existing = node.reactions ? [...node.reactions] : [];
-  var removedCount;
+  var filterCode = triggerType
+    ? 'var updated = existing.filter(function(r) { return r.trigger && r.trigger.type !== "' + triggerType + '"; });'
+    : 'var updated = [];';
 
-  if (triggerType) {
-    var filtered = existing.filter(function(r) {
-      return r.trigger && r.trigger.type !== triggerType;
-    });
-    removedCount = existing.length - filtered.length;
-    node.reactions = filtered;
-  } else {
-    removedCount = existing.length;
-    node.reactions = [];
-  }
+  // Read, filter, and write inside dynamic context to avoid format round-trip
+  var result = await execReactionsCode(
+    'var node = await figma.getNodeByIdAsync("' + nodeId + '");' +
+    'var existing = JSON.parse(JSON.stringify(node.reactions || []));' +
+    'var before = existing.length;' +
+    filterCode +
+    'await node.setReactionsAsync(updated);' +
+    'return { before: before, after: updated.length };'
+  );
+
+  var before = result ? result.before : 0;
+  var after = result ? result.after : 0;
 
   return {
     success: true,
     nodeId: nodeId,
-    removedCount: removedCount,
-    remainingCount: node.reactions.length,
+    nodeName: node.name,
+    removedCount: before - after,
+    remainingCount: after,
+    filter: triggerType || "ALL",
   };
 }
 
@@ -1013,12 +1072,15 @@ async function getInteractions(params) {
   var interactions = [];
 
   async function extractInteractions(n) {
-    if ("reactions" in n && n.reactions && n.reactions.length > 0) {
-      for (var reaction of n.reactions) {
-        var actions = (reaction.actions || (reaction.action ? [reaction.action] : []));
+    var nodeReactions = n.reactions ? Array.from(n.reactions) : [];
+    if (nodeReactions.length > 0) {
+      for (var i = 0; i < nodeReactions.length; i++) {
+        var reaction = nodeReactions[i];
+        var actions = reaction.actions || (reaction.action ? [reaction.action] : []);
         var resolvedActions = [];
 
-        for (var act of actions) {
+        for (var j = 0; j < actions.length; j++) {
+          var act = actions[j];
           var resolved = {
             type: act.type,
             navigation: act.navigation || null,
@@ -1041,6 +1103,7 @@ async function getInteractions(params) {
         interactions.push({
           nodeId: n.id,
           nodeName: n.name,
+          nodeType: n.type,
           trigger: reaction.trigger ? reaction.trigger.type : "UNKNOWN",
           actions: resolvedActions,
         });
@@ -1048,8 +1111,8 @@ async function getInteractions(params) {
     }
 
     if (recursive && "children" in n && n.children) {
-      for (var child of n.children) {
-        await extractInteractions(child);
+      for (var k = 0; k < n.children.length; k++) {
+        await extractInteractions(n.children[k]);
       }
     }
   }
@@ -1058,6 +1121,7 @@ async function getInteractions(params) {
 
   return {
     nodeId: nodeId,
+    nodeName: node.name,
     interactionCount: interactions.length,
     interactions: interactions,
   };
@@ -1069,14 +1133,19 @@ async function batchSetReactions(params) {
   var successCount = 0;
   var errorCount = 0;
 
-  for (var op of operations) {
+  for (var i = 0; i < operations.length; i++) {
+    var op = operations[i];
     try {
-      var node = await figma.getNodeByIdAsync(op.nodeId);
-      if (!node) throw new Error("Node not found: " + op.nodeId);
-      if (!("reactions" in node)) throw new Error("Node does not support reactions: " + op.nodeId);
-
       var built = op.reactions.map(function(r) { return buildFullReaction(r); });
-      node.reactions = built;
+      var reactionsJson = JSON.stringify(built);
+
+      await execReactionsCode(
+        'var node = await figma.getNodeByIdAsync("' + op.nodeId + '");' +
+        'if (!node) throw new Error("Node not found: ' + op.nodeId + '");' +
+        'var reactions = ' + reactionsJson + ';' +
+        'await node.setReactionsAsync([]);' +
+        'await node.setReactionsAsync(reactions);'
+      );
       results.push({ nodeId: op.nodeId, success: true, reactionsSet: built.length });
       successCount++;
     } catch (err) {

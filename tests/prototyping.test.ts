@@ -108,45 +108,36 @@ afterAll(async () => {
 // Helper: create two test frames to use as navigation source/destination
 // ---------------------------------------------------------------------------
 
+let testFrameX = 0;
 async function createTestFrames(): Promise<{ sourceId: string; destId: string; rootId: string }> {
-  const res = await createTree({
+  // Figma requires navigate destinations to be top-level frames (direct page children)
+  // Position each pair to avoid overlap with other tests
+  const xOffset = testFrameX;
+  testFrameX += 800;
+
+  const srcRes = await createTree({
     type: "frame",
-    name: "Proto-Test-Container",
-    width: 800,
+    name: "Screen-A-" + xOffset,
+    x: xOffset,
+    width: 375,
     height: 400,
-    layoutMode: "HORIZONTAL",
-    itemSpacing: 20,
-    children: [
-      {
-        type: "frame",
-        name: "Screen-A",
-        width: 375,
-        height: 400,
-        fillColor: "#e8e8e8",
-        children: [
-          { type: "text", name: "Button-A", text: "Go to B", fontSize: 16 },
-        ],
-      },
-      {
-        type: "frame",
-        name: "Screen-B",
-        width: 375,
-        height: 400,
-        fillColor: "#d0d0d0",
-        children: [
-          { type: "text", name: "Label-B", text: "Screen B", fontSize: 16 },
-        ],
-      },
-    ],
+    fillColor: "#e8e8e8",
+  });
+  const dstRes = await createTree({
+    type: "frame",
+    name: "Screen-B-" + xOffset,
+    x: xOffset + 400,
+    width: 375,
+    height: 400,
+    fillColor: "#d0d0d0",
   });
 
-  const rootId = res.nodes[0].id;
-  cleanup.push(rootId);
+  const sourceId = srcRes.nodes[0].id;
+  const destId = dstRes.nodes[0].id;
+  cleanup.push(sourceId);
+  cleanup.push(destId);
 
-  const buttonNode = res.nodes.find((n: any) => n.name === "Button-A");
-  const screenB = res.nodes.find((n: any) => n.name === "Screen-B");
-
-  return { sourceId: buttonNode.id, destId: screenB.id, rootId };
+  return { sourceId, destId, rootId: sourceId };
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +224,7 @@ describe("prototyping tools", () => {
   test("set_reactions — replaces existing reactions", async () => {
     const { sourceId, destId } = await createTestFrames();
 
-    // Set initial
+    // Set initial NAVIGATE
     await send("set_reactions", {
       nodeId: sourceId,
       reactions: [{
@@ -242,12 +233,13 @@ describe("prototyping tools", () => {
       }],
     });
 
-    // Replace with different reaction
+    // Replace with different NAVIGATE (Figma requires same action category on replacement)
     const res = await send("set_reactions", {
       nodeId: sourceId,
       reactions: [{
         trigger: { type: "ON_HOVER" },
-        actions: [{ type: "BACK" }],
+        actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: destId,
+          transition: { type: "SMART_ANIMATE", duration: 500, easing: { type: "EASE_OUT" } } }],
       }],
     });
 
@@ -313,12 +305,12 @@ describe("prototyping tools", () => {
   test("remove_reactions — remove all", async () => {
     const { sourceId, destId } = await createTestFrames();
 
-    // Set up two reactions
+    // Set two NAVIGATE reactions with different triggers
     await send("set_reactions", {
       nodeId: sourceId,
       reactions: [
         { trigger: { type: "ON_CLICK" }, actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: destId }] },
-        { trigger: { type: "ON_HOVER" }, actions: [{ type: "BACK" }] },
+        { trigger: { type: "ON_HOVER" }, actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: destId }] },
       ],
     });
 
@@ -333,12 +325,12 @@ describe("prototyping tools", () => {
   test("remove_reactions — remove by trigger type", async () => {
     const { sourceId, destId } = await createTestFrames();
 
-    // Set up two reactions
+    // Set two NAVIGATE reactions with different triggers
     await send("set_reactions", {
       nodeId: sourceId,
       reactions: [
         { trigger: { type: "ON_CLICK" }, actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: destId }] },
-        { trigger: { type: "ON_HOVER" }, actions: [{ type: "BACK" }] },
+        { trigger: { type: "ON_HOVER" }, actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: destId }] },
       ],
     });
 
@@ -376,7 +368,7 @@ describe("prototyping tools", () => {
     const interaction = res.interactions[0];
     expect(interaction.trigger).toBe("ON_CLICK");
     expect(interaction.actions[0].destinationId).toBe(destId);
-    expect(interaction.actions[0].destinationName).toBe("Screen-B");
+    expect(interaction.actions[0].destinationName).toContain("Screen-B");
     expect(interaction.actions[0].navigation).toBe("NAVIGATE");
   });
 
@@ -389,23 +381,32 @@ describe("prototyping tools", () => {
   });
 
   test("get_interactions — recursive mode", async () => {
-    const { sourceId, destId, rootId } = await createTestFrames();
+    // Create a container with a child that has a reaction
+    const container = await createTree({
+      type: "frame",
+      name: "Recursive-Container",
+      width: 400,
+      height: 400,
+      layoutMode: "VERTICAL",
+      children: [
+        { type: "frame", name: "Child-With-Reaction", width: 200, height: 100 },
+      ],
+    });
+    cleanup.push(container.nodes[0].id);
+    const childId = container.nodes.find((n: any) => n.name === "Child-With-Reaction").id;
 
-    // Set reaction on the button inside Screen-A
+    // Set a BACK reaction on the child (doesn't need a destination)
     await send("set_reactions", {
-      nodeId: sourceId,
-      reactions: [{
-        trigger: { type: "ON_CLICK" },
-        actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: destId }],
-      }],
+      nodeId: childId,
+      reactions: [{ trigger: { type: "ON_CLICK" }, actions: [{ type: "BACK" }] }],
     });
 
-    // Query the container recursively — should find the button's reaction
-    const res = await send("get_interactions", { nodeId: rootId, recursive: true });
+    // Query the container recursively
+    const res = await send("get_interactions", { nodeId: container.nodes[0].id, recursive: true });
     expect(res.interactionCount).toBeGreaterThanOrEqual(1);
 
-    const buttonInteraction = res.interactions.find((i: any) => i.nodeName === "Button-A");
-    expect(buttonInteraction).toBeDefined();
+    const childInteraction = res.interactions.find((i: any) => i.nodeName === "Child-With-Reaction");
+    expect(childInteraction).toBeDefined();
   });
 
   // -----------------------------------------------------------------------
@@ -413,46 +414,29 @@ describe("prototyping tools", () => {
   // -----------------------------------------------------------------------
 
   test("batch_set_reactions — wire multiple nodes at once", async () => {
-    // Create 3 frames to wire between
-    const tree = await createTree({
-      type: "frame",
-      name: "Batch-Test",
-      width: 1200,
-      height: 400,
-      layoutMode: "HORIZONTAL",
-      itemSpacing: 20,
-      children: [
-        { type: "frame", name: "Page-1", width: 375, height: 400, fillColor: "#eee",
-          children: [{ type: "text", name: "Nav-1", text: "Go to 2", fontSize: 14 }] },
-        { type: "frame", name: "Page-2", width: 375, height: 400, fillColor: "#ddd",
-          children: [{ type: "text", name: "Nav-2", text: "Go to 3", fontSize: 14 }] },
-        { type: "frame", name: "Page-3", width: 375, height: 400, fillColor: "#ccc",
-          children: [{ type: "text", name: "Nav-3", text: "Back to 1", fontSize: 14 }] },
-      ],
-    });
+    // Create 3 top-level frames (Figma requires top-level for navigate destinations)
+    const p1 = await createTree({ type: "frame", name: "Page-1", width: 375, height: 400, fillColor: "#eee" });
+    const p2 = await createTree({ type: "frame", name: "Page-2", width: 375, height: 400, fillColor: "#ddd" });
+    const p3 = await createTree({ type: "frame", name: "Page-3", width: 375, height: 400, fillColor: "#ccc" });
 
-    cleanup.push(tree.nodes[0].id);
-
-    const nav1 = tree.nodes.find((n: any) => n.name === "Nav-1");
-    const nav2 = tree.nodes.find((n: any) => n.name === "Nav-2");
-    const nav3 = tree.nodes.find((n: any) => n.name === "Nav-3");
-    const page1 = tree.nodes.find((n: any) => n.name === "Page-1");
-    const page2 = tree.nodes.find((n: any) => n.name === "Page-2");
-    const page3 = tree.nodes.find((n: any) => n.name === "Page-3");
+    const page1Id = p1.nodes[0].id;
+    const page2Id = p2.nodes[0].id;
+    const page3Id = p3.nodes[0].id;
+    cleanup.push(page1Id, page2Id, page3Id);
 
     const res = await send("batch_set_reactions", {
       operations: [
         {
-          nodeId: nav1.id,
-          reactions: [{ trigger: { type: "ON_CLICK" }, actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: page2.id }] }],
+          nodeId: page1Id,
+          reactions: [{ trigger: { type: "ON_CLICK" }, actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: page2Id }] }],
         },
         {
-          nodeId: nav2.id,
-          reactions: [{ trigger: { type: "ON_CLICK" }, actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: page3.id }] }],
+          nodeId: page2Id,
+          reactions: [{ trigger: { type: "ON_CLICK" }, actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: page3Id }] }],
         },
         {
-          nodeId: nav3.id,
-          reactions: [{ trigger: { type: "ON_CLICK" }, actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: page1.id }] }],
+          nodeId: page3Id,
+          reactions: [{ trigger: { type: "ON_CLICK" }, actions: [{ type: "NODE", navigation: "NAVIGATE", destinationId: page1Id }] }],
         },
       ],
     });
@@ -463,8 +447,8 @@ describe("prototyping tools", () => {
     expect(res.errorCount).toBe(0);
 
     // Verify all three are wired
-    for (const navNode of [nav1, nav2, nav3]) {
-      const interactions = await send("get_interactions", { nodeId: navNode.id });
+    for (const pageId of [page1Id, page2Id, page3Id]) {
+      const interactions = await send("get_interactions", { nodeId: pageId });
       expect(interactions.interactionCount).toBe(1);
     }
   });
