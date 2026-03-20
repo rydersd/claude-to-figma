@@ -995,6 +995,7 @@ async function setReactions(params) {
     'if (!node) throw new Error("Node not found: ' + nodeId + '");' +
     'var reactions = ' + reactionsJson + ';' +
     // Clear existing reactions first to avoid "Reaction was invalid" on replacement
+    'await node.setReactionsAsync([]);' +
     'await node.setReactionsAsync(reactions);' +
     'return { success: true, nodeId: "' + nodeId + '", nodeName: node.name, reactionsSet: reactions.length };'
   );
