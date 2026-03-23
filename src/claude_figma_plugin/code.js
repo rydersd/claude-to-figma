@@ -486,6 +486,20 @@ async function handleCommand(command, params) {
         throw new Error("Missing or invalid operations parameter");
       }
       return await batchSetReactions(params);
+    case "undo": {
+      const undoCount = (params && params.count) || 1;
+      for (let i = 0; i < undoCount; i++) {
+        figma.triggerUndo();
+      }
+      return { success: true, message: `Undo triggered ${undoCount} time(s)`, count: undoCount };
+    }
+    case "redo": {
+      const redoCount = (params && params.count) || 1;
+      for (let i = 0; i < redoCount; i++) {
+        figma.triggerRedo();
+      }
+      return { success: true, message: `Redo triggered ${redoCount} time(s)`, count: redoCount };
+    }
     default:
       throw new Error(`Unknown command: ${command}`);
   }

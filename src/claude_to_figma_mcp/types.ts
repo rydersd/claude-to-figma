@@ -151,7 +151,9 @@ export type FigmaCommand =
   | "add_reaction"
   | "remove_reactions"
   | "get_interactions"
-  | "batch_set_reactions";
+  | "batch_set_reactions"
+  | "undo"
+  | "redo";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;

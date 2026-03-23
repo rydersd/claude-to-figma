@@ -28,6 +28,30 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
+  server.tool("undo", "Undo the last action(s) in Figma. Use after destructive operations like rasterizing images at wrong sizes, accidental deletions, or batch mutations that produced wrong results.", {
+    count: z.number().int().min(1).max(50).optional().describe("Number of undo steps (default 1, max 50)"),
+  }, async ({ count }: any) => {
+    try {
+      const steps = count || 1;
+      await sendCommandToFigma("undo", { count: steps });
+      return { content: [{ type: "text", text: `Undo triggered ${steps} time(s)` }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error triggering undo: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+
+  server.tool("redo", "Redo the last undone action(s) in Figma.", {
+    count: z.number().int().min(1).max(50).optional().describe("Number of redo steps (default 1, max 50)"),
+  }, async ({ count }: any) => {
+    try {
+      const steps = count || 1;
+      await sendCommandToFigma("redo", { count: steps });
+      return { content: [{ type: "text", text: `Redo triggered ${steps} time(s)` }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error triggering redo: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+
   server.tool("join_channel", "Join a specific channel to communicate with Figma", {
     channel: z.string().describe("The name of the channel to join").default(""),
   }, async ({ channel }: any) => {
