@@ -1,6 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
+import { sendCommandWithRetry } from "../connection.js";
+import { getOptimalChunkSize } from "../metrics.js";
+import { logger } from "../helpers.js";
 
 // --- Recursive node tree schema for batch creation ---
 const ColorObjectSchema = z.object({
@@ -130,6 +133,95 @@ const NodeTreeSchema: z.ZodType<NodeTree> = z.discriminatedUnion("type", [
   VectorNodeSchema,
 ]);
 
+/**
+ * Count total nodes in a tree spec, expanding $repeat directives.
+ */
+function countTreeNodes(tree: any): number {
+  if (!tree) return 0;
+
+  // Handle $repeat directive
+  if (tree.$repeat) {
+    const dataLength = Array.isArray(tree.$repeat.data) ? tree.$repeat.data.length : 0;
+    const templateCount = countTreeNodes(tree.$repeat.template);
+    return templateCount * dataLength;
+  }
+
+  // Count this node
+  let count = 1;
+
+  // If it's a frame with children, recursively count each child
+  if (tree.type === "frame" && Array.isArray(tree.children)) {
+    for (const child of tree.children) {
+      count += countTreeNodes(child);
+    }
+  }
+
+  return count;
+}
+
+/**
+ * Split a tree's children into chunks for incremental creation.
+ * The first chunk creates the parent frame with its first batch of children.
+ * Subsequent chunks contain only the remaining children to be appended.
+ */
+function splitTreeIntoChunks(tree: any, maxNodesPerChunk: number): any[] {
+  // Only frames with children can be split
+  if (tree.type !== "frame" || !Array.isArray(tree.children) || tree.children.length === 0) {
+    return [tree];
+  }
+
+  const totalNodes = countTreeNodes(tree);
+  if (totalNodes <= maxNodesPerChunk) {
+    return [tree];
+  }
+
+  const chunks: any[] = [];
+  let currentChildren: any[] = [];
+  let currentNodeCount = 1; // Count the root frame itself in the first chunk
+
+  for (const child of tree.children) {
+    const childNodeCount = countTreeNodes(child);
+
+    // H4 fix: warn if a single child exceeds the chunk limit (can't split it further)
+    if (childNodeCount > maxNodesPerChunk) {
+      logger.warn(
+        `Single child node (${childNodeCount} nodes) exceeds chunk limit (${maxNodesPerChunk}). ` +
+        `Including it unsplit — consider reducing child complexity.`
+      );
+    }
+
+    // If adding this child would exceed the chunk limit and we already have children,
+    // finalize the current chunk and start a new one
+    if (currentNodeCount + childNodeCount > maxNodesPerChunk && currentChildren.length > 0) {
+      if (chunks.length === 0) {
+        // First chunk: full root frame with subset of children
+        const { children: _, ...rootProps } = tree;
+        chunks.push({ ...rootProps, children: currentChildren });
+      } else {
+        // Subsequent chunks: just the children array (parent ID will be set at execution time)
+        chunks.push({ children: currentChildren });
+      }
+      currentChildren = [];
+      currentNodeCount = 0;
+    }
+
+    currentChildren.push(child);
+    currentNodeCount += childNodeCount;
+  }
+
+  // Push the final batch of children
+  if (currentChildren.length > 0) {
+    if (chunks.length === 0) {
+      // All children fit in one chunk — shouldn't normally reach here, but handle gracefully
+      chunks.push(tree);
+    } else {
+      chunks.push({ children: currentChildren });
+    }
+  }
+
+  return chunks;
+}
+
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
   // Create Node Tree Tool - batch recursive node creation
   server.tool(
@@ -145,10 +237,102 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       if (rootId && parentId) {
         return { content: [{ type: "text", text: JSON.stringify({ error: "Cannot specify both rootId (sync mode) and parentId (create mode). Use rootId for sync/reconciliation or parentId for creating new nodes." }) }] };
       }
+
       try {
-        const result = await sendCommandToFigma("create_node_tree", { tree, parentId, rootId, prune }, 60000);
+        const nodeCount = countTreeNodes(tree);
+        const optimalChunkSize = getOptimalChunkSize();
+
+        // For sync mode, chunking is not supported — send the full tree
+        if (rootId || nodeCount <= optimalChunkSize) {
+          const startTime = Date.now();
+          const result = await sendCommandWithRetry(
+            "create_node_tree",
+            { tree, parentId, rootId, prune },
+            { timeoutMs: 60000 }
+          );
+          // sendCommandWithRetry already records metrics — don't double-count (NEW-H1 fix)
+          return {
+            content: [{ type: "text", text: JSON.stringify(result) }],
+          };
+        }
+
+        // Auto-chunking: split the tree and execute incrementally
+        logger.info(
+          `Auto-chunking create_node_tree: ${nodeCount} nodes into chunks of ~${optimalChunkSize}`
+        );
+        const chunks = splitTreeIntoChunks(tree, optimalChunkSize);
+        logger.info(`Split into ${chunks.length} chunks`);
+
+        const allResults: any[] = [];
+        let createdParentId: string | undefined;
+        const overallStart = Date.now();
+
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const chunkStart = Date.now();
+
+          if (i === 0) {
+            // First chunk: create the parent frame with its first batch of children
+            const result = await sendCommandWithRetry(
+              "create_node_tree",
+              { tree: chunk, parentId },
+              { timeoutMs: 60000 }
+            ) as any;
+
+            // Skip recordOperation here — sendCommandWithRetry already records (H5 fix)
+            allResults.push(result);
+
+            // Extract the created parent frame's ID for subsequent chunks
+            if (result && result.id) {
+              createdParentId = result.id;
+            } else if (result && result.nodeId) {
+              createdParentId = result.nodeId;
+            }
+
+            if (!createdParentId) {
+              logger.warn(
+                "Could not extract parent ID from first chunk result; " +
+                "remaining chunks will be skipped"
+              );
+              break;
+            }
+          } else {
+            // Subsequent chunks: add each child directly to the parent
+            // instead of wrapping in a dummy frame (C1 fix: no ghost wrappers)
+            const children = chunk.children || [];
+            for (const child of children) {
+              const result = await sendCommandWithRetry(
+                "create_node_tree",
+                { tree: child, parentId: createdParentId },
+                { timeoutMs: 60000 }
+              ) as any;
+              allResults.push(result);
+            }
+
+            const chunkDuration = Date.now() - chunkStart;
+            const chunkNodeCount = children.reduce(
+              (sum: number, c: any) => sum + countTreeNodes(c), 0
+            );
+            // Skip recordOperation here — sendCommandWithRetry already records (H5 fix)
+          }
+
+          logger.info(`Chunk ${i + 1}/${chunks.length} completed`);
+        }
+
+        const overallDuration = Date.now() - overallStart;
+
+        // Aggregate results
+        const aggregated = {
+          chunked: true,
+          totalChunks: chunks.length,
+          totalNodes: nodeCount,
+          durationMs: overallDuration,
+          parentId: createdParentId,
+          chunkResults: allResults,
+        };
+
         return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
+          content: [{ type: "text", text: JSON.stringify(aggregated) }],
         };
       } catch (error) {
         return {

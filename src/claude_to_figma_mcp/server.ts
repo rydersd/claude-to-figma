@@ -26,6 +26,8 @@ import { registerTools as registerVisualTools } from "./tools/visual.js";
 import { registerTools as registerEvalTools } from "./tools/eval.js";
 import { registerTools as registerMigrationTools } from "./tools/migration.js";
 import { registerTools as registerPrototypingTools } from "./tools/prototyping.js";
+import { registerTools as registerWireframeParserTools } from "./tools/wireframe-parser.js";
+import { registerTools as registerPageCompilerTools } from "./tools/page-compiler.js";
 import { registerPrompts } from "./tools/prompts.js";
 
 // Create MCP server
@@ -55,6 +57,8 @@ registerVisualTools(server, sendCommandToFigma);
 registerEvalTools(server, sendCommandToFigma);
 registerMigrationTools(server, sendCommandToFigma);
 registerPrototypingTools(server, sendCommandToFigma);
+registerWireframeParserTools(server, sendCommandToFigma);
+registerPageCompilerTools(server, sendCommandToFigma);
 
 // Register prompts
 registerPrompts(server);
