@@ -8,6 +8,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
+import { sendCommandWithRetry } from "../connection.js";
 import { SECTION_TEMPLATES, getTemplateSummaries } from "../templates/pcp-sections.js";
 import { logger } from "../helpers.js";
 
@@ -64,7 +65,8 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
           params.insertAt = insertAt;
         }
 
-        const result = await sendCommandToFigma("create_node_tree", params, 60000);
+        // M6 fix: use retry wrapper instead of raw sendCommandToFigma
+        const result = await sendCommandWithRetry("create_node_tree", params, { timeoutMs: 60000 });
 
         // 4. Return the result with zone metadata
         return {

@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { logger } from "./helpers.js";
 
@@ -55,7 +56,7 @@ const CHUNK_INCREASE_FACTOR = 1.1;
 const TIMEOUT_INCREASE_FACTOR = 1.5;
 
 const METRICS_FILE_PATH = path.join(
-  process.env.HOME || "~",
+  os.homedir(),
   ".claude",
   "cache",
   "figma-metrics.json",
@@ -132,7 +133,8 @@ export function loadMetrics(): MetricsStore {
 }
 
 /**
- * Persists the metrics store to disk, creating parent directories as needed.
+ * Persists the metrics store to disk using atomic write (write to temp, rename).
+ * Creates parent directories as needed.
  */
 export function saveMetrics(store: MetricsStore): void {
   try {
@@ -140,17 +142,44 @@ export function saveMetrics(store: MetricsStore): void {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(
-      METRICS_FILE_PATH,
-      JSON.stringify(store, null, 2),
-      "utf-8",
-    );
+    // M5 fix: atomic write — write to temp file then rename
+    const tmpPath = METRICS_FILE_PATH + ".tmp";
+    fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2), "utf-8");
+    fs.renameSync(tmpPath, METRICS_FILE_PATH);
     cachedStore = store;
     logger.debug("Metrics saved to disk");
   } catch (err) {
     logger.error(
       `Failed to save metrics to ${METRICS_FILE_PATH}: ${err instanceof Error ? err.message : String(err)}`,
     );
+  }
+}
+
+// M2 fix: throttle disk writes to at most once per 10 seconds
+let lastSaveTime = 0;
+let pendingSave: MetricsStore | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+const SAVE_THROTTLE_MS = 10_000;
+
+function throttledSave(store: MetricsStore): void {
+  const now = Date.now();
+  if (now - lastSaveTime >= SAVE_THROTTLE_MS) {
+    saveMetrics(store);
+    lastSaveTime = now;
+    pendingSave = null;
+  } else {
+    // Schedule a deferred save if not already pending
+    pendingSave = store;
+    if (!saveTimer) {
+      saveTimer = setTimeout(() => {
+        if (pendingSave) {
+          saveMetrics(pendingSave);
+          lastSaveTime = Date.now();
+          pendingSave = null;
+        }
+        saveTimer = null;
+      }, SAVE_THROTTLE_MS - (now - lastSaveTime));
+    }
   }
 }
 
@@ -256,11 +285,22 @@ export function recordOperation(
 
   store.commandStats[record.command] = stats;
 
+  // M4 fix: prune commandStats to top 50 commands by totalCalls
+  const statKeys = Object.keys(store.commandStats);
+  if (statKeys.length > 50) {
+    const sorted = statKeys.sort(
+      (a, b) => (store.commandStats[b].totalCalls || 0) - (store.commandStats[a].totalCalls || 0)
+    );
+    for (const key of sorted.slice(50)) {
+      delete store.commandStats[key];
+    }
+  }
+
   // Trigger adaptive parameter adjustment
   adaptParams();
 
-  // Persist
-  saveMetrics(store);
+  // M2 fix: throttle disk writes — save at most once every 10 seconds
+  throttledSave(store);
 
   logger.debug(
     `Recorded ${record.success ? "success" : "failure"} for "${record.command}" ` +
@@ -442,10 +482,13 @@ export function adaptParams(): void {
 
     // --- Timeout adaptation ---
 
+    // H1 fix: cap timeout at 120s to prevent unbounded escalation
+    const MAX_TIMEOUT_MS = 120_000;
     if (timeoutFailures.length > 0 && !globalTimeoutBumped) {
       const oldTimeout = store.adaptiveParams.baseTimeoutMs;
-      store.adaptiveParams.baseTimeoutMs = Math.ceil(
-        oldTimeout * TIMEOUT_INCREASE_FACTOR,
+      store.adaptiveParams.baseTimeoutMs = Math.min(
+        Math.ceil(oldTimeout * TIMEOUT_INCREASE_FACTOR),
+        MAX_TIMEOUT_MS,
       );
       globalTimeoutBumped = true;
       logger.info(

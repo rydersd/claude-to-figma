@@ -1592,6 +1592,144 @@ export const SECTION_TEMPLATES: Record<string, SectionTemplate> = {
       });
     },
   },
+
+  // =========================================================================
+  // C3 fix: 7 additional templates emitted by wireframe parser
+  // =========================================================================
+
+  slds_empty_state: {
+    zone: "no_brand",
+    description: "Empty state placeholder with heading, description, and CTA",
+    defaultWidth: 1440,
+    buildTree(props: Record<string, any>, width?: number): any {
+      const w = width ?? 1440;
+      return sldsCard({
+        name: "Empty State",
+        width: w,
+        children: [
+          textNode({ text: props.heading || "No items yet", fontSize: SLDS.headingSmall, fontWeight: 700, fontColor: SLDS.textPrimary, name: "Empty Heading", width: w - SLDS.paddingL * 2 }),
+          textNode({ text: props.description || "", fontSize: SLDS.bodySize, fontWeight: 400, fontColor: SLDS.textSecondary, name: "Empty Description", width: w - SLDS.paddingL * 2 }),
+          ...(props.primaryCta ? [{ type: "frame" as const, name: "CTA Button", width: 160, height: 36, fillColor: SLDS.actionPrimary, cornerRadius: 4, layoutMode: "HORIZONTAL" as const, primaryAxisAlignItems: "CENTER" as const, counterAxisAlignItems: "CENTER" as const, paddingTop: 8, paddingBottom: 8, paddingLeft: 16, paddingRight: 16, children: [textNode({ text: props.primaryCta.text || "Get started", fontSize: SLDS.bodySize, fontWeight: 700, fontColor: SLDS.textInverse, name: "CTA Label" })] }] : []),
+        ],
+      });
+    },
+  },
+
+  quick_actions: {
+    zone: "no_brand",
+    description: "Grid of quick action cards with title and caption",
+    defaultWidth: 1440,
+    buildTree(props: Record<string, any>, width?: number): any {
+      const w = width ?? 1440;
+      const actions = props.actions || [];
+      return sldsCard({
+        name: "Quick Actions",
+        width: w,
+        children: [
+          textNode({ text: props.heading || "Quick Actions", fontSize: SLDS.headingSmall, fontWeight: 700, fontColor: SLDS.textPrimary, name: "Actions Heading" }),
+          ...actions.map((a: any, i: number) => ({
+            type: "frame" as const, name: `Action ${i + 1}`, width: w - SLDS.paddingL * 2, height: 48, layoutMode: "VERTICAL" as const, itemSpacing: 2, paddingTop: 10, paddingBottom: 10, strokeColor: SLDS.border, strokeWeight: 1, cornerRadius: 4, children: [
+              textNode({ text: a.title || "", fontSize: SLDS.bodySize, fontWeight: 600, fontColor: SLDS.actionPrimary, name: "Action Title" }),
+              textNode({ text: a.caption || a.description || "", fontSize: 12, fontWeight: 400, fontColor: SLDS.textSecondary, name: "Action Caption" }),
+            ],
+          })),
+        ],
+      });
+    },
+  },
+
+  deadline_cards: {
+    zone: "no_brand",
+    description: "Stacked deadline/timeline cards with status indicators",
+    defaultWidth: 1440,
+    buildTree(props: Record<string, any>, width?: number): any {
+      const w = width ?? 1440;
+      return sldsCard({ name: "Deadline Cards", width: w, children: [
+        textNode({ text: props.heading || "Upcoming Deadlines", fontSize: SLDS.headingSmall, fontWeight: 700, fontColor: SLDS.textPrimary, name: "Deadlines Heading" }),
+        textNode({ text: "Deadline items rendered here", fontSize: SLDS.bodySize, fontWeight: 400, fontColor: SLDS.textSecondary, name: "Deadlines Placeholder" }),
+      ]});
+    },
+  },
+
+  activity_feed: {
+    zone: "no_brand",
+    description: "Chronological activity feed with timestamps",
+    defaultWidth: 1440,
+    buildTree(props: Record<string, any>, width?: number): any {
+      const w = width ?? 1440;
+      return sldsCard({ name: "Activity Feed", width: w, children: [
+        textNode({ text: props.heading || "Recent Activity", fontSize: SLDS.headingSmall, fontWeight: 700, fontColor: SLDS.textPrimary, name: "Feed Heading" }),
+        ...(props.viewAllLink ? [textNode({ text: props.viewAllLink.text || "View All", fontSize: 12, fontWeight: 600, fontColor: SLDS.actionPrimary, name: "View All Link" })] : []),
+        textNode({ text: "Activity items rendered here", fontSize: SLDS.bodySize, fontWeight: 400, fontColor: SLDS.textSecondary, name: "Feed Placeholder" }),
+      ]});
+    },
+  },
+
+  psm_contact_card: {
+    zone: "full_brand",
+    description: "Partner Success Manager contact card with quote and CTA",
+    defaultWidth: 1440,
+    buildTree(props: Record<string, any>, width?: number): any {
+      const w = width ?? 1440;
+      return {
+        type: "frame" as const, name: "PSM Contact", width: w, height: 200, fillColor: BRAND.bgDark, layoutMode: "HORIZONTAL" as const, itemSpacing: 24, paddingTop: 40, paddingBottom: 40, paddingLeft: BRAND.contentInset, paddingRight: BRAND.contentInset, children: [
+          { type: "rectangle" as const, name: "PSM Avatar", width: 80, height: 80, fillColor: BRAND.accentPurple, cornerRadius: 40 },
+          { type: "frame" as const, name: "PSM Info", width: w - BRAND.contentInset * 2 - 104, height: 120, layoutMode: "VERTICAL" as const, itemSpacing: 8, children: [
+            textNode({ text: props.psmName || "Your Partner Success Manager", fontSize: 18, fontWeight: 700, fontColor: BRAND.textPrimary, name: "PSM Name" }),
+            textNode({ text: props.message || props.attribution || "", fontSize: 14, fontWeight: 400, fontColor: BRAND.textSecondary, name: "PSM Message", width: w - BRAND.contentInset * 2 - 128 }),
+            ...(props.cta ? [textNode({ text: props.cta.text || "Send message", fontSize: 14, fontWeight: 600, fontColor: BRAND.accentRed, name: "PSM CTA" })] : []),
+          ]},
+        ],
+      };
+    },
+  },
+
+  slds_alert_list: {
+    zone: "no_brand",
+    description: "Multiple stacked alert banners",
+    defaultWidth: 1440,
+    buildTree(props: Record<string, any>, width?: number): any {
+      const w = width ?? 1440;
+      const alerts = props.alerts || [];
+      const alertColors: Record<string, string> = { warning: "#f59e0b", success: "#059669", error: "#ba0517", info: SLDS.actionPrimary };
+      return {
+        type: "frame" as const, name: "Alert List", width: w, height: alerts.length * 60 + 16, layoutMode: "VERTICAL" as const, itemSpacing: 8, paddingTop: 8, paddingBottom: 8, paddingLeft: SLDS.paddingL, paddingRight: SLDS.paddingL, children: alerts.map((a: any, i: number) => ({
+          type: "frame" as const, name: `Alert ${i + 1}`, width: w - SLDS.paddingL * 2, height: 48, fillColor: SLDS.surface, strokeColor: alertColors[a.variant] || SLDS.border, strokeWeight: 1, cornerRadius: SLDS.radiusDefault, layoutMode: "HORIZONTAL" as const, itemSpacing: 8, paddingTop: 12, paddingBottom: 12, paddingLeft: 16, paddingRight: 16, children: [
+            { type: "rectangle" as const, name: "Alert Accent", width: 4, height: 24, fillColor: alertColors[a.variant] || SLDS.actionPrimary },
+            textNode({ text: a.text || "", fontSize: SLDS.bodySize, fontWeight: 400, fontColor: SLDS.textPrimary, name: "Alert Text", width: w - SLDS.paddingL * 2 - 52 }),
+          ],
+        })),
+      };
+    },
+  },
+
+  notification_banner: {
+    zone: "no_brand",
+    description: "System notification banner with heading, description, and CTA",
+    defaultWidth: 1440,
+    buildTree(props: Record<string, any>, width?: number): any {
+      const w = width ?? 1440;
+      const bannerColors: Record<string, { bg: string; border: string; text: string }> = {
+        mfa_nag: { bg: "#fffbeb", border: "#f59e0b", text: "#92400e" },
+        countersign_success: { bg: "#d1fae5", border: "#34d399", text: "#065f46" },
+        default: { bg: SLDS.surface, border: SLDS.border, text: SLDS.textPrimary },
+      };
+      const colors = bannerColors[props.bannerType] || bannerColors.default;
+      return {
+        type: "frame" as const, name: `Banner ${props.bannerType || "default"}`, width: w, height: 60, fillColor: colors.bg, strokeColor: colors.border, strokeWeight: 1, cornerRadius: 8, layoutMode: "HORIZONTAL" as const, itemSpacing: 12, paddingTop: 14, paddingBottom: 14, paddingLeft: 20, paddingRight: 20, counterAxisAlignItems: "CENTER" as const, children: [
+          { type: "rectangle" as const, name: "Banner Accent", width: 4, height: 32, fillColor: colors.border },
+          { type: "frame" as const, name: "Banner Content", width: w - 100, height: 32, layoutMode: "VERTICAL" as const, itemSpacing: 2, children: [
+            textNode({ text: props.heading || "", fontSize: 13, fontWeight: 700, fontColor: colors.text, name: "Banner Heading" }),
+          ]},
+          ...(props.cta ? [{
+            type: "frame" as const, name: "Banner CTA", width: 100, height: 28, fillColor: colors.border, cornerRadius: 4, layoutMode: "HORIZONTAL" as const, primaryAxisAlignItems: "CENTER" as const, counterAxisAlignItems: "CENTER" as const, paddingLeft: 12, paddingRight: 12, children: [
+              textNode({ text: props.cta.text || "Action", fontSize: 12, fontWeight: 700, fontColor: "#ffffff", name: "CTA Label" }),
+            ],
+          }] : []),
+        ],
+      };
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -1668,6 +1806,34 @@ const TEMPLATE_PROPS: Record<string, { required: string[]; optional: string[] }>
   welcome_banner_slds: {
     required: ["greeting", "subtitle"],
     optional: ["badge: {value, label}"],
+  },
+  slds_empty_state: {
+    required: ["heading", "description"],
+    optional: ["primaryCta: {text, href?}", "secondaryCta: {text, href?}"],
+  },
+  quick_actions: {
+    required: ["actions: Array<{title, caption|description}>"],
+    optional: ["heading"],
+  },
+  deadline_cards: {
+    required: [],
+    optional: ["heading"],
+  },
+  activity_feed: {
+    required: [],
+    optional: ["heading", "viewAllLink: {text, href?}", "rows"],
+  },
+  psm_contact_card: {
+    required: [],
+    optional: ["psmName", "message", "attribution", "cta: {text, href?}"],
+  },
+  slds_alert_list: {
+    required: ["alerts: Array<{variant, text}>"],
+    optional: [],
+  },
+  notification_banner: {
+    required: ["heading"],
+    optional: ["bannerType: 'mfa_nag'|'countersign_success'|'default'", "cta: {text, href?}"],
   },
 };
 

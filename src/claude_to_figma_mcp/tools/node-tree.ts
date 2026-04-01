@@ -182,6 +182,14 @@ function splitTreeIntoChunks(tree: any, maxNodesPerChunk: number): any[] {
   for (const child of tree.children) {
     const childNodeCount = countTreeNodes(child);
 
+    // H4 fix: warn if a single child exceeds the chunk limit (can't split it further)
+    if (childNodeCount > maxNodesPerChunk) {
+      logger.warn(
+        `Single child node (${childNodeCount} nodes) exceeds chunk limit (${maxNodesPerChunk}). ` +
+        `Including it unsplit — consider reducing child complexity.`
+      );
+    }
+
     // If adding this child would exceed the chunk limit and we already have children,
     // finalize the current chunk and start a new one
     if (currentNodeCount + childNodeCount > maxNodesPerChunk && currentChildren.length > 0) {
@@ -272,10 +280,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
               { timeoutMs: 60000 }
             ) as any;
 
-            const chunkDuration = Date.now() - chunkStart;
-            const chunkNodeCount = countTreeNodes(chunk);
-            recordOperation("create_node_tree", chunkDuration, true, chunkNodeCount);
-
+            // Skip recordOperation here — sendCommandWithRetry already records (H5 fix)
             allResults.push(result);
 
             // Extract the created parent frame's ID for subsequent chunks
@@ -293,28 +298,23 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
               break;
             }
           } else {
-            // Subsequent chunks: create children inside the already-created parent
-            // Build a frame wrapper so create_node_tree can append children
-            const wrapperTree = {
-              type: "frame" as const,
-              width: 0,
-              height: 0,
-              children: chunk.children,
-            };
-
-            const result = await sendCommandWithRetry(
-              "create_node_tree",
-              { tree: wrapperTree, parentId: createdParentId },
-              { timeoutMs: 60000 }
-            ) as any;
+            // Subsequent chunks: add each child directly to the parent
+            // instead of wrapping in a dummy frame (C1 fix: no ghost wrappers)
+            const children = chunk.children || [];
+            for (const child of children) {
+              const result = await sendCommandWithRetry(
+                "create_node_tree",
+                { tree: child, parentId: createdParentId },
+                { timeoutMs: 60000 }
+              ) as any;
+              allResults.push(result);
+            }
 
             const chunkDuration = Date.now() - chunkStart;
-            const chunkNodeCount = chunk.children
-              ? chunk.children.reduce((sum: number, c: any) => sum + countTreeNodes(c), 0)
-              : 0;
-            recordOperation("create_node_tree", chunkDuration, true, chunkNodeCount);
-
-            allResults.push(result);
+            const chunkNodeCount = children.reduce(
+              (sum: number, c: any) => sum + countTreeNodes(c), 0
+            );
+            // Skip recordOperation here — sendCommandWithRetry already records (H5 fix)
           }
 
           logger.info(`Chunk ${i + 1}/${chunks.length} completed`);

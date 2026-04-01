@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import * as fs from "fs";
+import * as path from "path";
 import type { SendCommandFn } from "../types.js";
 
 // --- Interfaces ---
@@ -556,7 +557,15 @@ function splitBySections(html: string): RawSection[] {
 // --- Main parse function ---
 
 export function parseWireframe(filePath: string): ParseResult {
-  const raw = fs.readFileSync(filePath, "utf-8");
+  // M1 fix: validate path — must be absolute, no traversal
+  const resolved = path.resolve(filePath);
+  if (!path.isAbsolute(filePath) || filePath.includes("..")) {
+    throw new Error(`Invalid file path: must be absolute with no '..' traversal`);
+  }
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`File not found: ${resolved}`);
+  }
+  const raw = fs.readFileSync(resolved, "utf-8");
   const fileSize = Buffer.byteLength(raw, "utf-8");
 
   // Extract title

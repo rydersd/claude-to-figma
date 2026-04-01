@@ -89,13 +89,12 @@ export function connectToFigma(port: number = 3055) {
       // Handle regular responses
       const myResponse = json.message;
       logger.debug(`Received message: ${JSON.stringify(myResponse)}`);
-      logger.log('myResponse' + JSON.stringify(myResponse));
 
-      // Handle response to a request
+      // C2 fix: handle both result and error responses — don't require result to be truthy
       if (
         myResponse.id &&
         pendingRequests.has(myResponse.id) &&
-        myResponse.result
+        (myResponse.result !== undefined || myResponse.error)
       ) {
         const request = pendingRequests.get(myResponse.id)!;
         clearTimeout(request.timeout);
@@ -104,9 +103,7 @@ export function connectToFigma(port: number = 3055) {
           logger.error(`Error from Figma: ${myResponse.error}`);
           request.reject(new Error(myResponse.error));
         } else {
-          if (myResponse.result) {
-            request.resolve(myResponse.result);
-          }
+          request.resolve(myResponse.result);
         }
 
         pendingRequests.delete(myResponse.id);
