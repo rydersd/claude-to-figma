@@ -183,6 +183,14 @@ function throttledSave(store: MetricsStore): void {
   }
 }
 
+// NEW-M2 fix: flush pending metrics on process exit
+process.on("beforeExit", () => {
+  if (pendingSave) {
+    saveMetrics(pendingSave);
+    pendingSave = null;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

@@ -557,9 +557,9 @@ function splitBySections(html: string): RawSection[] {
 // --- Main parse function ---
 
 export function parseWireframe(filePath: string): ParseResult {
-  // M1 fix: validate path — must be absolute, no traversal
+  // M1 fix: validate path — must be absolute, no directory traversal
   const resolved = path.resolve(filePath);
-  if (!path.isAbsolute(filePath) || filePath.includes("..")) {
+  if (!path.isAbsolute(filePath) || filePath.split(path.sep).includes("..")) {
     throw new Error(`Invalid file path: must be absolute with no '..' traversal`);
   }
   if (!fs.existsSync(resolved)) {

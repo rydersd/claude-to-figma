@@ -88,7 +88,6 @@ export function connectToFigma(port: number = 3055) {
 
       // Handle regular responses
       const myResponse = json.message;
-      logger.debug(`Received message: ${JSON.stringify(myResponse)}`);
 
       // C2 fix: handle both result and error responses — don't require result to be truthy
       if (

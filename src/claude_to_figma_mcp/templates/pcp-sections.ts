@@ -1607,8 +1607,8 @@ export const SECTION_TEMPLATES: Record<string, SectionTemplate> = {
         name: "Empty State",
         width: w,
         children: [
-          textNode({ text: props.heading || "No items yet", fontSize: SLDS.headingSmall, fontWeight: 700, fontColor: SLDS.textPrimary, name: "Empty Heading", width: w - SLDS.paddingL * 2 }),
-          textNode({ text: props.description || "", fontSize: SLDS.bodySize, fontWeight: 400, fontColor: SLDS.textSecondary, name: "Empty Description", width: w - SLDS.paddingL * 2 }),
+          textNode({ text: props.heading || "No items yet", fontSize: SLDS.headingSmall, fontWeight: 700, fontColor: SLDS.textPrimary, name: "Empty Heading", width: w - SLDS.spacingLarge * 2 }),
+          textNode({ text: props.description || "", fontSize: SLDS.bodySize, fontWeight: 400, fontColor: SLDS.textSecondary, name: "Empty Description", width: w - SLDS.spacingLarge * 2 }),
           ...(props.primaryCta ? [{ type: "frame" as const, name: "CTA Button", width: 160, height: 36, fillColor: SLDS.actionPrimary, cornerRadius: 4, layoutMode: "HORIZONTAL" as const, primaryAxisAlignItems: "CENTER" as const, counterAxisAlignItems: "CENTER" as const, paddingTop: 8, paddingBottom: 8, paddingLeft: 16, paddingRight: 16, children: [textNode({ text: props.primaryCta.text || "Get started", fontSize: SLDS.bodySize, fontWeight: 700, fontColor: SLDS.textInverse, name: "CTA Label" })] }] : []),
         ],
       });
@@ -1628,7 +1628,7 @@ export const SECTION_TEMPLATES: Record<string, SectionTemplate> = {
         children: [
           textNode({ text: props.heading || "Quick Actions", fontSize: SLDS.headingSmall, fontWeight: 700, fontColor: SLDS.textPrimary, name: "Actions Heading" }),
           ...actions.map((a: any, i: number) => ({
-            type: "frame" as const, name: `Action ${i + 1}`, width: w - SLDS.paddingL * 2, height: 48, layoutMode: "VERTICAL" as const, itemSpacing: 2, paddingTop: 10, paddingBottom: 10, strokeColor: SLDS.border, strokeWeight: 1, cornerRadius: 4, children: [
+            type: "frame" as const, name: `Action ${i + 1}`, width: w - SLDS.spacingLarge * 2, height: 48, layoutMode: "VERTICAL" as const, itemSpacing: 2, paddingTop: 10, paddingBottom: 10, strokeColor: SLDS.border, strokeWeight: 1, cornerRadius: 4, children: [
               textNode({ text: a.title || "", fontSize: SLDS.bodySize, fontWeight: 600, fontColor: SLDS.actionPrimary, name: "Action Title" }),
               textNode({ text: a.caption || a.description || "", fontSize: 12, fontWeight: 400, fontColor: SLDS.textSecondary, name: "Action Caption" }),
             ],
@@ -1693,10 +1693,10 @@ export const SECTION_TEMPLATES: Record<string, SectionTemplate> = {
       const alerts = props.alerts || [];
       const alertColors: Record<string, string> = { warning: "#f59e0b", success: "#059669", error: "#ba0517", info: SLDS.actionPrimary };
       return {
-        type: "frame" as const, name: "Alert List", width: w, height: alerts.length * 60 + 16, layoutMode: "VERTICAL" as const, itemSpacing: 8, paddingTop: 8, paddingBottom: 8, paddingLeft: SLDS.paddingL, paddingRight: SLDS.paddingL, children: alerts.map((a: any, i: number) => ({
-          type: "frame" as const, name: `Alert ${i + 1}`, width: w - SLDS.paddingL * 2, height: 48, fillColor: SLDS.surface, strokeColor: alertColors[a.variant] || SLDS.border, strokeWeight: 1, cornerRadius: SLDS.radiusDefault, layoutMode: "HORIZONTAL" as const, itemSpacing: 8, paddingTop: 12, paddingBottom: 12, paddingLeft: 16, paddingRight: 16, children: [
+        type: "frame" as const, name: "Alert List", width: w, height: alerts.length * 60 + 16, layoutMode: "VERTICAL" as const, itemSpacing: 8, paddingTop: 8, paddingBottom: 8, paddingLeft: SLDS.spacingLarge, paddingRight: SLDS.spacingLarge, children: alerts.map((a: any, i: number) => ({
+          type: "frame" as const, name: `Alert ${i + 1}`, width: w - SLDS.spacingLarge * 2, height: 48, fillColor: SLDS.surface, strokeColor: alertColors[a.variant] || SLDS.border, strokeWeight: 1, cornerRadius: SLDS.radius, layoutMode: "HORIZONTAL" as const, itemSpacing: 8, paddingTop: 12, paddingBottom: 12, paddingLeft: 16, paddingRight: 16, children: [
             { type: "rectangle" as const, name: "Alert Accent", width: 4, height: 24, fillColor: alertColors[a.variant] || SLDS.actionPrimary },
-            textNode({ text: a.text || "", fontSize: SLDS.bodySize, fontWeight: 400, fontColor: SLDS.textPrimary, name: "Alert Text", width: w - SLDS.paddingL * 2 - 52 }),
+            textNode({ text: a.text || "", fontSize: SLDS.bodySize, fontWeight: 400, fontColor: SLDS.textPrimary, name: "Alert Text", width: w - SLDS.spacingLarge * 2 - 52 }),
           ],
         })),
       };

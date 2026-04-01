@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
 import { sendCommandWithRetry } from "../connection.js";
-import { getOptimalChunkSize, recordOperation } from "../metrics.js";
+import { getOptimalChunkSize } from "../metrics.js";
 import { logger } from "../helpers.js";
 
 // --- Recursive node tree schema for batch creation ---
@@ -250,8 +250,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
             { tree, parentId, rootId, prune },
             { timeoutMs: 60000 }
           );
-          const durationMs = Date.now() - startTime;
-          recordOperation("create_node_tree", durationMs, true, nodeCount);
+          // sendCommandWithRetry already records metrics — don't double-count (NEW-H1 fix)
           return {
             content: [{ type: "text", text: JSON.stringify(result) }],
           };
