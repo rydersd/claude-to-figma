@@ -1,10 +1,12 @@
 {
   "mcpServers": {
     "ClaudeToFigma": {
+      "type": "stdio",
       "command": "bun",
       "args": [
-        "src/claude_to_figma_mcp/server.ts"
-      ]
+        "/Users/rybooth/Documents/GitHub/claude-to-figma/src/claude_to_figma_mcp/server.ts"
+      ],
+      "env": {}
     }
   }
 }

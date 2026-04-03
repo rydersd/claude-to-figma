@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "./helpers.js";
 import type { FigmaCommand, CommandProgressUpdate } from "./types.js";
+import { recordOperation, getAdaptiveParams, getOptimalTimeout } from "./metrics.js";
 
 // WebSocket connection and request tracking
 let ws: WebSocket | null = null;
@@ -87,14 +88,12 @@ export function connectToFigma(port: number = 3055) {
 
       // Handle regular responses
       const myResponse = json.message;
-      logger.debug(`Received message: ${JSON.stringify(myResponse)}`);
-      logger.log('myResponse' + JSON.stringify(myResponse));
 
-      // Handle response to a request
+      // C2 fix: handle both result and error responses — don't require result to be truthy
       if (
         myResponse.id &&
         pendingRequests.has(myResponse.id) &&
-        myResponse.result
+        (myResponse.result !== undefined || myResponse.error)
       ) {
         const request = pendingRequests.get(myResponse.id)!;
         clearTimeout(request.timeout);
@@ -103,9 +102,7 @@ export function connectToFigma(port: number = 3055) {
           logger.error(`Error from Figma: ${myResponse.error}`);
           request.reject(new Error(myResponse.error));
         } else {
-          if (myResponse.result) {
-            request.resolve(myResponse.result);
-          }
+          request.resolve(myResponse.result);
         }
 
         pendingRequests.delete(myResponse.id);
@@ -215,4 +212,64 @@ export function sendCommandToFigma(
     logger.debug(`Request details: ${JSON.stringify(request)}`);
     ws.send(JSON.stringify(request));
   });
+}
+
+/**
+ * High-level wrapper around sendCommandToFigma with retry logic and exponential backoff.
+ * Uses adaptive parameters from metrics history as defaults, overridable via options.
+ */
+export async function sendCommandWithRetry(
+  command: FigmaCommand,
+  params: unknown = {},
+  options?: {
+    timeoutMs?: number;
+    maxRetries?: number;
+    backoffMs?: number;
+  }
+): Promise<unknown> {
+  const adaptive = getAdaptiveParams();
+  const timeoutMs = options?.timeoutMs ?? adaptive.timeoutMs;
+  const maxRetries = options?.maxRetries ?? adaptive.maxRetries;
+  const backoffMs = options?.backoffMs ?? adaptive.backoffMs;
+
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const startTime = Date.now();
+
+    try {
+      const result = await sendCommandToFigma(command, params, timeoutMs);
+      const durationMs = Date.now() - startTime;
+
+      // Record successful operation in metrics
+      recordOperation(command, durationMs, true);
+
+      return result;
+    } catch (error) {
+      const durationMs = Date.now() - startTime;
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // Record failed operation in metrics
+      recordOperation(command, durationMs, false);
+
+      if (attempt < maxRetries) {
+        // Exponential backoff: backoffMs * 2^attempt
+        const waitMs = backoffMs * Math.pow(2, attempt);
+        logger.warn(
+          `Command "${command}" failed (attempt ${attempt + 1}/${maxRetries + 1}): ${lastError.message}. ` +
+          `Retrying in ${waitMs}ms...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      } else {
+        logger.error(
+          `Command "${command}" failed after ${maxRetries + 1} attempts. Last error: ${lastError.message}`
+        );
+      }
+    }
+  }
+
+  // All retries exhausted
+  throw new Error(
+    `Command "${command}" failed after ${maxRetries + 1} attempts. Last error: ${lastError?.message ?? "unknown"}`
+  );
 }
