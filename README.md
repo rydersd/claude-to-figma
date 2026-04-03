@@ -126,20 +126,7 @@ bun socket
 
 ## Local Development Setup
 
-To develop against source instead of the built output, point your MCP config at the TypeScript entry:
-
-```json
-{
-  "mcpServers": {
-    "claude-to-figma": {
-      "command": "bun",
-      "args": ["/path-to-repo/src/claude_to_figma_mcp/server.ts"]
-    }
-  }
-}
-```
-
-After making changes, rebuild with `bun run build` to update `dist/server.js`.
+To develop against source instead of the built output, use the Bun-from-source config shown in [Manual Setup](#manual-setup-and-installation). After making changes, rebuild with `bun run build` to update both `dist/server.js` and `src/claude_figma_plugin/code.js`.
 
 ## MCP Tools
 
@@ -305,13 +292,13 @@ The MCP server includes several helper prompts to guide you through complex desi
 
 ### Building the Figma Plugin
 
-1. Navigate to the Figma plugin directory:
+The plugin source is in `src/claude_figma_plugin/src/` as TypeScript modules. Edit the `.ts` files there, then rebuild:
 
-   ```
-   cd src/claude_figma_plugin
-   ```
+```bash
+bun run build
+```
 
-2. Edit code.js and ui.html
+This compiles the modules into `src/claude_figma_plugin/code.js` (IIFE bundle). The `ui.html` file can be edited directly.
 
 ## Best Practices
 
