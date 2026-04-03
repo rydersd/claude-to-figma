@@ -9,7 +9,10 @@
 # - Decisions and their rationale
 
 QUERY="$1"
-GIT_CLAUDE_DIR=".git/claude"
+
+# (#5) Use git rev-parse to support worktrees
+GIT_DIR=$(git rev-parse --git-dir 2>/dev/null || echo ".git")
+GIT_CLAUDE_DIR="$GIT_DIR/claude"
 
 if [[ -z "$QUERY" ]]; then
     echo "Usage: search-reasoning.sh <query>"
@@ -34,8 +37,9 @@ if ! ls "$GIT_CLAUDE_DIR/commits/"*/reasoning.md >/dev/null 2>&1; then
     exit 0
 fi
 
-# Find all reasoning files and search
-matches=$(grep -l -i "$QUERY" "$GIT_CLAUDE_DIR/commits/"*/reasoning.md 2>/dev/null || echo "")
+# (#7) Find all reasoning files and search — use -e to prevent grep injection
+# with leading-dash queries
+matches=$(grep -l -i -e "$QUERY" "$GIT_CLAUDE_DIR/commits/"*/reasoning.md 2>/dev/null || echo "")
 
 if [[ -z "$matches" ]]; then
     echo ""
@@ -59,8 +63,8 @@ for file in $matches; do
     echo "**$commit_msg**"
     echo ""
 
-    # Show context around matches (2 lines before/after)
-    grep -B 2 -A 2 -i --color=never "$QUERY" "$file" | head -30
+    # (#7) Show context around matches — use -e to prevent grep injection
+    grep -B 2 -A 2 -i --color=never -e "$QUERY" "$file" | head -30
     echo ""
     echo "---"
     echo ""
