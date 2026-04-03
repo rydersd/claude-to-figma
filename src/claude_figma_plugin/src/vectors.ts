@@ -264,8 +264,16 @@ export async function createLine(params: any) {
 
   vec.strokeWeight = strokeWeight;
 
-  // Append to parent or current page
-  await appendOrInsertChild(vec, parentId, undefined);
+  // Append to parent or current page (inline lookup — avoids SECTION validation
+  // in appendOrInsertChild which would reject VECTOR children)
+  if (parentId) {
+    var parentNode: any = await figma.getNodeByIdAsync(parentId);
+    if (!parentNode) throw new Error("Parent node not found with ID: " + parentId);
+    if (!("appendChild" in parentNode)) throw new Error("Parent node does not support children: " + parentId);
+    parentNode.appendChild(vec);
+  } else {
+    figma.currentPage.appendChild(vec);
+  }
 
   return {
     id: vec.id,

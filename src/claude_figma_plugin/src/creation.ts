@@ -305,11 +305,19 @@ export async function createEllipse(params: any) {
     if (typeof fc === "string") {
       fc = hexToFigmaColor(fc) || { r: 0.85, g: 0.85, b: 0.85, a: 1 };
     }
-    ellipse.fills = [{
-      type: "SOLID" as const,
-      color: { r: fc.r || 0, g: fc.g || 0, b: fc.b || 0 },
-      opacity: fc.a !== undefined ? fc.a : 1,
-    }];
+    applyColorPaint(ellipse, "fills", fc);
+  }
+
+  // Set stroke color and weight if provided
+  if (params.strokeColor) {
+    var sc: any = params.strokeColor;
+    if (typeof sc === "string") {
+      sc = hexToFigmaColor(sc) || { r: 0, g: 0, b: 0, a: 1 };
+    }
+    applyColorPaint(ellipse, "strokes", sc);
+  }
+  if (params.strokeWeight !== undefined) {
+    ellipse.strokeWeight = params.strokeWeight;
   }
 
   // Set arc data if provided (for arcs/donuts)

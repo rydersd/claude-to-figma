@@ -20,7 +20,7 @@ case "$command" in
     *"npm run build"*|*"npm test"*|*"npm run test"*|\
     *"yarn build"*|*"yarn test"*|\
     *"pnpm build"*|*"pnpm test"*|\
-    *"make "*|make|\
+    *"make all"*|*"make build"*|*"make test"*|*"make check"*|*"make install"*|make|\
     tsc|tsc\ *|*" tsc "*|*" tsc"|*"npx tsc"*|\
     tsup|tsup\ *|*" tsup "*|*" tsup"|*"npx tsup"*|\
     *"swift build"*|*"swift test"*|\

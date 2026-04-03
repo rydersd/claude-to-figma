@@ -158,6 +158,7 @@ async function handleCommand(command: string, params: any) {
       }
       // Call without instance node if not provided
       return await getInstanceOverrides();
+      break;
 
     case "set_instance_overrides":
       // Check if instanceNodeIds parameter is provided
@@ -191,6 +192,7 @@ async function handleCommand(command: string, params: any) {
       } else {
         throw new Error("Missing required parameter: targetNodeIds");
       }
+      break;
     case "swap_instance_variant":
       return await swapInstanceVariant(params);
     case "set_component_properties":

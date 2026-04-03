@@ -33,29 +33,14 @@ if ! mkdir -p "$OUTPUT_DIR" 2>/dev/null; then
     exit 1
 fi
 
-# (#2) Start reasoning file with quoted heredoc to prevent injection,
-# then write variables separately with printf
-cat > "$OUTPUT_DIR/reasoning.md" << 'EOF'
-# Commit: COMMIT_HASH_PLACEHOLDER
-
-## Branch
-BRANCH_PLACEHOLDER
-
-## What was committed
-COMMIT_MSG_PLACEHOLDER
-
-## What was tried
-EOF
-
-# Replace placeholders with actual values safely using sed
-sed -i.bak "s|COMMIT_HASH_PLACEHOLDER|${COMMIT_HASH:0:8}|" "$OUTPUT_DIR/reasoning.md"
-sed -i.bak "s|BRANCH_PLACEHOLDER|$current_branch|" "$OUTPUT_DIR/reasoning.md"
-# Use a different delimiter for commit msg since it may contain special chars
-printf '%s\n' "$COMMIT_MSG" > "$OUTPUT_DIR/.commit_msg_tmp"
-# Use awk to replace the placeholder safely (handles all special characters)
-awk -v msg="$(cat "$OUTPUT_DIR/.commit_msg_tmp")" '{gsub(/COMMIT_MSG_PLACEHOLDER/, msg); print}' "$OUTPUT_DIR/reasoning.md" > "$OUTPUT_DIR/reasoning.md.new"
-mv "$OUTPUT_DIR/reasoning.md.new" "$OUTPUT_DIR/reasoning.md"
-rm -f "$OUTPUT_DIR/.commit_msg_tmp" "$OUTPUT_DIR/reasoning.md.bak"
+# Write the reasoning file directly — no placeholders, no sed, no awk.
+# printf %s does not interpret &, \, |, or other special chars in its arguments.
+{
+    printf '# Commit: %s\n\n' "${COMMIT_HASH:0:8}"
+    printf '## Branch\n%s\n\n' "$current_branch"
+    printf '## What was committed\n%s\n\n' "$COMMIT_MSG"
+    printf '## What was tried\n'
+} > "$OUTPUT_DIR/reasoning.md"
 
 # (#6) Atomically move attempts file before processing to prevent truncation race
 TEMP_ATTEMPTS="$ATTEMPTS_FILE.processing"

@@ -1946,11 +1946,17 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       if (typeof fc === "string") {
         fc = hexToFigmaColor(fc) || { r: 0.85, g: 0.85, b: 0.85, a: 1 };
       }
-      ellipse.fills = [{
-        type: "SOLID",
-        color: { r: fc.r || 0, g: fc.g || 0, b: fc.b || 0 },
-        opacity: fc.a !== void 0 ? fc.a : 1
-      }];
+      applyColorPaint(ellipse, "fills", fc);
+    }
+    if (params.strokeColor) {
+      var sc = params.strokeColor;
+      if (typeof sc === "string") {
+        sc = hexToFigmaColor(sc) || { r: 0, g: 0, b: 0, a: 1 };
+      }
+      applyColorPaint(ellipse, "strokes", sc);
+    }
+    if (params.strokeWeight !== void 0) {
+      ellipse.strokeWeight = params.strokeWeight;
     }
     if (params.arcData) {
       ellipse.arcData = {
@@ -4201,7 +4207,14 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
     vec.fills = [];
     vec.strokeWeight = strokeWeight;
-    await appendOrInsertChild(vec, parentId, void 0);
+    if (parentId) {
+      var parentNode = await figma.getNodeByIdAsync(parentId);
+      if (!parentNode) throw new Error("Parent node not found with ID: " + parentId);
+      if (!("appendChild" in parentNode)) throw new Error("Parent node does not support children: " + parentId);
+      parentNode.appendChild(vec);
+    } else {
+      figma.currentPage.appendChild(vec);
+    }
     return {
       id: vec.id,
       name: vec.name,

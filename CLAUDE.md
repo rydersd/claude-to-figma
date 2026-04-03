@@ -19,6 +19,7 @@ Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay ←(WebSo
 ```bash
 bun install              # Install dependencies
 bun run build            # Build MCP server (dist/) AND Figma plugin (src/claude_figma_plugin/code.js) via tsup
+bun run build:plugin     # Build Figma plugin only (src/claude_figma_plugin/code.js)
 bun run dev              # Build in watch mode
 bun socket               # Start WebSocket relay server (port 3055)
 bun run start            # Run built MCP server
@@ -39,14 +40,14 @@ Lightweight Bun WebSocket server on port 3055. Routes messages between MCP serve
 Runs inside Figma. The plugin source lives in `src/claude_figma_plugin/src/` as 13 TypeScript modules. `bun run build` compiles them via tsup into `code.js` as an IIFE bundle. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares dynamic-page document access and localhost network access.
 
 **Plugin modules** (`src/claude_figma_plugin/src/`):
-- `main.ts` -- command dispatcher (~96 commands), plugin lifecycle
+- `main.ts` -- command dispatcher (100 commands), plugin lifecycle
 - `analysis.ts` -- node introspection, style scanning, batch operations, design queries
 - `components.ts` -- component creation, instances, styles, variables
 - `creation.ts` -- shape and frame creation
 - `document.ts` -- document info, node management, selection
 - `layout.ts` -- auto layout configuration
 - `node-tree.ts` -- batch node tree creation with repeat directives
-- `prototyping.ts` -- prototype connections, reactions, overlays
+- `prototyping.ts` -- prototype connections, reactions, interaction flows
 - `styling.ts` -- fill, stroke, corner radius
 - `text.ts` -- text content, fonts, scanning
 - `transforms.ts` -- move, resize, annotations
