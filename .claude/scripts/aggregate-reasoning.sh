@@ -6,7 +6,10 @@ set -e
 # Used by /describe_pr to include "Approaches Tried" section in PR descriptions
 
 BASE="${1:-main}"
-GIT_CLAUDE_DIR=".git/claude"
+
+# (#5) Use git rev-parse to support worktrees
+GIT_DIR=$(git rev-parse --git-dir 2>/dev/null || echo ".git")
+GIT_CLAUDE_DIR="$GIT_DIR/claude"
 
 echo "## Approaches Tried"
 echo ""
@@ -38,8 +41,8 @@ for commit in $commits; do
 
         # Extract the "What was tried" section
         if grep -q "### Failed attempts" "$reasoning_file"; then
-            # Show failed attempts
-            sed -n '/### Failed attempts/,/### Summary/p' "$reasoning_file" | head -n -1
+            # (#1) Show failed attempts — use sed '$d' instead of head -n -1 (macOS compat)
+            sed -n '/### Failed attempts/,/### Summary/p' "$reasoning_file" | sed '$d'
             echo ""
             # Show summary
             grep -A1 "### Summary" "$reasoning_file" | tail -1

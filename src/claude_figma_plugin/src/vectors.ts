@@ -1,4 +1,4 @@
-import { appendOrInsertChild, resolveColorValue, bindVariableToColor } from './utils';
+import { appendOrInsertChild, resolveColorValue, bindVariableToColor, applyColorPaint } from './utils';
 
 export function normalizeSvgPath(pathData: any) {
   // First, insert spaces between command letters and numbers where missing
@@ -139,34 +139,12 @@ export async function createVector(params: any) {
 
   // Set fill color if provided
   if (fillColor) {
-    if (fillColor.a !== undefined && parseFloat(fillColor.a) === 0) {
-      vector.fills = [];
-    } else {
-      const paintStyle: any = {
-        type: "SOLID",
-        color: {
-          r: parseFloat(fillColor.r) || 0,
-          g: parseFloat(fillColor.g) || 0,
-          b: parseFloat(fillColor.b) || 0,
-        },
-        opacity: fillColor.a !== undefined ? parseFloat(fillColor.a) : 1,
-      };
-      vector.fills = [paintStyle];
-    }
+    applyColorPaint(vector, "fills", fillColor);
   }
 
   // Set inline stroke if provided (eliminates separate set_stroke_color call)
   if (strokeColor) {
-    const strokePaint: any = {
-      type: "SOLID",
-      color: {
-        r: parseFloat(strokeColor.r) || 0,
-        g: parseFloat(strokeColor.g) || 0,
-        b: parseFloat(strokeColor.b) || 0,
-      },
-      opacity: strokeColor.a !== undefined ? parseFloat(strokeColor.a) : 1,
-    };
-    vector.strokes = [strokePaint];
+    applyColorPaint(vector, "strokes", strokeColor);
     vector.strokeWeight = strokeWeight || 1;
 
     // Set stroke cap on vector network vertices if specified
@@ -286,15 +264,12 @@ export async function createLine(params: any) {
 
   vec.strokeWeight = strokeWeight;
 
-  // Append to parent or current page
+  // Append to parent or current page (inline lookup — avoids SECTION validation
+  // in appendOrInsertChild which would reject VECTOR children)
   if (parentId) {
     var parentNode: any = await figma.getNodeByIdAsync(parentId);
-    if (!parentNode) {
-      throw new Error("Parent node not found with ID: " + parentId);
-    }
-    if (!("appendChild" in parentNode)) {
-      throw new Error("Parent node does not support children: " + parentId);
-    }
+    if (!parentNode) throw new Error("Parent node not found with ID: " + parentId);
+    if (!("appendChild" in parentNode)) throw new Error("Parent node does not support children: " + parentId);
     parentNode.appendChild(vec);
   } else {
     figma.currentPage.appendChild(vec);

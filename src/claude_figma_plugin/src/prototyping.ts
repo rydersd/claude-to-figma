@@ -710,9 +710,6 @@ export async function createConnections(params: any) {
   let processedCount = 0;
   const totalCount = connections.length;
 
-  // Preload fonts (used for text if provided)
-  let fontLoaded = false;
-
   for (let i = 0; i < connections.length; i++) {
     try {
       const { startNodeId: originalStartId, endNodeId: originalEndId, text } = connections[i];

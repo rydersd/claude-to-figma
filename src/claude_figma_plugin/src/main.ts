@@ -11,7 +11,7 @@ import { setLayoutMode, setPadding, setAxisAlign, setLayoutSizing, setItemSpacin
 import { getStyles, getLocalComponents, createComponentInstance, swapInstanceVariant, setComponentProperties, exportNodeAsImage, createComponent, getInstanceOverrides, getValidTargetInstances, getSourceInstanceData, setInstanceOverrides, createComponentSet, getLocalVariables } from './components';
 import { normalizeSvgPath, createVector, createLine, setVectorPath, getVectorNetwork, setVectorNetwork } from './vectors';
 import { getReactions, setReactions, addReaction, removeReactions, getInteractions, batchSetReactions, setDefaultConnector, createConnections, setFocus, setSelections } from './prototyping';
-import { createNodeTree, expandRepeats } from './node-tree';
+import { createNodeTree } from './node-tree';
 import { screenshotRegion, batchMutate, scanNodeStyles, introspectNode, setProperties, optimizeStructure, designQuery, figmaEval, diffComponents, migrateInstance, batchMigrate } from './analysis';
 
 // Plugin state
@@ -158,6 +158,7 @@ async function handleCommand(command: string, params: any) {
       }
       // Call without instance node if not provided
       return await getInstanceOverrides();
+      break;
 
     case "set_instance_overrides":
       // Check if instanceNodeIds parameter is provided
@@ -188,7 +189,10 @@ async function handleCommand(command: string, params: any) {
         } else {
           throw new Error("Missing sourceInstanceId parameter");
         }
+      } else {
+        throw new Error("Missing required parameter: targetNodeIds");
       }
+      break;
     case "swap_instance_variant":
       return await swapInstanceVariant(params);
     case "set_component_properties":

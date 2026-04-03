@@ -1,9 +1,9 @@
-import { sendProgressUpdate, generateCommandId, resolveColorValue, hexToFigmaColor, getVariableByName, bindVariableToColor, appendOrInsertChild, loadAllFonts } from './utils';
+import { sendProgressUpdate, generateCommandId, resolveColorValue, hexToFigmaColor, getVariableByName, bindVariableToColor, appendOrInsertChild, loadAllFonts, fontWeightToStyle, applyColorPaint } from './utils';
 import { setCharacters } from './text';
 import { createFrame, createText, createRectangle } from './creation';
 import { createVector, normalizeSvgPath } from './vectors';
 
-export function expandRepeats(node: any): any {
+function expandRepeats(node: any): any {
   if (!node || typeof node !== "object") return node;
 
   // If this node has children, process them
@@ -29,7 +29,7 @@ export function expandRepeats(node: any): any {
 }
 
 // Deep-clone a template, substituting $[N] or $key placeholders in string values
-export function substituteTemplate(template: any, row: any): any {
+function substituteTemplate(template: any, row: any): any {
   if (typeof template === "string") {
     return substituteString(template, row);
   }
@@ -46,7 +46,7 @@ export function substituteTemplate(template: any, row: any): any {
   return template;
 }
 
-export function substituteString(str: string, row: any): string {
+function substituteString(str: string, row: any): string {
   if (Array.isArray(row)) {
     // Replace $[0], $[1], etc.
     return str.replace(/\$\[(\d+)\]/g, (match, idx) => {
@@ -136,43 +136,6 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
     strokeColor: "strokes",
     fontColor: "fills", // text fill color
   };
-
-  // --- Sync/reconciliation helpers ---
-
-  // Map font weight number to Figma font style string (sync/reconcile path).
-  // NOTE: Duplicates getFontStyle() inside createText(). Both must stay in sync
-  // until code.js is refactored to hoist a single shared helper to module scope.
-  function syncWeightToStyle(weight: number): string {
-    switch (weight) {
-      case 100: return "Thin";
-      case 200: return "Extra Light";
-      case 300: return "Light";
-      case 400: return "Regular";
-      case 500: return "Medium";
-      case 600: return "Semi Bold";
-      case 700: return "Bold";
-      case 800: return "Extra Bold";
-      case 900: return "Black";
-      default: return "Regular";
-    }
-  }
-
-  // Apply a solid color paint to a node property (fills or strokes)
-  function applyColorPaint(node: any, field: string, colorObj: any) {
-    if (colorObj.a !== undefined && parseFloat(colorObj.a) === 0) {
-      node[field] = [];
-    } else {
-      node[field] = [{
-        type: "SOLID",
-        color: {
-          r: parseFloat(colorObj.r) || 0,
-          g: parseFloat(colorObj.g) || 0,
-          b: parseFloat(colorObj.b) || 0,
-        },
-        opacity: colorObj.a !== undefined ? parseFloat(colorObj.a) : 1,
-      }];
-    }
-  }
 
   // Update an existing node's properties to match the spec (without creating a new node)
   async function updateNodeProperties(existingNode: any, spec: any) {
@@ -287,7 +250,7 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
     // --- Text properties ---
     if (type === "text") {
       const userFontFamily = spec.fontFamily || "Inter";
-      const userFontStyle = spec.fontStyle || syncWeightToStyle(spec.fontWeight || 400);
+      const userFontStyle = spec.fontStyle || fontWeightToStyle(spec.fontWeight || 400);
       const currentFontName = existingNode.fontName;
 
       // Load and set font if changed
@@ -299,8 +262,8 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
           changedProps.push("fontName");
         } catch (err) {
           try {
-            await figma.loadFontAsync({ family: "Inter", style: syncWeightToStyle(spec.fontWeight || 400) });
-            existingNode.fontName = { family: "Inter", style: syncWeightToStyle(spec.fontWeight || 400) };
+            await figma.loadFontAsync({ family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) });
+            existingNode.fontName = { family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) };
             changedProps.push("fontName");
           } catch (e2) { /* ignore */ }
         }
@@ -312,7 +275,7 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
       }
 
       if (spec.text !== undefined && existingNode.characters !== spec.text) {
-        setCharacters(existingNode, spec.text);
+        await setCharacters(existingNode, spec.text);
         changedProps.push("characters");
       }
       if (spec.fontSize !== undefined && existingNode.fontSize !== parseInt(spec.fontSize)) {

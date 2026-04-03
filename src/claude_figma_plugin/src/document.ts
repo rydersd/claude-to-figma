@@ -376,7 +376,7 @@ export async function scanNodesByTypes(params: any): Promise<any> {
  * @param {Array<string>} types - Array of node types to find
  * @param {Array} matchingNodes - Array to store found nodes
  */
-export async function findNodesByTypes(node: any, types: string[], matchingNodes: any[] = []): Promise<void> {
+async function findNodesByTypes(node: any, types: string[], matchingNodes: any[] = []): Promise<void> {
   // Skip invisible nodes
   if (node.visible === false) return;
 

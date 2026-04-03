@@ -327,6 +327,39 @@ export function safeMixed(val: any) {
   return val;
 }
 
+// Map common font weight numbers to Figma font style strings
+export function fontWeightToStyle(weight: number): string {
+  switch (weight) {
+    case 100: return "Thin";
+    case 200: return "Extra Light";
+    case 300: return "Light";
+    case 400: return "Regular";
+    case 500: return "Medium";
+    case 600: return "Semi Bold";
+    case 700: return "Bold";
+    case 800: return "Extra Bold";
+    case 900: return "Black";
+    default: return "Regular";
+  }
+}
+
+// Apply a solid color paint to a node property (fills or strokes)
+export function applyColorPaint(node: any, field: string, colorObj: any) {
+  if (colorObj.a !== undefined && parseFloat(colorObj.a) === 0) {
+    node[field] = [];
+  } else {
+    node[field] = [{
+      type: "SOLID",
+      color: {
+        r: parseFloat(colorObj.r) || 0,
+        g: parseFloat(colorObj.g) || 0,
+        b: parseFloat(colorObj.b) || 0,
+      },
+      opacity: colorObj.a !== undefined ? parseFloat(colorObj.a) : 1,
+    }];
+  }
+}
+
 // Helper: load all fonts used in a text node (handles mixed fonts)
 export async function loadAllFonts(textNode: any) {
   if (textNode.fontName === figma.mixed) {

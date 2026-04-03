@@ -42,7 +42,7 @@ export async function setTextContent(params: any) {
 }
 
 // --- Unique-by helper ---
-export function uniqBy(arr: any, predicate: any) {
+function uniqBy(arr: any, predicate: any) {
   const cb = typeof predicate === "function" ? predicate : (o: any) => o[predicate];
   return [
     ...arr
@@ -115,7 +115,7 @@ export const setCharacters = async (node: any, characters: any, options?: any) =
 };
 
 // --- Strict match font replacement ---
-export const setCharactersWithStrictMatchFont = async (
+const setCharactersWithStrictMatchFont = async (
   node: any,
   characters: any,
   fallbackFont: any
@@ -155,7 +155,7 @@ export const setCharactersWithStrictMatchFont = async (
 };
 
 // --- Get delimiter positions in a string ---
-export const getDelimiterPos = (str: any, delimiter: any, startIdx = 0, endIdx = str.length) => {
+const getDelimiterPos = (str: any, delimiter: any, startIdx = 0, endIdx = str.length) => {
   const indices: any[] = [];
   let temp = startIdx;
   for (let i = startIdx; i < endIdx; i++) {
@@ -173,7 +173,7 @@ export const getDelimiterPos = (str: any, delimiter: any, startIdx = 0, endIdx =
 };
 
 // --- Build linear font order from a text node ---
-export const buildLinearOrder = (node: any) => {
+const buildLinearOrder = (node: any) => {
   const fontTree: any[] = [];
   const newLinesPos = getDelimiterPos(node.characters, "\n");
   newLinesPos.forEach(([newLinesRangeStart, newLinesRangeEnd]: any, n: any) => {
@@ -228,7 +228,7 @@ export const buildLinearOrder = (node: any) => {
 };
 
 // --- Smart match font replacement ---
-export const setCharactersWithSmartMatchFont = async (
+const setCharactersWithSmartMatchFont = async (
   node: any,
   characters: any,
   fallbackFont: any
@@ -501,7 +501,7 @@ export async function scanTextNodes(params: any) {
 }
 
 // Helper function to collect all nodes that need to be processed
-export async function collectNodesToProcess(
+async function collectNodesToProcess(
   node: any,
   parentPath: any[] = [],
   depth = 0,
@@ -529,7 +529,7 @@ export async function collectNodesToProcess(
 }
 
 // Process a single text node
-export async function processTextNode(node: any, parentPath: any, depth: any) {
+async function processTextNode(node: any, parentPath: any, depth: any) {
   if (node.type !== "TEXT") return null;
 
   try {
@@ -593,7 +593,7 @@ export async function processTextNode(node: any, parentPath: any, depth: any) {
 }
 
 // --- Find text nodes recursively ---
-export async function findTextNodes(node: any, parentPath: any[] = [], depth = 0, textNodes: any[] = []) {
+async function findTextNodes(node: any, parentPath: any[] = [], depth = 0, textNodes: any[] = []) {
   // Skip invisible nodes
   if (node.visible === false) return;
 

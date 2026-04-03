@@ -1,9 +1,38 @@
 // analysis.ts — Analysis, introspection, batch mutation, design query, and component migration
 // Extracted from code.js as part of the plugin modularization refactor.
 
-import { sendProgressUpdate, generateCommandId, loadAllFonts, customBase64Encode, safeMixed, hexToFigmaColor, appendOrInsertChild, getVariableByName, bindVariableToColor, resolveColorValue } from './utils';
+import { sendProgressUpdate, generateCommandId, loadAllFonts, customBase64Encode, safeMixed, hexToFigmaColor, appendOrInsertChild, getVariableByName, bindVariableToColor, resolveColorValue, rgbaToHex } from './utils';
 import { setCharacters } from './text';
 import { normalizeSvgPath } from './vectors';
+
+// Shared helper: check if a node has a bound variable on a given field
+function hasBoundVariable(node: any, field: any) {
+  try {
+    var bindings = node.boundVariables;
+    if (bindings && bindings[field]) {
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+// Shared helper: check if a frame is a wrapper (single child, no visible fills, no layout, no effects)
+function isWrapperFrame(node: any) {
+  if (node.type !== "FRAME") return false;
+  if (!("children" in node) || node.children.length !== 1) return false;
+  if ("fills" in node && Array.isArray(node.fills)) {
+    for (var i = 0; i < node.fills.length; i++) {
+      if (node.fills[i].visible !== false && node.fills[i].type === "SOLID") return false;
+    }
+  }
+  if ("layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") return false;
+  if ("effects" in node && Array.isArray(node.effects) && node.effects.length > 0) {
+    for (var i = 0; i < node.effects.length; i++) {
+      if (node.effects[i].visible !== false) return false;
+    }
+  }
+  return true;
+}
 
 export async function screenshotRegion(params: any) {
   var x = params.x;
@@ -77,6 +106,12 @@ export async function screenshotRegion(params: any) {
 }
 
 // --- batch_mutate: Execute mixed operations in one round-trip ---
+// NOTE: Inline implementations are intentionally kept rather than delegating to canonical
+// module functions (styling.ts, transforms.ts, etc.) because:
+// 1. Batch ops use partial params (e.g. op.color vs params.color.{r,g,b,a} destructuring)
+// 2. Canonical functions add validation overhead and return values not needed here
+// 3. Canonical functions use parseFloat() on color values which batch ops don't require
+// 4. Changing delegation would alter error messages and behavior for existing consumers
 export async function batchMutate(params: any) {
   var operations = params.operations;
   var results: any[] = [];
@@ -241,16 +276,6 @@ export async function scanNodeStyles(params: any) {
 
   var results: any[] = [];
 
-  function hasBoundVariable(node: any, field: any) {
-    try {
-      var bindings = node.boundVariables;
-      if (bindings && bindings[field]) {
-        return true;
-      }
-    } catch (e) {}
-    return false;
-  }
-
   function extractFills(node: any) {
     if (!("fills" in node) || !Array.isArray(node.fills)) return null;
     var fills: any[] = [];
@@ -409,36 +434,6 @@ export async function introspectNode(params: any) {
     return false;
   }
 
-  function isWrapperFrame(node: any) {
-    if (node.type !== "FRAME") return false;
-    if (!("children" in node) || node.children.length !== 1) return false;
-    // Has visible fills?
-    if ("fills" in node && Array.isArray(node.fills)) {
-      for (var i = 0; i < node.fills.length; i++) {
-        if (node.fills[i].visible !== false && node.fills[i].type === "SOLID") return false;
-      }
-    }
-    // Has layout mode?
-    if ("layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") return false;
-    // Has effects?
-    if ("effects" in node && Array.isArray(node.effects) && node.effects.length > 0) {
-      for (var i = 0; i < node.effects.length; i++) {
-        if (node.effects[i].visible !== false) return false;
-      }
-    }
-    return true;
-  }
-
-  function hasBoundVariable(node: any, field: any) {
-    try {
-      var bindings = node.boundVariables;
-      if (bindings && bindings[field]) {
-        return true;
-      }
-    } catch (e) {}
-    return false;
-  }
-
   async function resolveBoundVariableName(node: any, field: any) {
     try {
       var bindings = node.boundVariables;
@@ -462,12 +457,6 @@ export async function introspectNode(params: any) {
     }
   }
 
-  function rgbToHex(r: any, g: any, b: any) {
-    var rr = Math.round(r * 255).toString(16).padStart(2, "0");
-    var gg = Math.round(g * 255).toString(16).padStart(2, "0");
-    var bb = Math.round(b * 255).toString(16).padStart(2, "0");
-    return "#" + rr + gg + bb;
-  }
 
   function buildSemanticKey(pathSegments: any) {
     // Filter out generic names, take last 2-3 meaningful ones
@@ -574,7 +563,7 @@ export async function introspectNode(params: any) {
           var fillVarName = fillBound ? await resolveBoundVariableName(node, "fills") : null;
           var fillProp: any = {
             type: "color",
-            value: rgbToHex(fill.color.r, fill.color.g, fill.color.b),
+            value: rgbaToHex(fill.color),
             nodeId: node.id,
             target: "fill",
             boundVariable: fillBound,
@@ -595,7 +584,7 @@ export async function introspectNode(params: any) {
           var strokeVarName = strokeBound ? await resolveBoundVariableName(node, "strokes") : null;
           var strokeProp: any = {
             type: "color",
-            value: rgbToHex(stroke.color.r, stroke.color.g, stroke.color.b),
+            value: rgbaToHex(stroke.color),
             nodeId: node.id,
             target: "stroke",
             boundVariable: strokeBound,
@@ -819,23 +808,6 @@ export async function optimizeStructure(params: any) {
 
   var changes: any[] = [];
   var appliedCount = 0;
-
-  function isWrapperFrame(node: any) {
-    if (node.type !== "FRAME") return false;
-    if (!("children" in node) || node.children.length !== 1) return false;
-    if ("fills" in node && Array.isArray(node.fills)) {
-      for (var i = 0; i < node.fills.length; i++) {
-        if (node.fills[i].visible !== false && node.fills[i].type === "SOLID") return false;
-      }
-    }
-    if ("layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") return false;
-    if ("effects" in node && Array.isArray(node.effects) && node.effects.length > 0) {
-      for (var i = 0; i < node.effects.length; i++) {
-        if (node.effects[i].visible !== false) return false;
-      }
-    }
-    return true;
-  }
 
   // Pass 1: Find wrapper frames to flatten (collect bottom-up)
   var wrappers: any[] = [];

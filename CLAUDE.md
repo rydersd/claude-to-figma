@@ -18,7 +18,8 @@ Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay ←(WebSo
 
 ```bash
 bun install              # Install dependencies
-bun run build            # Build MCP server (tsup → dist/)
+bun run build            # Build MCP server (dist/) AND Figma plugin (src/claude_figma_plugin/code.js) via tsup
+bun run build:plugin     # Build Figma plugin only (src/claude_figma_plugin/code.js)
 bun run dev              # Build in watch mode
 bun socket               # Start WebSocket relay server (port 3055)
 bun run start            # Run built MCP server
@@ -33,10 +34,25 @@ There is no test suite or linter configured.
 The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 90+ tools (create shapes, modify text, manage layouts, export images, component migration, design queries, etc.) and several AI prompts (design strategies). Communicates with Claude Code over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds.
 
 ### WebSocket Relay (`src/socket.ts`)
-Lightweight Bun WebSocket server on port 3055 (configurable via `PORT` env). Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
+Lightweight Bun WebSocket server on port 3055. Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
 
 ### Figma Plugin (`src/claude_figma_plugin/`)
-Runs inside Figma. `code.js` is the plugin main thread handling 80+ commands via a dispatcher. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares permissions (dynamic-page access, localhost network). The plugin is **not built/bundled** — `code.js` is written directly as the runtime artifact.
+Runs inside Figma. The plugin source lives in `src/claude_figma_plugin/src/` as 13 TypeScript modules. `bun run build` compiles them via tsup into `code.js` as an IIFE bundle. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares dynamic-page document access and localhost network access.
+
+**Plugin modules** (`src/claude_figma_plugin/src/`):
+- `main.ts` -- command dispatcher (100 commands), plugin lifecycle
+- `analysis.ts` -- node introspection, style scanning, batch operations, design queries
+- `components.ts` -- component creation, instances, styles, variables
+- `creation.ts` -- shape and frame creation
+- `document.ts` -- document info, node management, selection
+- `layout.ts` -- auto layout configuration
+- `node-tree.ts` -- batch node tree creation with repeat directives
+- `prototyping.ts` -- prototype connections, reactions, interaction flows
+- `styling.ts` -- fill, stroke, corner radius
+- `text.ts` -- text content, fonts, scanning
+- `transforms.ts` -- move, resize, annotations
+- `utils.ts` -- shared helpers, color conversion, progress reporting
+- `vectors.ts` -- vector paths, lines, SVG normalization
 
 ## Key Patterns
 
@@ -69,3 +85,14 @@ Add the MCP server to Claude Code:
 ```bash
 claude mcp add ClaudeToFigma -- bun /path-to-repo/src/claude_to_figma_mcp/server.ts
 ```
+
+## Hooks & Reasoning
+
+Claude Code hooks and scripts for capturing build/test history and generating per-commit reasoning:
+
+- `.claude/hooks/post-bash-track-builds.sh` -- PostToolUse hook that captures build/test outcomes
+- `.claude/scripts/generate-reasoning.sh` -- generates per-commit reasoning from build attempts
+- `.claude/scripts/search-reasoning.sh` -- searches past reasoning
+- `.claude/scripts/aggregate-reasoning.sh` -- aggregates reasoning for PR descriptions
+
+Data is stored in `.git/claude/` (local, gitignored).
