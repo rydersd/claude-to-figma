@@ -394,14 +394,10 @@ export async function createComponent(params: any) {
 }
 
 export async function getInstanceOverrides(instanceNode: any = null) {
-  console.log("=== getInstanceOverrides called ===");
-
   let sourceInstance: any = null;
 
   // Check if an instance node was passed directly
   if (instanceNode) {
-    console.log("Using provided instance node");
-
     // Validate that the provided node is an instance
     if (instanceNode.type !== "INSTANCE") {
       console.error("Provided node is not an instance");
@@ -412,14 +408,10 @@ export async function getInstanceOverrides(instanceNode: any = null) {
     sourceInstance = instanceNode;
   } else {
     // No node provided, use selection
-    console.log("No node provided, using current selection");
-
-    // Get the current selection
     const selection = figma.currentPage.selection;
 
     // Check if there's anything selected
     if (selection.length === 0) {
-      console.log("No nodes selected");
       figma.notify("Please select at least one instance");
       return { success: false, message: "No nodes selected" };
     }
@@ -428,7 +420,6 @@ export async function getInstanceOverrides(instanceNode: any = null) {
     const instances = selection.filter((node: any) => node.type === "INSTANCE");
 
     if (instances.length === 0) {
-      console.log("No instances found in selection");
       figma.notify("Please select at least one component instance");
       return { success: false, message: "No instances found in selection" };
     }
@@ -438,12 +429,8 @@ export async function getInstanceOverrides(instanceNode: any = null) {
   }
 
   try {
-    console.log(`Getting instance information:`);
-    console.log(sourceInstance);
-
     // Get component overrides and main component
     const overrides = sourceInstance.overrides || [];
-    console.log(`  Raw Overrides:`, overrides);
 
     // Get main component
     const mainComponent = await sourceInstance.getMainComponentAsync();
@@ -462,7 +449,6 @@ export async function getInstanceOverrides(instanceNode: any = null) {
       overridesCount: overrides.length
     };
 
-    console.log("Data to return to MCP server:", returnData);
     figma.notify(`Got component information from "${sourceInstance.name}"`);
 
     return returnData;

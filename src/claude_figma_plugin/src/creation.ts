@@ -1,7 +1,7 @@
 // Node creation functions for the Figma plugin.
 // Extracted from code.js — pure structural refactor.
 
-import { appendOrInsertChild, hexToFigmaColor } from './utils';
+import { appendOrInsertChild, hexToFigmaColor, fontWeightToStyle, applyColorPaint } from './utils';
 import { setCharacters } from './text';
 
 export async function createRectangle(params: any) {
@@ -28,34 +28,12 @@ export async function createRectangle(params: any) {
 
   // Set fill color if provided
   if (fillColor) {
-    if (fillColor.a !== undefined && parseFloat(fillColor.a) === 0) {
-      rect.fills = [];
-    } else {
-      const paintStyle = {
-        type: "SOLID" as const,
-        color: {
-          r: parseFloat(fillColor.r) || 0,
-          g: parseFloat(fillColor.g) || 0,
-          b: parseFloat(fillColor.b) || 0,
-        },
-        opacity: fillColor.a !== undefined ? parseFloat(fillColor.a) : 1,
-      };
-      rect.fills = [paintStyle];
-    }
+    applyColorPaint(rect, "fills", fillColor);
   }
 
   // Set stroke color and weight if provided
   if (params.strokeColor) {
-    const strokeStyle = {
-      type: "SOLID" as const,
-      color: {
-        r: parseFloat(params.strokeColor.r) || 0,
-        g: parseFloat(params.strokeColor.g) || 0,
-        b: parseFloat(params.strokeColor.b) || 0,
-      },
-      opacity: params.strokeColor.a !== undefined ? parseFloat(params.strokeColor.a) : 1,
-    };
-    rect.strokes = [strokeStyle];
+    applyColorPaint(rect, "strokes", params.strokeColor);
   }
   if (params.strokeWeight !== undefined) {
     rect.strokeWeight = params.strokeWeight;
@@ -163,34 +141,12 @@ export async function createFrame(params: any, firstOnTop: boolean = true) {
 
   // Set fill color if provided
   if (fillColor) {
-    if (fillColor.a !== undefined && parseFloat(fillColor.a) === 0) {
-      frame.fills = [];
-    } else {
-      const paintStyle = {
-        type: "SOLID" as const,
-        color: {
-          r: parseFloat(fillColor.r) || 0,
-          g: parseFloat(fillColor.g) || 0,
-          b: parseFloat(fillColor.b) || 0,
-        },
-        opacity: fillColor.a !== undefined ? parseFloat(fillColor.a) : 1,
-      };
-      frame.fills = [paintStyle];
-    }
+    applyColorPaint(frame, "fills", fillColor);
   }
 
   // Set stroke color and weight if provided
   if (strokeColor) {
-    const strokeStyle = {
-      type: "SOLID" as const,
-      color: {
-        r: parseFloat(strokeColor.r) || 0,
-        g: parseFloat(strokeColor.g) || 0,
-        b: parseFloat(strokeColor.b) || 0,
-      },
-      opacity: strokeColor.a !== undefined ? parseFloat(strokeColor.a) : 1,
-    };
-    frame.strokes = [strokeStyle];
+    applyColorPaint(frame, "strokes", strokeColor);
   }
 
   // Set stroke weight if provided
@@ -248,35 +204,9 @@ export async function createText(params: any) {
     width,
   } = params || {};
 
-  // Map common font weights to Figma font styles
-  const getFontStyle = (weight: any) => {
-    switch (weight) {
-      case 100:
-        return "Thin";
-      case 200:
-        return "Extra Light";
-      case 300:
-        return "Light";
-      case 400:
-        return "Regular";
-      case 500:
-        return "Medium";
-      case 600:
-        return "Semi Bold";
-      case 700:
-        return "Bold";
-      case 800:
-        return "Extra Bold";
-      case 900:
-        return "Black";
-      default:
-        return "Regular";
-    }
-  };
-
   // Accept optional fontFamily and fontStyle params
   const userFontFamily = params.fontFamily || "Inter";
-  const userFontStyle = params.fontStyle || getFontStyle(fontWeight);
+  const userFontStyle = params.fontStyle || fontWeightToStyle(fontWeight);
 
   const textNode = figma.createText();
   textNode.x = x;
@@ -293,30 +223,17 @@ export async function createText(params: any) {
     console.error("Error setting font", error);
     // Fallback to Inter if the requested font is not available
     try {
-      await figma.loadFontAsync({ family: "Inter", style: getFontStyle(fontWeight) });
-      textNode.fontName = { family: "Inter", style: getFontStyle(fontWeight) };
+      await figma.loadFontAsync({ family: "Inter", style: fontWeightToStyle(fontWeight) });
+      textNode.fontName = { family: "Inter", style: fontWeightToStyle(fontWeight) };
       textNode.fontSize = parseInt(fontSize);
     } catch (fallbackError) {
       console.error("Error setting fallback font", fallbackError);
     }
   }
-  setCharacters(textNode, text);
+  await setCharacters(textNode, text);
 
   // Set text color
-  if (fontColor.a !== undefined && parseFloat(fontColor.a) === 0) {
-    textNode.fills = [];
-  } else {
-    const paintStyle = {
-      type: "SOLID" as const,
-      color: {
-        r: parseFloat(fontColor.r) || 0,
-        g: parseFloat(fontColor.g) || 0,
-        b: parseFloat(fontColor.b) || 0,
-      },
-      opacity: fontColor.a !== undefined ? parseFloat(fontColor.a) : 1,
-    };
-    textNode.fills = [paintStyle];
-  }
+  applyColorPaint(textNode, "fills", fontColor);
 
   // Set text alignment if provided
   if (params.textAlignHorizontal) {
