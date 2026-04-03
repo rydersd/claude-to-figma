@@ -38,23 +38,40 @@ This project is a fork of [cursor-talk-to-figma-mcp](https://github.com/sonnylaz
 
 ### MCP Server: Integration with Claude Code
 
-Add the server to your MCP configuration in `.mcp.json`:
+Add the server to your project's `.mcp.json` (or `~/.claude/.mcp.json` for global access):
 
 ```json
 {
   "mcpServers": {
-    "ClaudeToFigma": {
-      "command": "bun",
-      "args": ["/path-to-repo/src/claude_to_figma_mcp/server.ts"]
+    "claude-to-figma": {
+      "command": "/opt/homebrew/bin/node",
+      "args": ["/path-to-repo/dist/server.js"]
     }
   }
 }
 ```
 
+Replace `/path-to-repo` with the absolute path to your clone of this repository.
+
+> **Note:** Use the absolute path to `node` (e.g. `/opt/homebrew/bin/node` on macOS with Homebrew, or the output of `which node`) to avoid PATH resolution issues when Claude Code launches the server.
+
 Or add via CLI:
 
 ```bash
-claude mcp add ClaudeToFigma -- bun /path-to-repo/src/claude_to_figma_mcp/server.ts
+claude mcp add claude-to-figma -- /opt/homebrew/bin/node /path-to-repo/dist/server.js
+```
+
+If you prefer running from source with Bun instead of the built output:
+
+```json
+{
+  "mcpServers": {
+    "claude-to-figma": {
+      "command": "bun",
+      "args": ["/path-to-repo/src/claude_to_figma_mcp/server.ts"]
+    }
+  }
+}
 ```
 
 ### WebSocket Server
@@ -109,18 +126,7 @@ bun socket
 
 ## Local Development Setup
 
-To develop, update your mcp config to direct to your local directory.
-
-```json
-{
-  "mcpServers": {
-    "ClaudeToFigma": {
-      "command": "bun",
-      "args": ["/path-to-repo/src/claude_to_figma_mcp/server.ts"]
-    }
-  }
-}
-```
+To develop against source instead of the built output, use the Bun-from-source config shown in [Manual Setup](#manual-setup-and-installation). After making changes, rebuild with `bun run build` to update both `dist/server.js` and `src/claude_figma_plugin/code.js`.
 
 ## MCP Tools
 
@@ -286,13 +292,13 @@ The MCP server includes several helper prompts to guide you through complex desi
 
 ### Building the Figma Plugin
 
-1. Navigate to the Figma plugin directory:
+The plugin source is in `src/claude_figma_plugin/src/` as TypeScript modules. Edit the `.ts` files there, then rebuild:
 
-   ```
-   cd src/claude_figma_plugin
-   ```
+```bash
+bun run build
+```
 
-2. Edit code.js and ui.html
+This compiles the modules into `src/claude_figma_plugin/code.js` (IIFE bundle). The `ui.html` file can be edited directly.
 
 ## Best Practices
 

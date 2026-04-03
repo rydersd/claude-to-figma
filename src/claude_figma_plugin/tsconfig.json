@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "strict": false, // TODO: Enable strict mode and add proper types — tracked as tech debt from monolith migration
+    "skipLibCheck": true,
+    "declaration": false,
+    "lib": ["ES2020"],
+    "types": ["@figma/plugin-typings"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}
