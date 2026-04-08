@@ -508,6 +508,11 @@ async function handleCommand(command, params) {
       }
       return { success: true, message: `Redo triggered ${redoCount} time(s)`, count: redoCount };
     }
+    case "place_image":
+      if (!params || !params.imageData) {
+        throw new Error("Missing required parameter: imageData");
+      }
+      return await placeImage(params);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
@@ -2237,6 +2242,94 @@ function customBase64Encode(bytes) {
   }
 
   return base64;
+}
+
+// Decode a base64 string back to Uint8Array (inverse of customBase64Encode)
+function customBase64Decode(base64) {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const lookup = new Uint8Array(128);
+  for (let i = 0; i < chars.length; i++) {
+    lookup[chars.charCodeAt(i)] = i;
+  }
+
+  // Strip padding
+  let len = base64.length;
+  if (base64[len - 1] === "=") len--;
+  if (base64[len - 1] === "=") len--;
+
+  const byteLength = (len * 3) >> 2;
+  const bytes = new Uint8Array(byteLength);
+  let p = 0;
+
+  for (let i = 0; i < len; i += 4) {
+    const a = lookup[base64.charCodeAt(i)];
+    const b = lookup[base64.charCodeAt(i + 1)];
+    const c = lookup[base64.charCodeAt(i + 2)];
+    const d = lookup[base64.charCodeAt(i + 3)];
+
+    bytes[p++] = (a << 2) | (b >> 4);
+    if (p < byteLength) bytes[p++] = ((b & 15) << 4) | (c >> 2);
+    if (p < byteLength) bytes[p++] = ((c & 3) << 6) | d;
+  }
+
+  return bytes;
+}
+
+// --- place_image: Place a web image on the canvas as a rectangle with image fill ---
+async function placeImage(params) {
+  var imageData = params.imageData;
+  var bytes = customBase64Decode(imageData);
+
+  // Create the Figma image from raw bytes
+  var image = figma.createImage(bytes);
+
+  // Create a rectangle to hold the image
+  var rect = figma.createRectangle();
+  rect.name = params.name || "Reference Image";
+
+  // Apply image fill
+  rect.fills = [
+    {
+      type: "IMAGE",
+      imageHash: image.hash,
+      scaleMode: params.scaleMode || "FILL",
+    },
+  ];
+
+  // Get image dimensions to set sensible defaults
+  var size = await image.getSizeAsync();
+  var naturalWidth = size.width;
+  var naturalHeight = size.height;
+
+  // Use provided dimensions, or fall back to natural size (capped at 4096)
+  var w = params.width || Math.min(naturalWidth, 4096);
+  var h = params.height;
+  if (!h) {
+    if (params.width) {
+      // Scale height proportionally if only width was provided
+      h = Math.round((params.width / naturalWidth) * naturalHeight);
+    } else {
+      h = Math.min(naturalHeight, 4096);
+    }
+  }
+
+  rect.resize(w, h);
+  if (params.x !== undefined) rect.x = params.x;
+  if (params.y !== undefined) rect.y = params.y;
+
+  await appendOrInsertChild(rect, params.parentId);
+
+  return {
+    id: rect.id,
+    name: rect.name,
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    naturalWidth: naturalWidth,
+    naturalHeight: naturalHeight,
+  };
 }
 
 async function setCornerRadius(params) {

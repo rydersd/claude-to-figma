@@ -153,7 +153,8 @@ export type FigmaCommand =
   | "get_interactions"
   | "batch_set_reactions"
   | "undo"
-  | "redo";
+  | "redo"
+  | "place_image";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -669,6 +670,16 @@ export type CommandParams = {
     parentId?: string;
     limit?: number;
     dryRun?: boolean;
+  };
+  place_image: {
+    imageData: string;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    name?: string;
+    parentId?: string;
+    scaleMode?: "FILL" | "FIT" | "CROP" | "TILE";
   };
 };
 

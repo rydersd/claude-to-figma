@@ -193,4 +193,60 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       return { content: [{ type: "text", text: `Error creating component set: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
+
+  server.tool("place_image", "Place a reference image on the canvas from a URL. Fetches the image server-side and creates a rectangle with an image fill in Figma. Supports PNG, JPG, GIF, WebP, and SVG rasterized to bitmap.", {
+    url: z.string().url().describe("URL of the image to fetch and place"),
+    x: z.number().optional().describe("X position (default 0)"),
+    y: z.number().optional().describe("Y position (default 0)"),
+    width: z.number().positive().optional().describe("Width of the placed image (defaults to image natural width, capped at 4096)"),
+    height: z.number().positive().optional().describe("Height of the placed image (defaults to image natural height, capped at 4096)"),
+    name: z.string().optional().describe("Name for the created node (defaults to filename from URL)"),
+    parentId: z.string().optional().describe("Parent node ID to place image into"),
+    scaleMode: z.enum(["FILL", "FIT", "CROP", "TILE"]).optional().describe("How the image fills the rectangle (default FILL)"),
+  }, async ({ url, x, y, width, height, name, parentId, scaleMode }: any) => {
+    try {
+      // Fetch the image on the server side (full network access)
+      const response = await fetch(url);
+      if (!response.ok) {
+        return { content: [{ type: "text", text: `Error fetching image: HTTP ${response.status} ${response.statusText}` }] };
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.startsWith("image/")) {
+        return { content: [{ type: "text", text: `Error: URL did not return an image (content-type: ${contentType})` }] };
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+
+      // Check file size (Figma has practical limits — reject >20MB)
+      if (bytes.length > 20 * 1024 * 1024) {
+        return { content: [{ type: "text", text: `Error: Image too large (${(bytes.length / 1024 / 1024).toFixed(1)}MB). Maximum 20MB.` }] };
+      }
+
+      // Convert to base64 for transport over WebSocket
+      const base64 = Buffer.from(arrayBuffer).toString("base64");
+
+      // Derive a default name from the URL if not provided
+      const derivedName = name || decodeURIComponent(
+        new URL(url).pathname.split("/").pop() || "Reference Image"
+      );
+
+      const result = await sendCommandToFigma("place_image", {
+        imageData: base64,
+        x,
+        y,
+        width,
+        height,
+        name: derivedName,
+        parentId,
+        scaleMode,
+      }, 60000); // 60s timeout for large images
+
+      const typedResult = result as { id: string; name: string; x: number; y: number; width: number; height: number };
+      return { content: [{ type: "text", text: `Placed image "${typedResult.name}" (${typedResult.id}) at (${typedResult.x}, ${typedResult.y}), size ${typedResult.width}x${typedResult.height}` }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error placing image: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
 }
