@@ -84,7 +84,13 @@ const server = Bun.serve({
         } else if (data.message?.result) {
           console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
         }
-        console.log(`Full message:`, JSON.stringify(data, null, 2));
+        // Truncate large binary payloads (e.g. base64 image data) to avoid flooding the terminal
+        const logSafe = { ...data };
+        if (logSafe.message?.params?.imageData) {
+          const len = logSafe.message.params.imageData.length;
+          logSafe.message = { ...logSafe.message, params: { ...logSafe.message.params, imageData: `<base64 ${(len * 0.75 / 1024).toFixed(0)}KB>` } };
+        }
+        console.log(`Full message:`, JSON.stringify(logSafe, null, 2));
 
         if (data.type === "join") {
           const channelName = data.channel;
@@ -169,7 +175,13 @@ const server = Bun.serve({
                 channel: channelName
               };
               console.log(`\n=== Broadcasting to peer #${broadcastCount} ===`);
-              console.log(JSON.stringify(broadcastMessage, null, 2));
+              // Truncate large binary payloads for logging
+              const logBroadcast = { ...broadcastMessage };
+              if (logBroadcast.message?.params?.imageData) {
+                const bLen = logBroadcast.message.params.imageData.length;
+                logBroadcast.message = { ...logBroadcast.message, params: { ...logBroadcast.message.params, imageData: `<base64 ${(bLen * 0.75 / 1024).toFixed(0)}KB>` } };
+              }
+              console.log(JSON.stringify(logBroadcast, null, 2));
               client.send(JSON.stringify(broadcastMessage));
             }
           });

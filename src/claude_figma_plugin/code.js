@@ -2281,6 +2281,11 @@ async function placeImage(params) {
   var imageData = params.imageData;
   var bytes = customBase64Decode(imageData);
 
+  // Validate decoded bytes before passing to Figma
+  if (!bytes || bytes.length < 8) {
+    throw new Error("Image data is empty or too small to be a valid image");
+  }
+
   // Create the Figma image from raw bytes
   var image = figma.createImage(bytes);
 
@@ -2299,14 +2304,14 @@ async function placeImage(params) {
 
   // Get image dimensions to set sensible defaults
   var size = await image.getSizeAsync();
-  var naturalWidth = size.width;
-  var naturalHeight = size.height;
+  var naturalWidth = size.width || 400;  // Fallback to prevent division by zero
+  var naturalHeight = size.height || 400;
 
   // Use provided dimensions, or fall back to natural size (capped at 4096)
   var w = params.width || Math.min(naturalWidth, 4096);
   var h = params.height;
   if (!h) {
-    if (params.width) {
+    if (params.width && naturalWidth > 0) {
       // Scale height proportionally if only width was provided
       h = Math.round((params.width / naturalWidth) * naturalHeight);
     } else {

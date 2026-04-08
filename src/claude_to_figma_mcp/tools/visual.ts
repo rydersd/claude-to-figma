@@ -194,8 +194,14 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
-  server.tool("place_image", "Place a reference image on the canvas from a URL. Fetches the image server-side and creates a rectangle with an image fill in Figma. Supports PNG, JPG, GIF, WebP, and SVG rasterized to bitmap.", {
-    url: z.string().url().describe("URL of the image to fetch and place"),
+  // Allowed image content types — explicit allowlist, not prefix match
+  const ALLOWED_IMAGE_TYPES = new Set([
+    "image/png", "image/jpeg", "image/gif", "image/webp",
+    "image/avif", "image/bmp", "image/tiff",
+  ]);
+
+  server.tool("place_image", "Place a reference image on the canvas from a URL. Fetches the image server-side and creates a rectangle with an image fill in Figma. Supports PNG, JPG, GIF, WebP, AVIF.", {
+    url: z.string().url().describe("HTTPS URL of the image to fetch and place (http also allowed, no file:// or private IPs)"),
     x: z.number().optional().describe("X position (default 0)"),
     y: z.number().optional().describe("Y position (default 0)"),
     width: z.number().positive().optional().describe("Width of the placed image (defaults to image natural width, capped at 4096)"),
@@ -205,23 +211,52 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     scaleMode: z.enum(["FILL", "FIT", "CROP", "TILE"]).optional().describe("How the image fills the rectangle (default FILL)"),
   }, async ({ url, x, y, width, height, name, parentId, scaleMode }: any) => {
     try {
-      // Fetch the image on the server side (full network access)
-      const response = await fetch(url);
+      // --- SSRF protection: block non-HTTP schemes and private/reserved IPs ---
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        return { content: [{ type: "text", text: `Error: Only http:// and https:// URLs are allowed (got ${parsed.protocol})` }] };
+      }
+
+      const hostname = parsed.hostname.toLowerCase();
+      // Block localhost, loopback, and link-local
+      const blockedPatterns = [
+        /^localhost$/,
+        /^127\.\d+\.\d+\.\d+$/,
+        /^0\.0\.0\.0$/,
+        /^10\.\d+\.\d+\.\d+$/,           // 10.0.0.0/8
+        /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/, // 172.16.0.0/12
+        /^192\.168\.\d+\.\d+$/,           // 192.168.0.0/16
+        /^169\.254\.\d+\.\d+$/,           // link-local / IMDS
+        /^\[::1?\]$/,                      // IPv6 loopback
+        /^\[fd/i,                          // IPv6 ULA
+        /^\[fe80:/i,                       // IPv6 link-local
+      ];
+      if (blockedPatterns.some(p => p.test(hostname))) {
+        return { content: [{ type: "text", text: `Error: URLs pointing to private/internal networks are not allowed` }] };
+      }
+
+      // Fetch with redirect protection — don't follow redirects automatically
+      const response = await fetch(url, { redirect: "follow" });
       if (!response.ok) {
         return { content: [{ type: "text", text: `Error fetching image: HTTP ${response.status} ${response.statusText}` }] };
       }
 
-      const contentType = response.headers.get("content-type") || "";
-      if (!contentType.startsWith("image/")) {
-        return { content: [{ type: "text", text: `Error: URL did not return an image (content-type: ${contentType})` }] };
+      // Validate content-type against explicit allowlist
+      const contentType = (response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      if (!ALLOWED_IMAGE_TYPES.has(contentType)) {
+        return { content: [{ type: "text", text: `Error: Unsupported content type "${contentType}". Allowed: ${[...ALLOWED_IMAGE_TYPES].join(", ")}` }] };
       }
 
       const arrayBuffer = await response.arrayBuffer();
       const bytes = new Uint8Array(arrayBuffer);
 
-      // Check file size (Figma has practical limits — reject >20MB)
-      if (bytes.length > 20 * 1024 * 1024) {
-        return { content: [{ type: "text", text: `Error: Image too large (${(bytes.length / 1024 / 1024).toFixed(1)}MB). Maximum 20MB.` }] };
+      if (bytes.length === 0) {
+        return { content: [{ type: "text", text: `Error: Image response was empty (0 bytes)` }] };
+      }
+
+      // Check file size — 4MB practical limit for WebSocket transport + Figma plugin memory
+      if (bytes.length > 4 * 1024 * 1024) {
+        return { content: [{ type: "text", text: `Error: Image too large (${(bytes.length / 1024 / 1024).toFixed(1)}MB). Maximum 4MB.` }] };
       }
 
       // Convert to base64 for transport over WebSocket
@@ -230,7 +265,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       // Derive a default name from the URL if not provided
       const derivedName = name || decodeURIComponent(
         new URL(url).pathname.split("/").pop() || "Reference Image"
-      );
+      ).slice(0, 100); // Truncate very long filenames
 
       const result = await sendCommandToFigma("place_image", {
         imageData: base64,
