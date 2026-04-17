@@ -83,6 +83,8 @@ Two MCP tools (defined in `src/claude_to_figma_mcp/tools/events.ts`) let Claude 
 
 **Buffer behavior**: priority-aware overflow — when full, low-priority events (`nodechange` with only `PROPERTY_CHANGE` entries) are dropped first to preserve `CREATE`/`DELETE` and selection/page events. Buffer is **not** cleared on unsubscribe so a final drain is possible. Each event carries `isPluginOperation: boolean` so callers can distinguish user actions from tool-driven changes.
 
+Full details and gotchas: [`wiki/concepts/event-streaming.md`](wiki/concepts/event-streaming.md).
+
 ## Setup
 
 1. Run `bun setup` — installs dependencies and writes MCP config (machine-specific)
@@ -116,3 +118,12 @@ Claude Code hooks and scripts for capturing build/test history and generating pe
 - `.claude/scripts/aggregate-reasoning.sh` -- aggregates reasoning for PR descriptions
 
 Data is stored in `.git/claude/` (local, gitignored).
+
+## Wiki
+
+Non-obvious knowledge (architecture decisions, gotchas, patterns) lives in `wiki/`. Read `wiki/index.md` first. Current entries:
+
+- `wiki/concepts/event-streaming.md` — how `figma_events_subscribe` / `figma_events_poll` work
+- `wiki/concepts/sf-symbol-icon-extraction.md` — exact SF Symbol → Figma via `NSSymbolImageRep.outlinePath` (cross-linked to `~/Developer/GitHub/llm-tooling/`)
+
+File new findings here as you work. See the global wiki rule in `~/.claude/CLAUDE.md`.
