@@ -56,7 +56,10 @@ figma.ui.onmessage = async (msg: any) => {
           error: error.message || "Error executing command",
         });
       } finally {
-        setPluginOperationGuard(false);
+        // 500ms cooldown before clearing guard — catches debounced/throttled
+        // events (e.g. nodechange leading-edge throttle) that fire after the
+        // command handler returns but were still caused by the plugin operation.
+        setTimeout(() => setPluginOperationGuard(false), 500);
       }
       break;
   }

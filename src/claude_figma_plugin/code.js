@@ -7230,7 +7230,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           // CREATE, DELETE, PROPERTY_CHANGE
           nodeId: change.node.id,
           nodeType: change.node.type,
-          properties: change.properties || [],
+          properties: change.type === "PROPERTY_CHANGE" ? change.properties : [],
           origin: change.origin
           // LOCAL or REMOTE
         };
@@ -7264,6 +7264,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
     };
     function flushChanges() {
+      if (!eventsEnabled) return;
       if (pendingChanges.length === 0) return;
       lastFlush = Date.now();
       emitEvent("nodechange", {
@@ -7334,7 +7335,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             error: error.message || "Error executing command"
           });
         } finally {
-          setPluginOperationGuard(false);
+          setTimeout(() => setPluginOperationGuard(false), 500);
         }
         break;
     }

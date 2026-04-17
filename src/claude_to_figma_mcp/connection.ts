@@ -87,8 +87,8 @@ export function connectToFigma(port: number = 3055) {
         return;
       }
 
-      // Handle events from Figma plugin -- strict type check only
-      if (json.type === "event") {
+      // Handle events from Figma plugin -- require eventType to avoid pushing malformed events
+      if (json.type === "event" && json.eventType) {
         pushEvent({
           eventType: json.eventType,
           data: json.data,

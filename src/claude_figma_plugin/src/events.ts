@@ -110,7 +110,7 @@ function attachNodeChangeListener() {
         type: change.type, // CREATE, DELETE, PROPERTY_CHANGE
         nodeId: change.node.id,
         nodeType: change.node.type,
-        properties: change.properties || [],
+        properties: change.type === "PROPERTY_CHANGE" ? change.properties : [],
         origin: change.origin, // LOCAL or REMOTE
       };
       // RemovedNode has only id, type, removed — do NOT access .name
@@ -149,6 +149,7 @@ function attachNodeChangeListener() {
   };
 
   function flushChanges() {
+    if (!eventsEnabled) return; // Guard against ghost-emission after stop
     if (pendingChanges.length === 0) return;
     lastFlush = Date.now();
     emitEvent("nodechange", {

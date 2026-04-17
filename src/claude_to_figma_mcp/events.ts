@@ -19,8 +19,6 @@ export interface FigmaEvent {
 }
 
 const MAX_BUFFER_SIZE = 200;
-// Reserve slots for high-priority events during overflow trimming
-const PRIORITY_RESERVE = 40;
 
 let eventBuffer: FigmaEvent[] = [];
 let subscribed = false;
@@ -50,7 +48,7 @@ export function pushEvent(event: FigmaEvent): void {
   if (!subscribed) return;
   eventBuffer.push(event);
 
-  // Priority-aware overflow: drop PROPERTY_CHANGE-only nodechange events first
+  // Priority-aware overflow: high-priority fills first, low-priority gets remaining slots
   if (eventBuffer.length > MAX_BUFFER_SIZE) {
     const isHighPriority = (e: FigmaEvent) =>
       e.eventType !== "nodechange" ||
@@ -59,11 +57,11 @@ export function pushEvent(event: FigmaEvent): void {
     const highPri = eventBuffer.filter(isHighPriority);
     const lowPri = eventBuffer.filter(e => !isHighPriority(e));
 
-    // Keep all high-priority (capped at PRIORITY_RESERVE from most recent)
-    // plus as many low-priority as fit in the remaining slots
-    const lowPriSlots = MAX_BUFFER_SIZE - Math.min(highPri.length, PRIORITY_RESERVE);
+    // High-priority fills first (up to MAX_BUFFER_SIZE), low-priority gets remaining slots
+    const highPriKeep = Math.min(highPri.length, MAX_BUFFER_SIZE);
+    const lowPriSlots = MAX_BUFFER_SIZE - highPriKeep;
     eventBuffer = [
-      ...highPri.slice(-PRIORITY_RESERVE),
+      ...highPri.slice(-highPriKeep),
       ...lowPri.slice(-Math.max(0, lowPriSlots)),
     ].sort((a, b) => a.timestamp - b.timestamp);
   }
@@ -80,33 +78,35 @@ export interface PollOptions {
 }
 
 export function pollEvents(options: PollOptions = {}): FigmaEvent[] {
-  let result = [...eventBuffer];
+  let matched = [...eventBuffer];
 
-  // Apply filters
+  // Apply filters (except limit — limit only restricts the return set, not the drain set)
   if (options.eventTypes && options.eventTypes.length > 0) {
-    result = result.filter(e => options.eventTypes!.includes(e.eventType));
+    matched = matched.filter(e => options.eventTypes!.includes(e.eventType));
   }
   if (options.since) {
-    result = result.filter(e => e.timestamp > options.since!);
+    matched = matched.filter(e => e.timestamp > options.since!);
   }
   if (options.excludePluginOperations) {
-    result = result.filter(e => !e.isPluginOperation);
-  }
-  if (options.limit) {
-    result = result.slice(-options.limit);
+    matched = matched.filter(e => !e.isPluginOperation);
   }
 
-  // Drain matched events from buffer (unless peeking)
+  // Drain ALL filter-matching events from buffer (unless peeking),
+  // even if limit restricts the returned subset. This prevents stale
+  // events from accumulating when the caller uses limit.
   if (!options.peek) {
     if (!options.eventTypes && !options.since && !options.excludePluginOperations) {
       // No filters applied -- drain everything (fast path)
       eventBuffer = [];
     } else {
-      // Only drain the events we're returning -- keep non-matching events
-      const returned = new Set(result);
-      eventBuffer = eventBuffer.filter(e => !returned.has(e));
+      // Drain all matched events -- keep only non-matching events
+      const drainSet = new Set(matched);
+      eventBuffer = eventBuffer.filter(e => !drainSet.has(e));
     }
   }
+
+  // Apply limit to the return set only (after draining)
+  const result = options.limit ? matched.slice(-options.limit) : matched;
 
   return result;
 }

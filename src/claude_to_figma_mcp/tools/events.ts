@@ -38,11 +38,16 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
             content: [{ type: "text", text: "Failed to start event streaming on the Figma side." }],
           };
         } else {
-          await sendCommandToFigma("unsubscribe_events", {});
-          setSubscribed(false);
-          return {
-            content: [{ type: "text", text: "Event streaming stopped." }],
-          };
+          try {
+            await sendCommandToFigma("unsubscribe_events", {});
+            return {
+              content: [{ type: "text", text: "Event streaming stopped." }],
+            };
+          } finally {
+            // Always mark unsubscribed even if the command throws (e.g. timeout),
+            // so MCP-side state stays consistent with user intent.
+            setSubscribed(false);
+          }
         }
       } catch (error) {
         return {
@@ -62,24 +67,30 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
         z.enum(["selectionchange", "nodechange", "currentpagechange"])
       ).optional().describe("Only return events of these types"),
       since: z.number().optional().describe("Only return events after this timestamp (ms epoch)"),
-      limit: z.number().optional().describe("Max number of events to return (most recent)"),
+      limit: z.number().int().positive().optional().describe("Max number of events to return (most recent)"),
       excludePluginOperations: z.boolean().optional().describe("If true, filter out events caused by plugin commands"),
     },
     async ({ peek, eventTypes, since, limit, excludePluginOperations }: any) => {
-      if (!isSubscribed()) {
+      const active = isSubscribed();
+      const events = pollEvents({ peek, eventTypes, since, limit, excludePluginOperations });
+
+      // Not subscribed and no buffered events — tell the user to subscribe
+      if (!active && events.length === 0) {
         return {
           content: [{ type: "text", text: "Not subscribed to events. Call figma_events_subscribe first." }],
         };
       }
 
-      const events = pollEvents({ peek, eventTypes, since, limit, excludePluginOperations });
       if (events.length === 0) {
         return {
           content: [{ type: "text", text: `No events in buffer. (Buffer size: ${getBufferSize()})` }],
         };
       }
+
+      // If not subscribed but buffer had leftover events, note it alongside the data
+      const prefix = active ? "" : "[Note: not currently subscribed — returning buffered events from before disconnect]\n";
       return {
-        content: [{ type: "text", text: JSON.stringify(events, null, 2) }],
+        content: [{ type: "text", text: prefix + JSON.stringify(events, null, 2) }],
       };
     }
   );
