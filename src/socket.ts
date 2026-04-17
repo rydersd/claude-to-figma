@@ -195,6 +195,22 @@ const server = Bun.serve({
             }
           });
         }
+
+        // Forward event messages (Figma design events) to other channel members
+        if (data.type === "event") {
+          const channelName = data.channel;
+          if (!channelName) return;
+
+          const channelClients = channels.get(channelName);
+          if (!channelClients || !channelClients.has(ws)) return;
+
+          channelClients.forEach((client) => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify(data));
+            }
+          });
+          return;
+        }
       } catch (err) {
         console.error("Error handling message:", err);
       }
