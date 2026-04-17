@@ -13,6 +13,7 @@ import { normalizeSvgPath, createVector, createLine, setVectorPath, getVectorNet
 import { getReactions, setReactions, addReaction, removeReactions, getInteractions, batchSetReactions, setDefaultConnector, createConnections, setFocus, setSelections } from './prototyping';
 import { createNodeTree } from './node-tree';
 import { screenshotRegion, batchMutate, scanNodeStyles, introspectNode, setProperties, optimizeStructure, designQuery, figmaEval, diffComponents, migrateInstance, batchMigrate } from './analysis';
+import { startEventStreaming, stopEventStreaming, setPluginOperationGuard } from './events';
 
 // Plugin state
 const state = {
@@ -38,6 +39,8 @@ figma.ui.onmessage = async (msg: any) => {
       break;
     case "execute-command":
       // Execute commands received from UI (which gets them from WebSocket)
+      // Wrap in plugin operation guard so event listeners can tag self-caused events
+      setPluginOperationGuard(true);
       try {
         const result = await handleCommand(msg.command, msg.params);
         // Send result back to UI
@@ -52,6 +55,8 @@ figma.ui.onmessage = async (msg: any) => {
           id: msg.id,
           error: error.message || "Error executing command",
         });
+      } finally {
+        setPluginOperationGuard(false);
       }
       break;
   }
@@ -453,6 +458,13 @@ async function handleCommand(command: string, params: any) {
         throw new Error("Missing or invalid operations parameter");
       }
       return await batchSetReactions(params);
+    // Event streaming commands
+    case "subscribe_events":
+      startEventStreaming();
+      return { success: true, message: "Event streaming started" };
+    case "unsubscribe_events":
+      stopEventStreaming();
+      return { success: true, message: "Event streaming stopped" };
     default:
       throw new Error(`Unknown command: ${command}`);
   }

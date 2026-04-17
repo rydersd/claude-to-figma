@@ -250,6 +250,27 @@
       .operation-error {
         color: #ff9999;
       }
+
+      /* Event streaming indicator */
+      .streaming-indicator {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: #888;
+        margin-top: 4px;
+      }
+      .streaming-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: #555;
+        transition: background-color 0.3s;
+      }
+      .streaming-dot.active {
+        background-color: #4ade80;
+        box-shadow: 0 0 4px #4ade80;
+      }
     </style>
   </head>
 
@@ -293,7 +314,13 @@
           Not connected to MCP server
         </div>
 
-        <div style="margin-top: 8px; font-size: 11px; color: #666; text-align: right;">v1.3.0</div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px;">
+          <div id="streaming-indicator" class="streaming-indicator" style="display: none;">
+            <span id="streaming-dot" class="streaming-dot"></span>
+            <span id="streaming-label">Events</span>
+          </div>
+          <div style="font-size: 11px; color: #666; text-align: right;">v1.3.0</div>
+        </div>
 
         <div id="mcp-config" class="section hidden">
           <h2>MCP Configuration</h2>
@@ -886,6 +913,23 @@
             // Forward progress update to server
             sendProgressUpdateToServer(message);
             break;
+          case "figma-event":
+            // Forward Figma design events over WebSocket to the relay
+            if (state.socket && state.connected && state.channel) {
+              state.socket.send(JSON.stringify({
+                type: "event",
+                channel: state.channel,
+                eventType: message.eventType,
+                data: message.data,
+                timestamp: message.timestamp,
+                isPluginOperation: message.isPluginOperation || false,
+              }));
+            }
+            break;
+          case "event-streaming-status":
+            // Update the streaming indicator in the UI
+            updateEventStreamingUI(message.enabled);
+            break;
         }
       };
 
@@ -900,6 +944,23 @@
           button.textContent = "Copy to Clipboard";
         }, 2000);
       });
+
+      // Update event streaming indicator
+      function updateEventStreamingUI(enabled) {
+        const indicator = document.getElementById("streaming-indicator");
+        const dot = document.getElementById("streaming-dot");
+        const label = document.getElementById("streaming-label");
+        if (enabled) {
+          indicator.style.display = "inline-flex";
+          dot.classList.add("active");
+          label.textContent = "Events streaming";
+        } else {
+          dot.classList.remove("active");
+          label.textContent = "Events stopped";
+          // Hide the indicator after a brief delay so the user sees the state change
+          setTimeout(() => { indicator.style.display = "none"; }, 2000);
+        }
+      }
 
       // Add this function to the script section
       function updateMcpConfig() {

@@ -7154,6 +7154,149 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
+  // src/claude_figma_plugin/src/events.ts
+  function debounce(fn, ms) {
+    let timer = null;
+    return (...args) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => fn(...args), ms);
+    };
+  }
+  var isPluginOperation = false;
+  function setPluginOperationGuard(active) {
+    isPluginOperation = active;
+  }
+  var eventsEnabled = false;
+  var selectionCallback = null;
+  var pageChangeCallback = null;
+  var nodeChangeCallback = null;
+  var currentListenerPage = null;
+  function startEventStreaming() {
+    if (eventsEnabled) return;
+    eventsEnabled = true;
+    selectionCallback = debounce(() => {
+      if (!eventsEnabled) return;
+      const selection = figma.currentPage.selection;
+      const nodes = selection.slice(0, 50).map((n) => ({
+        id: n.id,
+        name: n.name,
+        type: n.type,
+        width: "width" in n ? n.width : void 0,
+        height: "height" in n ? n.height : void 0
+      }));
+      emitEvent("selectionchange", {
+        nodes,
+        totalSelected: selection.length,
+        pageId: figma.currentPage.id,
+        pageName: figma.currentPage.name
+      });
+    }, 150);
+    figma.on("selectionchange", selectionCallback);
+    pageChangeCallback = () => {
+      if (!eventsEnabled) return;
+      const page = figma.currentPage;
+      emitEvent("currentpagechange", { pageId: page.id, pageName: page.name });
+      attachNodeChangeListener();
+    };
+    figma.on("currentpagechange", pageChangeCallback);
+    attachNodeChangeListener();
+    figma.ui.postMessage({ type: "event-streaming-status", enabled: true });
+  }
+  function stopEventStreaming() {
+    if (!eventsEnabled) return;
+    eventsEnabled = false;
+    if (selectionCallback) {
+      figma.off("selectionchange", selectionCallback);
+      selectionCallback = null;
+    }
+    if (pageChangeCallback) {
+      figma.off("currentpagechange", pageChangeCallback);
+      pageChangeCallback = null;
+    }
+    detachNodeChangeListener();
+    figma.ui.postMessage({ type: "event-streaming-status", enabled: false });
+  }
+  function attachNodeChangeListener() {
+    detachNodeChangeListener();
+    let pendingChanges = [];
+    let throttleTimer = null;
+    let lastFlush = 0;
+    nodeChangeCallback = (event) => {
+      if (!eventsEnabled) return;
+      for (const change of event.nodeChanges) {
+        const isRemoved = change.node && change.node.removed;
+        const entry = {
+          type: change.type,
+          // CREATE, DELETE, PROPERTY_CHANGE
+          nodeId: change.node.id,
+          nodeType: change.node.type,
+          properties: change.properties || [],
+          origin: change.origin
+          // LOCAL or REMOTE
+        };
+        if (!isRemoved && change.node) {
+          entry.nodeName = change.node.name;
+          if (change.type === "PROPERTY_CHANGE" && change.properties) {
+            const values = {};
+            for (const prop of change.properties) {
+              if (prop in change.node) {
+                const val = change.node[prop];
+                if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
+                  values[prop] = val;
+                }
+              }
+            }
+            if (Object.keys(values).length > 0) {
+              entry.currentValues = values;
+            }
+          }
+        }
+        pendingChanges.push(entry);
+      }
+      const now = Date.now();
+      if (now - lastFlush >= 300) {
+        flushChanges();
+      } else if (!throttleTimer) {
+        throttleTimer = setTimeout(() => {
+          flushChanges();
+          throttleTimer = null;
+        }, 300 - (now - lastFlush));
+      }
+    };
+    function flushChanges() {
+      if (pendingChanges.length === 0) return;
+      lastFlush = Date.now();
+      emitEvent("nodechange", {
+        changes: pendingChanges,
+        pageId: figma.currentPage.id,
+        pageName: figma.currentPage.name
+      });
+      pendingChanges = [];
+    }
+    currentListenerPage = figma.currentPage;
+    currentListenerPage.on("nodechange", nodeChangeCallback);
+  }
+  function detachNodeChangeListener() {
+    if (nodeChangeCallback && currentListenerPage) {
+      try {
+        currentListenerPage.off("nodechange", nodeChangeCallback);
+      } catch (e) {
+      }
+    }
+    nodeChangeCallback = null;
+    currentListenerPage = null;
+  }
+  function emitEvent(eventType, data) {
+    figma.ui.postMessage({
+      type: "figma-event",
+      eventType,
+      data,
+      timestamp: Date.now(),
+      isPluginOperation
+      // Tag whether this was caused by a plugin command
+    });
+  }
+
   // src/claude_figma_plugin/src/main.ts
   var state = {
     serverPort: 3055,
@@ -7176,6 +7319,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         figma.closePlugin();
         break;
       case "execute-command":
+        setPluginOperationGuard(true);
         try {
           const result = await handleCommand(msg.command, msg.params);
           figma.ui.postMessage({
@@ -7189,6 +7333,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             id: msg.id,
             error: error.message || "Error executing command"
           });
+        } finally {
+          setPluginOperationGuard(false);
         }
         break;
     }
@@ -7569,6 +7715,13 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           throw new Error("Missing or invalid operations parameter");
         }
         return await batchSetReactions(params);
+      // Event streaming commands
+      case "subscribe_events":
+        startEventStreaming();
+        return { success: true, message: "Event streaming started" };
+      case "unsubscribe_events":
+        stopEventStreaming();
+        return { success: true, message: "Event streaming stopped" };
       default:
         throw new Error(`Unknown command: ${command}`);
     }

@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 import { logger } from "./helpers.js";
 import type { FigmaCommand, CommandProgressUpdate } from "./types.js";
 import { recordOperation, getAdaptiveParams, getOptimalTimeout } from "./metrics.js";
+import { pushEvent, onDisconnect } from "./events.js";
 
 // WebSocket connection and request tracking
 let ws: WebSocket | null = null;
@@ -86,6 +87,18 @@ export function connectToFigma(port: number = 3055) {
         return;
       }
 
+      // Handle events from Figma plugin -- strict type check only
+      if (json.type === "event") {
+        pushEvent({
+          eventType: json.eventType,
+          data: json.data,
+          timestamp: json.timestamp || Date.now(),
+          receivedAt: Date.now(),
+          isPluginOperation: json.isPluginOperation || false,
+        });
+        return;
+      }
+
       // Handle regular responses
       const myResponse = json.message;
 
@@ -122,6 +135,9 @@ export function connectToFigma(port: number = 3055) {
   ws.on('close', () => {
     logger.info('Disconnected from Figma socket server');
     ws = null;
+
+    // Reset event subscription state
+    onDisconnect();
 
     // Reject all pending requests
     for (const [id, request] of pendingRequests.entries()) {
