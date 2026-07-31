@@ -369,4 +369,16 @@ describe("resolveTreeLibraryRefs", () => {
     const tree: any = { type: "instance", component: "$lib:Data Table" };
     expect(() => resolveTreeLibraryRefs(tree, index)).toThrow(/No library component matches/);
   });
+
+  test("$repeat placeholder in properties resolves to the set's first variant, leaving the placeholder for plugin-side substitution", () => {
+    const tree: any = {
+      $repeat: {
+        data: [["Success"], ["Default"]],
+        template: { type: "instance", component: "$lib:Badge", properties: { State: "$[0]" } },
+      },
+    };
+    expect(() => resolveTreeLibraryRefs(tree, index)).not.toThrow();
+    expect(tree.$repeat.template.componentKey).toBe("k-default");
+    expect(tree.$repeat.template.properties).toEqual({ State: "$[0]" });
+  });
 });

@@ -246,6 +246,16 @@ export function treeHasLibraryRefs(tree: any): boolean {
  * $lib: refs need a loaded index; ambiguous or unmatched refs throw (fail the whole
  * tree) so a wrong component is never silently placed. Runs before $repeat expansion,
  * so `component` must not contain $[N]/$key placeholders.
+ *
+ * `properties`, unlike `component`, MAY contain $repeat placeholders (e.g.
+ * `{"State": "$[0]"}`) — this runs on the template before substitution, so a
+ * placeholder won't match any variant and chooseVariant falls back to the set's
+ * first variant, just to pick *a* valid componentKey for the import. The
+ * `properties` object itself is left untouched (placeholders intact) and carried
+ * through to the plugin, which applies the substituted per-row properties via
+ * setProperties after $repeat expansion — swapping the instance to the correct
+ * variant at that point. So the fallback here never reaches Figma as the wrong
+ * variant; it's only a transient placeholder for the resolution pass itself.
  */
 export function resolveTreeLibraryRefs(tree: any, index: LibraryIndex | null): void {
   if (!tree || typeof tree !== "object") return;
