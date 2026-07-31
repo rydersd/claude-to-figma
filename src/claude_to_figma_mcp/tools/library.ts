@@ -90,3 +90,53 @@ export function buildLibraryIndex(
   }
   return Array.from(sets.values());
 }
+
+// ---------------------------------------------------------------------------
+// Search scoring (pure) — tiers from the design spec
+// ---------------------------------------------------------------------------
+
+export function scoreMatch(query: string, set: LibraryComponentSet): number {
+  const q = query.trim().toLowerCase();
+  if (!q) return 0;
+  const name = set.setName.toLowerCase();
+
+  let score = 0;
+  if (name === q) {
+    score = 100;
+  } else if (name.startsWith(q)) {
+    score = 80;
+  } else if (name.includes(q)) {
+    score = 60;
+  } else {
+    const tokens = q.split(/\s+/).filter(Boolean);
+    const hits = tokens.filter((t) => name.includes(t)).length;
+    if (tokens.length > 0 && hits === tokens.length) {
+      score = 50;
+    } else if (hits > 0) {
+      score = Math.round((30 * hits) / tokens.length);
+    }
+  }
+
+  if (score < 60 && set.description.toLowerCase().includes(q)) {
+    score = Math.max(score, 20);
+  }
+
+  const valueHit = Object.values(set.propertyValues).some((values) =>
+    values.some((v) => v.toLowerCase() === q)
+  );
+  if (valueHit) score += 10;
+
+  return score;
+}
+
+export function searchIndex(
+  index: LibraryIndex,
+  query: string,
+  limit: number = 5
+): Array<{ set: LibraryComponentSet; score: number }> {
+  return index
+    .map((set) => ({ set, score: scoreMatch(query, set) }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}

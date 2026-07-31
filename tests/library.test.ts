@@ -8,6 +8,8 @@ import { describe, test, expect } from "bun:test";
 import {
   parseVariantProperties,
   buildLibraryIndex,
+  scoreMatch,
+  searchIndex,
 } from "../src/claude_to_figma_mcp/tools/library";
 
 describe("parseVariantProperties", () => {
@@ -99,5 +101,54 @@ describe("buildLibraryIndex", () => {
     const v2 = index.find((s) => s.variants[0].key === "icon-share-v2")!;
     expect(v1.description).toBe("Share icon version 1");
     expect(v2.description).toBe("Share icon version 2");
+  });
+});
+
+function makeSet(setName: string, extra: Partial<import("../src/claude_to_figma_mcp/tools/library").LibraryComponentSet> = {}) {
+  return {
+    setName,
+    description: "",
+    libraryFileKey: "F",
+    libraryName: "QUIX v2",
+    variants: [{ key: setName.toLowerCase() + "-key", name: setName, properties: {} }],
+    propertyValues: {},
+    ...extra,
+  };
+}
+
+describe("scoreMatch", () => {
+  test("scoring tiers: exact > prefix > substring > all tokens > partial tokens > description", () => {
+    expect(scoreMatch("badge", makeSet("Badge"))).toBe(100);
+    expect(scoreMatch("badge", makeSet("Badge Group"))).toBe(80);
+    expect(scoreMatch("badge", makeSet("Status Badge"))).toBe(60);
+    expect(scoreMatch("action list", makeSet("List of Actions"))).toBe(50);
+    expect(scoreMatch("action list", makeSet("Action Bar"))).toBe(15); // 1 of 2 tokens
+    expect(scoreMatch("chip", makeSet("Badge", { description: "A chip for statuses" }))).toBe(20);
+    expect(scoreMatch("table", makeSet("Badge"))).toBe(0);
+  });
+
+  test("variant property value match adds +10", () => {
+    const set = makeSet("Badge", { propertyValues: { State: ["Success", "Error"] } });
+    expect(scoreMatch("success", set)).toBe(10); // no name match, value only
+  });
+
+  test("empty query scores 0", () => {
+    expect(scoreMatch("  ", makeSet("Badge"))).toBe(0);
+  });
+});
+
+describe("searchIndex", () => {
+  const index = [makeSet("Badge"), makeSet("Badge Group"), makeSet("Banner"), makeSet("Avatar")];
+
+  test("returns matches sorted by score, capped at limit", () => {
+    const results = searchIndex(index, "badge", 1);
+    expect(results.length).toBe(1);
+    expect(results[0].set.setName).toBe("Badge");
+    expect(results[0].score).toBe(100);
+  });
+
+  test("excludes zero-score sets", () => {
+    const names = searchIndex(index, "badge", 10).map((r) => r.set.setName);
+    expect(names).toEqual(["Badge", "Badge Group"]);
   });
 });
