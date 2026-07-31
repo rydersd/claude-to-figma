@@ -3732,6 +3732,24 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         instance.name = params.name;
       }
       await appendOrInsertChild(instance, parentId, params.insertAt);
+      if (params.opacity !== void 0) {
+        instance.opacity = params.opacity;
+      }
+      applyLayoutPositioning(instance, params);
+      if (params.layoutSizingHorizontal !== void 0) {
+        try {
+          instance.layoutSizingHorizontal = params.layoutSizingHorizontal;
+        } catch (e) {
+          console.error("Error setting layoutSizingHorizontal on instance:", e);
+        }
+      }
+      if (params.layoutSizingVertical !== void 0) {
+        try {
+          instance.layoutSizingVertical = params.layoutSizingVertical;
+        } catch (e) {
+          console.error("Error setting layoutSizingVertical on instance:", e);
+        }
+      }
       if (params.properties && typeof params.properties === "object") {
         try {
           instance.setProperties(params.properties);
@@ -5710,6 +5728,22 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         if (spec.textOverrides !== void 0) {
           await applyTextOverrides(existingNode, spec.textOverrides);
           changedProps.push("textOverrides");
+        }
+        if (spec.layoutSizingHorizontal !== void 0 && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
+          try {
+            existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
+            changedProps.push("layoutSizingHorizontal");
+          } catch (e) {
+            console.error("Error setting layoutSizingHorizontal during sync:", e);
+          }
+        }
+        if (spec.layoutSizingVertical !== void 0 && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
+          try {
+            existingNode.layoutSizingVertical = spec.layoutSizingVertical;
+            changedProps.push("layoutSizingVertical");
+          } catch (e) {
+            console.error("Error setting layoutSizingVertical during sync:", e);
+          }
         }
       }
       return { changed: changedProps.length > 0, changedProps };

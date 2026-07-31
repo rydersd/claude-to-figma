@@ -410,6 +410,22 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
         await applyTextOverrides(existingNode, spec.textOverrides);
         changedProps.push("textOverrides");
       }
+      if (spec.layoutSizingHorizontal !== undefined && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
+        try {
+          existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
+          changedProps.push("layoutSizingHorizontal");
+        } catch (e) {
+          console.error("Error setting layoutSizingHorizontal during sync:", e);
+        }
+      }
+      if (spec.layoutSizingVertical !== undefined && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
+        try {
+          existingNode.layoutSizingVertical = spec.layoutSizingVertical;
+          changedProps.push("layoutSizingVertical");
+        } catch (e) {
+          console.error("Error setting layoutSizingVertical during sync:", e);
+        }
+      }
     }
 
     return { changed: changedProps.length > 0, changedProps };

@@ -154,6 +154,10 @@ const InstanceNodeSchema = z.object({
     "Variant/component properties, e.g. {\"State\": \"Success\"} — also used to pick the variant for $lib: refs"
   ),
   textOverrides: z.record(z.string()).optional().describe("Text replacements keyed by child text-node name"),
+  layoutSizingHorizontal: z.enum(["FIXED", "HUG", "FILL"]).optional(),
+  layoutSizingVertical: z.enum(["FIXED", "HUG", "FILL"]).optional(),
+  layoutPositioning: z.enum(["AUTO", "ABSOLUTE"]).optional().describe("ABSOLUTE floats this node above auto-layout siblings at its x/y; requires an auto-layout parent"),
+  opacity: z.number().min(0).max(1).optional().describe("Node opacity (0-1)"),
 });
 
 const RepeatDirectiveSchema = z.object({

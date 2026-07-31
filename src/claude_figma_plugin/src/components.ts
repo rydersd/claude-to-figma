@@ -1,4 +1,4 @@
-import { sendProgressUpdate, generateCommandId, customBase64Encode, appendOrInsertChild, loadAllFonts } from './utils';
+import { sendProgressUpdate, generateCommandId, customBase64Encode, appendOrInsertChild, loadAllFonts, applyLayoutPositioning } from './utils';
 import { setCharacters } from './text';
 
 export async function getStyles() {
@@ -145,6 +145,30 @@ export async function createComponentInstance(params: any) {
     }
 
     await appendOrInsertChild(instance, parentId, params.insertAt);
+
+    // Set opacity if provided
+    if (params.opacity !== undefined) {
+      instance.opacity = params.opacity;
+    }
+
+    // ABSOLUTE positioning requires the instance to already be parented into an auto-layout frame
+    applyLayoutPositioning(instance, params);
+
+    // FILL/HUG sizing requires an auto-layout parent — non-fatal if it fails
+    if (params.layoutSizingHorizontal !== undefined) {
+      try {
+        instance.layoutSizingHorizontal = params.layoutSizingHorizontal;
+      } catch (e) {
+        console.error("Error setting layoutSizingHorizontal on instance:", e);
+      }
+    }
+    if (params.layoutSizingVertical !== undefined) {
+      try {
+        instance.layoutSizingVertical = params.layoutSizingVertical;
+      } catch (e) {
+        console.error("Error setting layoutSizingVertical on instance:", e);
+      }
+    }
 
     // Apply component property overrides if provided
     if (params.properties && typeof params.properties === "object") {

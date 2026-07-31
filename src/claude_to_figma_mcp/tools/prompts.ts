@@ -670,6 +670,7 @@ Create an entire node hierarchy in one call. Pass a nested JSON tree; only frame
   - \`component\`: \`"$lib:<Name>"\` resolves against the configured team libraries (see search_library_components), or pass a raw componentKey directly.
   - \`properties\` picks the variant and sets component properties; \`textOverrides\` replaces text by child node name.
   - \`component\` must be a static string — never build it from $repeat placeholders ($[N]/$key).
+  - Sync mode matches children by name+type; a placed instance carries the component's name unless \`name\` is set, so a re-sync without an explicit \`name\` duplicates the instance instead of updating it — name instances you intend to re-sync.
 
 LIBRARY-FIRST RULE: before drawing any standard UI element (buttons, badges, inputs, banners, breadcrumbs, tables...) with raw frames/rectangles, call search_library_components. If a library component exists, place it as an instance node. If nothing adequate exists, follow the component_proposal_guide prompt — never imitate a library component with raw shapes.
 

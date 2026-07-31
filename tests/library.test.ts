@@ -381,4 +381,18 @@ describe("resolveTreeLibraryRefs", () => {
     expect(tree.$repeat.template.componentKey).toBe("k-default");
     expect(tree.$repeat.template.properties).toEqual({ State: "$[0]" });
   });
+
+  test("layout/opacity fields on an instance node survive resolution alongside the rewritten componentKey", () => {
+    const tree: any = {
+      type: "instance",
+      component: "raw-key-1",
+      layoutSizingHorizontal: "FILL",
+      opacity: 0.5,
+    };
+    resolveTreeLibraryRefs(tree, null);
+    expect(tree.componentKey).toBe("raw-key-1");
+    expect(tree.component).toBeUndefined();
+    expect(tree.layoutSizingHorizontal).toBe("FILL");
+    expect(tree.opacity).toBe(0.5);
+  });
 });

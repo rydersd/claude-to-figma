@@ -261,9 +261,11 @@ export function getLibraryConfig(env: NodeJS.ProcessEnv = process.env): {
   };
 }
 
+// 15s bound so a hung Figma API request can't stall the tool call indefinitely.
 async function figmaGet(path: string, token: string): Promise<any> {
   const response = await fetch(`${FIGMA_API_BASE}${path}`, {
     headers: { "X-Figma-Token": token },
+    signal: AbortSignal.timeout(15000),
   });
   if (!response.ok) {
     const hint =
