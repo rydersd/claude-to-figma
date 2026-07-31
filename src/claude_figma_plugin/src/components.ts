@@ -99,6 +99,18 @@ export async function getLocalComponents(params: any) {
   };
 }
 
+export async function applyTextOverrides(node: any, overrides: Record<string, string>): Promise<void> {
+  if (node.type === "TEXT" && overrides[node.name] !== undefined) {
+    await loadAllFonts(node);
+    await setCharacters(node, String(overrides[node.name]));
+  }
+  if ("children" in node && node.children) {
+    for (var i = 0; i < node.children.length; i++) {
+      await applyTextOverrides(node.children[i], overrides);
+    }
+  }
+}
+
 export async function createComponentInstance(params: any) {
   const { componentKey, componentId, x = 0, y = 0, parentId } = params || {};
 
@@ -128,6 +140,10 @@ export async function createComponentInstance(params: any) {
     instance.x = x;
     instance.y = y;
 
+    if (params.name) {
+      instance.name = params.name;
+    }
+
     await appendOrInsertChild(instance, parentId, params.insertAt);
 
     // Apply component property overrides if provided
@@ -142,17 +158,6 @@ export async function createComponentInstance(params: any) {
 
     // Apply text overrides by child name if provided
     if (params.textOverrides && typeof params.textOverrides === "object") {
-      async function applyTextOverrides(node: any, overrides: any) {
-        if (node.type === "TEXT" && overrides[node.name] !== undefined) {
-          await loadAllFonts(node);
-          await setCharacters(node, String(overrides[node.name]));
-        }
-        if ("children" in node && node.children) {
-          for (var i = 0; i < node.children.length; i++) {
-            await applyTextOverrides(node.children[i], overrides);
-          }
-        }
-      }
       await applyTextOverrides(instance, params.textOverrides);
     }
 

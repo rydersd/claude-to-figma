@@ -2,6 +2,7 @@ import { sendProgressUpdate, generateCommandId, resolveColorValue, hexToFigmaCol
 import { setCharacters } from './text';
 import { createFrame, createText, createRectangle } from './creation';
 import { createVector, normalizeSvgPath } from './vectors';
+import { createComponentInstance, applyTextOverrides } from './components';
 
 function expandRepeats(node: any): any {
   if (!node || typeof node !== "object") return node;
@@ -395,6 +396,22 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
       }
     }
 
+    // --- Instance properties ---
+    if (type === "instance") {
+      if (spec.properties !== undefined) {
+        try {
+          existingNode.setProperties(spec.properties);
+          changedProps.push("properties");
+        } catch (e) {
+          console.error("Error setting component properties during sync:", e);
+        }
+      }
+      if (spec.textOverrides !== undefined) {
+        await applyTextOverrides(existingNode, spec.textOverrides);
+        changedProps.push("textOverrides");
+      }
+    }
+
     return { changed: changedProps.length > 0, changedProps };
   }
 
@@ -619,6 +636,9 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
           break;
         case "vector":
           result = await createVector(createParams);
+          break;
+        case "instance":
+          result = await createComponentInstance(createParams);
           break;
         default:
           throw new Error(`Unknown node type: ${type}`);

@@ -3695,6 +3695,17 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       components: allComponents
     };
   }
+  async function applyTextOverrides(node, overrides) {
+    if (node.type === "TEXT" && overrides[node.name] !== void 0) {
+      await loadAllFonts(node);
+      await setCharacters(node, String(overrides[node.name]));
+    }
+    if ("children" in node && node.children) {
+      for (var i = 0; i < node.children.length; i++) {
+        await applyTextOverrides(node.children[i], overrides);
+      }
+    }
+  }
   async function createComponentInstance(params) {
     const { componentKey, componentId, x = 0, y = 0, parentId } = params || {};
     if (!componentKey && !componentId) {
@@ -3717,6 +3728,9 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       const instance = component.createInstance();
       instance.x = x;
       instance.y = y;
+      if (params.name) {
+        instance.name = params.name;
+      }
       await appendOrInsertChild(instance, parentId, params.insertAt);
       if (params.properties && typeof params.properties === "object") {
         try {
@@ -3726,17 +3740,6 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         }
       }
       if (params.textOverrides && typeof params.textOverrides === "object") {
-        async function applyTextOverrides(node, overrides) {
-          if (node.type === "TEXT" && overrides[node.name] !== void 0) {
-            await loadAllFonts(node);
-            await setCharacters(node, String(overrides[node.name]));
-          }
-          if ("children" in node && node.children) {
-            for (var i = 0; i < node.children.length; i++) {
-              await applyTextOverrides(node.children[i], overrides);
-            }
-          }
-        }
         await applyTextOverrides(instance, params.textOverrides);
       }
       const mainComponent = await instance.getMainComponentAsync();
@@ -5695,6 +5698,20 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           }
         }
       }
+      if (type === "instance") {
+        if (spec.properties !== void 0) {
+          try {
+            existingNode.setProperties(spec.properties);
+            changedProps.push("properties");
+          } catch (e) {
+            console.error("Error setting component properties during sync:", e);
+          }
+        }
+        if (spec.textOverrides !== void 0) {
+          await applyTextOverrides(existingNode, spec.textOverrides);
+          changedProps.push("textOverrides");
+        }
+      }
       return { changed: changedProps.length > 0, changedProps };
     }
     let updatedCount = 0;
@@ -5886,6 +5903,9 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             break;
           case "vector":
             result = await createVector(createParams);
+            break;
+          case "instance":
+            result = await createComponentInstance(createParams);
             break;
           default:
             throw new Error(`Unknown node type: ${type}`);
