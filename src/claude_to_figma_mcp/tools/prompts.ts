@@ -64,6 +64,11 @@ export function registerPrompts(server: McpServer) {
    - Group related elements together in frames
    - Keep consistent spacing and alignment
 
+9. Use the design system first:
+   - Call search_library_components before drawing any standard UI element from scratch
+   - Place real library instances (create_component_instance, or instance nodes in create_node_tree)
+   - If no library component or pattern fits, follow component_proposal_guide — never fake one with raw shapes
+
 Example Login Screen Structure:
 - Login Screen (main frame)
   - Logo Container (frame)
@@ -661,6 +666,12 @@ Create an entire node hierarchy in one call. Pass a nested JSON tree; only frame
 - **text** — \`text\`, \`fontSize\`, \`fontWeight\`, \`fontColor\`, \`fontFamily\`, \`textAlignHorizontal\`, \`lineHeight\`, etc.
 - **rectangle** — \`width\`/\`height\`, fill, stroke, cornerRadius, effects.
 - **vector** — \`pathData\` (SVG path), fill, stroke.
+- **instance** (library component): \`{ "type": "instance", "component": "$lib:Badge", "properties": { "State": "Success" }, "textOverrides": { "Label": "Active" }, "name": "status-badge" }\`
+  - \`component\`: \`"$lib:<Name>"\` resolves against the configured team libraries (see search_library_components), or pass a raw componentKey directly.
+  - \`properties\` picks the variant and sets component properties; \`textOverrides\` replaces text by child node name.
+  - \`component\` must be a static string — never build it from $repeat placeholders ($[N]/$key).
+
+LIBRARY-FIRST RULE: before drawing any standard UI element (buttons, badges, inputs, banners, breadcrumbs, tables...) with raw frames/rectangles, call search_library_components. If a library component exists, place it as an instance node. If nothing adequate exists, follow the component_proposal_guide prompt — never imitate a library component with raw shapes.
 
 ## Colors (every color field)
 - RGBA object \`{"r":0.2,"g":0.4,"b":0.7,"a":1}\`
@@ -694,6 +705,46 @@ Pass \`rootId\` (instead of \`parentId\`) to reconcile an existing tree: matches
           },
         ],
         description: "Full reference for building hierarchies with create_node_tree",
+      };
+    }
+  );
+
+  server.prompt(
+    "component_proposal_guide",
+    "Workflow for proposing a new design-system component or pattern when no library match exists",
+    (extra) => {
+      return {
+        messages: [
+          {
+            role: "assistant",
+            content: {
+              type: "text",
+              text: `When a design needs a component or pattern the team library does not provide, the gap becomes a deliverable — a rationalized proposal — never a silent imitation built from raw shapes.
+
+1. Confirm the gap:
+   - Run search_library_components with several phrasings of the need
+   - A "component" is a single control (badge, input); a "pattern" is a reusable composition of existing components (filter bar, empty state)
+   - If a near-match can be stretched to fit (via properties, overrides, or composition), USE IT — new components must earn their existence
+
+2. Rationalize:
+   - Name the nearest existing components/patterns considered
+   - State specifically why each fails the need (wrong anatomy, missing state, cannot hold the content, wrong interaction model)
+
+3. Build the proposal in Figma using the component_proposal section template (build_page_section), then fill it in:
+   - Name, type (Component | Pattern), and the rationale from step 2
+   - Anatomy: labeled diagram of the parts
+   - Properties/variants following the library's conventions (e.g. State=, Size=)
+   - State grid: every interactive state
+   - 2-3 visual explorations (genuinely different directions, not color swaps)
+   - Use cases: the proposal in context of the current design, plus other anticipated placements
+   - Pattern proposals additionally document their composition from existing library components; if a pattern needs a missing component, spawn a nested component proposal
+
+4. Mark it proposed:
+   - The leading exploration placed in the working design keeps the layer name prefix "⚠️ PROPOSED / " so it can never be mistaken for a published component
+   - Tell the user a proposal exists and needs design-system review before it ships`,
+            },
+          },
+        ],
       };
     }
   );
