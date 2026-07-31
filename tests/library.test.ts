@@ -323,3 +323,50 @@ describe("formatSearchResults", () => {
     expect(out.results[0].propertyValues).toEqual({ State: ["Default"] });
   });
 });
+
+import { treeHasLibraryRefs, resolveTreeLibraryRefs } from "../src/claude_to_figma_mcp/tools/node-tree";
+
+describe("resolveTreeLibraryRefs", () => {
+  const index = [
+    makeSet("Badge", {
+      variants: [
+        { key: "k-default", name: "State=Default", properties: { State: "Default" } },
+        { key: "k-success", name: "State=Success", properties: { State: "Success" } },
+      ],
+      propertyValues: { State: ["Default", "Success"] },
+    }),
+  ];
+
+  test("treeHasLibraryRefs finds $lib: refs, including inside $repeat templates", () => {
+    expect(treeHasLibraryRefs({ type: "instance", component: "$lib:Badge" })).toBe(true);
+    expect(
+      treeHasLibraryRefs({
+        type: "frame", width: 100, height: 100,
+        children: [{ $repeat: { data: [["a"]], template: { type: "instance", component: "$lib:Badge" } } }],
+      })
+    ).toBe(true);
+    expect(treeHasLibraryRefs({ type: "frame", width: 100, height: 100, children: [{ type: "text", text: "hi" }] })).toBe(false);
+    expect(treeHasLibraryRefs({ type: "instance", component: "raw-key-123" })).toBe(false);
+  });
+
+  test("rewrites $lib: refs to componentKey using instance properties for variant choice", () => {
+    const tree: any = {
+      type: "frame", width: 200, height: 100,
+      children: [{ type: "instance", component: "$lib:Badge", properties: { State: "Success" } }],
+    };
+    resolveTreeLibraryRefs(tree, index);
+    expect(tree.children[0].componentKey).toBe("k-success");
+    expect(tree.children[0].component).toBeUndefined();
+  });
+
+  test("passes raw keys through without needing an index", () => {
+    const tree: any = { type: "instance", component: "raw-key-123" };
+    resolveTreeLibraryRefs(tree, null);
+    expect(tree.componentKey).toBe("raw-key-123");
+  });
+
+  test("unresolvable ref fails the whole tree with candidates", () => {
+    const tree: any = { type: "instance", component: "$lib:Data Table" };
+    expect(() => resolveTreeLibraryRefs(tree, index)).toThrow(/No library component matches/);
+  });
+});

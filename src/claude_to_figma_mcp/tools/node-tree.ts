@@ -5,6 +5,7 @@ import { sendCommandWithRetry } from "../connection.js";
 import { getOptimalChunkSize } from "../metrics.js";
 import { logger } from "../helpers.js";
 import { resolveImageToBase64 } from "./images.js";
+import { resolveLibraryRef, loadLibraryIndex, type LibraryIndex } from "./library.js";
 
 // --- Recursive node tree schema for batch creation ---
 const ColorObjectSchema = z.object({
@@ -141,6 +142,20 @@ const VectorNodeSchema = z.object({
   opacity: z.number().min(0).max(1).optional().describe("Node opacity (0-1)"),
 });
 
+const InstanceNodeSchema = z.object({
+  type: z.literal("instance"),
+  component: z.string().describe(
+    "Library component to place: \"$lib:<Name>\" (resolved against the configured team libraries — see search_library_components) or a raw published componentKey"
+  ),
+  x: z.number().optional().describe("X position (default 0)"),
+  y: z.number().optional().describe("Y position (default 0)"),
+  name: z.string().optional().describe("Rename the placed instance (default: component name)"),
+  properties: z.record(z.union([z.string(), z.boolean()])).optional().describe(
+    "Variant/component properties, e.g. {\"State\": \"Success\"} — also used to pick the variant for $lib: refs"
+  ),
+  textOverrides: z.record(z.string()).optional().describe("Text replacements keyed by child text-node name"),
+});
+
 const RepeatDirectiveSchema = z.object({
   $repeat: z.object({
     data: z.array(z.union([z.array(z.any()), z.record(z.any())])).describe(
@@ -163,7 +178,8 @@ type NodeTree =
   | (z.infer<typeof BaseFrameSchema> & { children?: NodeTreeChild[] })
   | z.infer<typeof TextNodeSchema>
   | z.infer<typeof RectangleNodeSchema>
-  | z.infer<typeof VectorNodeSchema>;
+  | z.infer<typeof VectorNodeSchema>
+  | z.infer<typeof InstanceNodeSchema>;
 
 const NodeTreeChildSchema = z.lazy(() =>
   z.union([NodeTreeSchema, RepeatDirectiveSchema])
@@ -176,6 +192,7 @@ const NodeTreeSchema: z.ZodType<NodeTree> = z.discriminatedUnion("type", [
   TextNodeSchema,
   RectangleNodeSchema,
   VectorNodeSchema,
+  InstanceNodeSchema,
 ]);
 
 /**
@@ -207,6 +224,49 @@ async function prefetchTreeImages(tree: any, warnings: string[]): Promise<void> 
   if (Array.isArray(tree.children)) {
     for (const child of tree.children) {
       await prefetchTreeImages(child, warnings);
+    }
+  }
+}
+
+/** True if any instance node in the tree (including $repeat templates) uses a $lib: ref. */
+export function treeHasLibraryRefs(tree: any): boolean {
+  if (!tree || typeof tree !== "object") return false;
+  if (tree.$repeat) return treeHasLibraryRefs(tree.$repeat.template);
+  if (tree.type === "instance" && typeof tree.component === "string" && tree.component.startsWith("$lib:")) {
+    return true;
+  }
+  if (Array.isArray(tree.children)) {
+    return tree.children.some((child: any) => treeHasLibraryRefs(child));
+  }
+  return false;
+}
+
+/**
+ * Rewrite instance nodes in place: `component` ("$lib:Name" or raw key) → `componentKey`.
+ * $lib: refs need a loaded index; ambiguous or unmatched refs throw (fail the whole
+ * tree) so a wrong component is never silently placed. Runs before $repeat expansion,
+ * so `component` must not contain $[N]/$key placeholders.
+ */
+export function resolveTreeLibraryRefs(tree: any, index: LibraryIndex | null): void {
+  if (!tree || typeof tree !== "object") return;
+  if (tree.$repeat) {
+    resolveTreeLibraryRefs(tree.$repeat.template, index);
+    return;
+  }
+  if (tree.type === "instance" && typeof tree.component === "string") {
+    if (tree.component.startsWith("$lib:")) {
+      if (!index) throw new Error("Library index not loaded for $lib: resolution");
+      const resolved = resolveLibraryRef(tree.component, index, tree.properties);
+      tree.componentKey = resolved.componentKey;
+      logger.info(`Resolved ${tree.component} → ${resolved.setName} / ${resolved.variantName}`);
+    } else {
+      tree.componentKey = tree.component;
+    }
+    delete tree.component;
+  }
+  if (Array.isArray(tree.children)) {
+    for (const child of tree.children) {
+      resolveTreeLibraryRefs(child, index);
     }
   }
 }
@@ -315,7 +375,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
   // Create Node Tree Tool - batch recursive node creation
   server.tool(
     "create_node_tree",
-    "Create (or sync) an entire node hierarchy in one call from a nested JSON tree of frames, text, rectangles, and vectors. Supports $repeat, $var: variable binding, hex/gradient/image fills, effects, per-corner radii, and absolute positioning. Pass rootId (instead of parentId) to reconcile an existing tree in place. Returns a compact summary; pass verbose:true for the full node map. For the full spec format, call the 'node_tree_guide' prompt.",
+    "Create (or sync) an entire node hierarchy in one call from a nested JSON tree of frames, text, rectangles, vectors, and library component instances. Supports $repeat, $var: variable binding, $lib: library component refs, hex/gradient/image fills, effects, per-corner radii, and absolute positioning. Pass rootId (instead of parentId) to reconcile an existing tree in place. Returns a compact summary; pass verbose:true for the full node map. For the full spec format, call the 'node_tree_guide' prompt.",
     {
       tree: NodeTreeSchema.describe("The root node of the tree to create or sync"),
       parentId: z.string().optional().describe("Parent node ID for create mode"),
@@ -329,6 +389,10 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       }
 
       try {
+        // Resolve $lib: component refs to concrete keys before anything crosses the WebSocket
+        const libIndex = treeHasLibraryRefs(tree) ? await loadLibraryIndex() : null;
+        resolveTreeLibraryRefs(tree, libIndex);
+
         // Resolve fillImage urls/paths to base64 before anything crosses the WebSocket
         const imageWarnings: string[] = [];
         await prefetchTreeImages(tree, imageWarnings);
