@@ -77,4 +77,27 @@ describe("buildLibraryIndex", () => {
     expect(divider.variants[0].properties).toEqual({});
     expect(divider.description).toBe("A horizontal rule");
   });
+
+  test("keeps standalone components with same name but different keys as separate sets", () => {
+    const twoStandalone = [
+      {
+        key: "icon-share-v1",
+        name: "Icon",
+        description: "Share icon version 1",
+        containing_frame: { pageName: "Icons" },
+      },
+      {
+        key: "icon-share-v2",
+        name: "Icon",
+        description: "Share icon version 2",
+        containing_frame: { pageName: "Icons" },
+      },
+    ];
+    const index = buildLibraryIndex("FILEKEY", "QUIX v2", twoStandalone, []);
+    expect(index.length).toBe(2);
+    const v1 = index.find((s) => s.variants[0].key === "icon-share-v1")!;
+    const v2 = index.find((s) => s.variants[0].key === "icon-share-v2")!;
+    expect(v1.description).toBe("Share icon version 1");
+    expect(v2.description).toBe("Share icon version 2");
+  });
 });

@@ -64,10 +64,12 @@ export function buildLibraryIndex(
   for (const comp of components || []) {
     const group = comp.containing_frame?.containingStateGroup;
     const setName = group?.name || comp.name;
+    // Key by unique identifier: nodeId for variants, comp.key for standalones
+    const setKey = group ? group.nodeId : comp.key;
     const setMeta = group ? setMetaByNodeId.get(group.nodeId) : undefined;
     const properties = group ? parseVariantProperties(comp.name) : {};
 
-    let entry = sets.get(setName);
+    let entry = sets.get(setKey);
     if (!entry) {
       entry = {
         setName,
@@ -78,7 +80,7 @@ export function buildLibraryIndex(
         variants: [],
         propertyValues: {},
       };
-      sets.set(setName, entry);
+      sets.set(setKey, entry);
     }
     entry.variants.push({ key: comp.key, name: comp.name, properties });
     for (const [prop, value] of Object.entries(properties)) {
