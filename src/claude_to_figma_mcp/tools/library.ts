@@ -152,6 +152,11 @@ export function chooseVariant(
   set: LibraryComponentSet,
   properties?: Record<string, string | boolean>
 ): LibraryVariant {
+  if (set.variants.length === 0) {
+    throw new LibraryRefError(
+      `Component set "${set.setName}" has no variants.`
+    );
+  }
   if (!properties || Object.keys(properties).length === 0 || set.variants.length === 1) {
     return set.variants[0];
   }

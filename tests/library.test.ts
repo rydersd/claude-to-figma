@@ -174,6 +174,11 @@ describe("chooseVariant", () => {
     expect(chooseVariant(badge, { State: "success", Size: "LG" }).key).toBe("k-success-lg");
     expect(chooseVariant(badge, { State: "Success" }).key).toBe("k-success");
   });
+
+  test("empty variants array throws LibraryRefError", () => {
+    const empty = makeSet("Empty", { variants: [] });
+    expect(() => chooseVariant(empty)).toThrow(LibraryRefError);
+  });
 });
 
 describe("resolveLibraryRef", () => {
