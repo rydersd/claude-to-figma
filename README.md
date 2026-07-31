@@ -78,6 +78,39 @@ If you prefer running from source with Bun instead of the built output:
 }
 ```
 
+### Environment Variables (team library tools, optional)
+
+`get_library_components`, `search_library_components`, and `$lib:` component references in `create_node_tree` read published team-library components straight from the Figma REST API. Two environment variables enable them:
+
+- `FIGMA_API_TOKEN` — a Figma personal access token (Figma → Settings → Security → Personal access tokens) with the **File content: read** and **Library content: read** scopes
+- `FIGMA_LIBRARY_FILE_KEYS` — comma-separated file keys of the libraries to index, taken from each library file's URL: `figma.com/design/<FILE_KEY>/...`
+
+Export both in your shell profile (e.g. `~/.zshrc`):
+
+```bash
+export FIGMA_API_TOKEN="figd_..."
+export FIGMA_LIBRARY_FILE_KEYS="abc123,def456"
+```
+
+Then pass them through in `.mcp.json`'s `ClaudeToFigma` server entry:
+
+```json
+{
+  "mcpServers": {
+    "ClaudeToFigma": {
+      "command": "bun",
+      "args": ["src/claude_to_figma_mcp/server.ts"],
+      "env": {
+        "FIGMA_API_TOKEN": "${FIGMA_API_TOKEN}",
+        "FIGMA_LIBRARY_FILE_KEYS": "${FIGMA_LIBRARY_FILE_KEYS}"
+      }
+    }
+  }
+}
+```
+
+Restart the MCP server after setting these. Without them, the two library tools return setup instructions instead of a component list.
+
 ### WebSocket Server
 
 Start the WebSocket server:

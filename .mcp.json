@@ -4,7 +4,11 @@
       "command": "bun",
       "args": [
         "src/claude_to_figma_mcp/server.ts"
-      ]
+      ],
+      "env": {
+        "FIGMA_API_TOKEN": "${FIGMA_API_TOKEN}",
+        "FIGMA_LIBRARY_FILE_KEYS": "${FIGMA_LIBRARY_FILE_KEYS}"
+      }
     }
   }
 }
