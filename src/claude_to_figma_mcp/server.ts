@@ -29,6 +29,7 @@ import { registerTools as registerPrototypingTools } from "./tools/prototyping.j
 import { registerTools as registerWireframeParserTools } from "./tools/wireframe-parser.js";
 import { registerTools as registerPageCompilerTools } from "./tools/page-compiler.js";
 import { registerTools as registerImageTools } from "./tools/images.js";
+import { registerTools as registerLibraryTools } from "./tools/library.js";
 import { registerPrompts } from "./tools/prompts.js";
 
 // Create MCP server
@@ -61,6 +62,7 @@ registerPrototypingTools(server, sendCommandToFigma);
 registerWireframeParserTools(server, sendCommandToFigma);
 registerPageCompilerTools(server, sendCommandToFigma);
 registerImageTools(server, sendCommandToFigma);
+registerLibraryTools(server, sendCommandToFigma);
 
 // Register prompts
 registerPrompts(server);

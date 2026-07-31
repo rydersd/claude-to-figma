@@ -18,6 +18,8 @@ import {
   clearLibraryCache,
   LibraryConfigError,
   CONFIG_HELP,
+  formatLibraryList,
+  formatSearchResults,
 } from "../src/claude_to_figma_mcp/tools/library";
 
 describe("parseVariantProperties", () => {
@@ -284,5 +286,40 @@ describe("loadLibraryIndex", () => {
     try {
       await expect(loadLibraryIndex()).rejects.toThrow(/scopes|token/i);
     } finally { restore(); }
+  });
+});
+
+describe("formatLibraryList", () => {
+  const index = [
+    makeSet("Badge", { description: "Status chip", propertyValues: { State: ["Default", "Success"] } }),
+  ];
+
+  test("compact mode lists set name, variant count, library", () => {
+    const out = formatLibraryList(index, false);
+    expect(out.totalSets).toBe(1);
+    expect(out.sets[0]).toEqual({
+      name: "Badge",
+      variants: 1,
+      description: "Status chip",
+      library: "QUIX v2",
+    });
+    expect(out.sets[0].keys).toBeUndefined();
+  });
+
+  test("verbose mode includes variant names, keys, and property values", () => {
+    const out = formatLibraryList(index, true);
+    expect(out.sets[0].propertyValues).toEqual({ State: ["Default", "Success"] });
+    expect(out.sets[0].variantList[0].key).toBe("badge-key");
+  });
+});
+
+describe("formatSearchResults", () => {
+  test("returns ready-to-place componentKey plus variants and thumbnail", () => {
+    const set = makeSet("Badge", { thumbnailUrl: "https://thumb", propertyValues: { State: ["Default"] } });
+    const out = formatSearchResults([{ set, score: 100 }]);
+    expect(out.results[0].componentKey).toBe("badge-key");
+    expect(out.results[0].score).toBe(100);
+    expect(out.results[0].thumbnailUrl).toBe("https://thumb");
+    expect(out.results[0].propertyValues).toEqual({ State: ["Default"] });
   });
 });

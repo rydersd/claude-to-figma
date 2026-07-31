@@ -322,3 +322,99 @@ export async function loadLibraryIndex(opts: { refresh?: boolean } = {}): Promis
   }
   return index;
 }
+
+// ---------------------------------------------------------------------------
+// MCP tools
+// ---------------------------------------------------------------------------
+
+export function formatLibraryList(index: LibraryIndex, verbose: boolean): any {
+  return {
+    totalSets: index.length,
+    sets: index.map((set) => ({
+      name: set.setName,
+      variants: set.variants.length,
+      description: set.description.slice(0, 120),
+      library: set.libraryName,
+      ...(verbose
+        ? {
+            propertyValues: set.propertyValues,
+            variantList: set.variants.map((v) => ({ name: v.name, key: v.key })),
+          }
+        : {}),
+    })),
+  };
+}
+
+export function formatSearchResults(
+  results: Array<{ set: LibraryComponentSet; score: number }>
+): any {
+  return {
+    results: results.map(({ set, score }) => ({
+      name: set.setName,
+      score,
+      description: set.description.slice(0, 120),
+      library: set.libraryName,
+      componentKey: chooseVariant(set).key,
+      propertyValues: set.propertyValues,
+      variants: set.variants.map((v) => ({ name: v.name, key: v.key })),
+      thumbnailUrl: set.thumbnailUrl,
+    })),
+  };
+}
+
+function asToolError(error: unknown) {
+  const message =
+    error instanceof LibraryConfigError
+      ? `Library tools are not configured.\n${CONFIG_HELP}`
+      : `Library error: ${error instanceof Error ? error.message : String(error)}`;
+  return { content: [{ type: "text" as const, text: message }] };
+}
+
+export function registerTools(server: McpServer, _sendCommandToFigma: SendCommandFn) {
+  server.tool(
+    "get_library_components",
+    "List every published component set available from the configured Figma team libraries (the Assets panel equivalent). Compact by default; verbose:true adds per-variant names, keys, and property values. Requires FIGMA_API_TOKEN + FIGMA_LIBRARY_FILE_KEYS.",
+    {
+      verbose: z.boolean().optional().describe("Include per-variant names, keys, and property values"),
+      refresh: z.boolean().optional().describe("Refetch from the Figma API instead of the session cache"),
+    },
+    async ({ verbose, refresh }: any) => {
+      try {
+        const index = await loadLibraryIndex({ refresh });
+        return { content: [{ type: "text", text: JSON.stringify(formatLibraryList(index, !!verbose)) }] };
+      } catch (error) {
+        return asToolError(error);
+      }
+    }
+  );
+
+  server.tool(
+    "search_library_components",
+    "Search the configured Figma team libraries for a component by name/description/variant values. Returns ready-to-use componentKeys for create_component_instance or create_node_tree instance nodes ($lib: refs). If nothing adequate matches, follow the component_proposal_guide prompt instead of imitating a component with raw shapes.",
+    {
+      query: z.string().describe("What to find, e.g. 'badge', 'breadcrumbs', 'bulk actions'"),
+      limit: z.number().min(1).max(20).optional().describe("Max results (default 5)"),
+      refresh: z.boolean().optional().describe("Refetch from the Figma API instead of the session cache"),
+    },
+    async ({ query, limit, refresh }: any) => {
+      try {
+        const index = await loadLibraryIndex({ refresh });
+        const results = searchIndex(index, query, limit ?? 5);
+        if (results.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                results: [],
+                note: `No match for "${query}" across ${index.length} component sets. If no existing component fits this need, follow the component_proposal_guide prompt (rationalized proposal with explorations and use cases) rather than drawing raw shapes.`,
+              }),
+            }],
+          };
+        }
+        return { content: [{ type: "text", text: JSON.stringify(formatSearchResults(results)) }] };
+      } catch (error) {
+        return asToolError(error);
+      }
+    }
+  );
+}
