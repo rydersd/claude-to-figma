@@ -639,4 +639,62 @@ This detailed process ensures you correctly interpret the reaction data, prepare
       };
     }
   );
+
+  // Full reference for create_node_tree — kept here (not in the tool description)
+  // so the ~500-token manual only loads when explicitly requested.
+  server.prompt(
+    "node_tree_guide",
+    "Full reference for building hierarchies with create_node_tree: spec format, $repeat, $var: binding, colors, gradients, images, effects, and sync mode",
+    (extra) => {
+      return {
+        messages: [
+          {
+            role: "assistant",
+            content: {
+              type: "text",
+              text: `# create_node_tree reference
+
+Create an entire node hierarchy in one call. Pass a nested JSON tree; only frames may have children.
+
+## Node types
+- **frame** — container; the only type with a \`children\` array. Supports layout, fill, stroke, cornerRadius, effects, and the appearance fields below.
+- **text** — \`text\`, \`fontSize\`, \`fontWeight\`, \`fontColor\`, \`fontFamily\`, \`textAlignHorizontal\`, \`lineHeight\`, etc.
+- **rectangle** — \`width\`/\`height\`, fill, stroke, cornerRadius, effects.
+- **vector** — \`pathData\` (SVG path), fill, stroke.
+
+## Colors (every color field)
+- RGBA object \`{"r":0.2,"g":0.4,"b":0.7,"a":1}\`
+- Hex string \`"#3d6daa"\` / \`"#RGB"\` / \`"#RRGGBBAA"\`
+- Figma variable ref \`"$var:Colors/Primary"\` — binds as a real variable (call get_local_variables first to discover tokens)
+- Gradient object \`{"angle":135,"stops":[{"position":0,"color":"#667eea"},{"position":1,"color":"#764ba2"}]}\`
+- CSS gradient string \`"linear-gradient(135deg, #667eea, #764ba2)"\` or \`"radial-gradient(...)"\` (0deg = to top, 90deg = to right)
+
+## Appearance fields (frames + rectangles)
+- **effects** — array of DROP_SHADOW / INNER_SHADOW / LAYER_BLUR / BACKGROUND_BLUR (CSS box-shadow in one pass)
+- **topLeftRadius / topRightRadius / bottomRightRadius / bottomLeftRadius** — per-corner radii override cornerRadius
+- **strokeAlign** — INSIDE / OUTSIDE / CENTER
+- **fillImage** — \`{"url":"https://…","scaleMode":"FILL"}\` (or filePath / base64). URLs are fetched server-side before the tree is sent; failed fetches become \`imageWarnings\` without failing the tree. scaleMode: FILL=cover, FIT=contain, TILE=repeat.
+
+## Positioning
+- **layoutPositioning: "ABSOLUTE"** on any child of an auto-layout frame floats it at its x/y (CSS position:absolute).
+
+## $repeat — data-driven repetition
+\`\`\`json
+{"$repeat": {"data": [["Alice","Design"],["Bob","Eng"]],
+  "template": {"type":"text","text":"$[0] — $[1]"}}}
+\`\`\`
+Array rows use \`$[0]\`,\`$[1]\`; object rows use \`$key\`. Put $repeat inside an auto-layout frame or children stack at (0,0).
+
+## Response size
+Returns a compact summary (counts, rootId, errors) by default. Pass \`verbose: true\` to also get the full per-node id/name map.
+
+## Sync mode
+Pass \`rootId\` (instead of \`parentId\`) to reconcile an existing tree: matches children by name+type, updates changed props in place, creates new nodes, preserves unmatched (or removes them with \`prune: true\`). Node IDs are preserved, so prototype wiring survives. Child ordering is not reconciled; duplicate name+type siblings match FIFO.`
+            },
+          },
+        ],
+        description: "Full reference for building hierarchies with create_node_tree",
+      };
+    }
+  );
 }

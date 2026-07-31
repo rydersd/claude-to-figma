@@ -64,6 +64,7 @@ export type FigmaCommand =
   | "create_frame"
   | "create_text"
   | "set_fill_color"
+  | "set_image_fill"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -196,6 +197,14 @@ export type CommandParams = {
     g: number;
     b: number;
     a?: number;
+  };
+  set_image_fill: {
+    nodeId: string;
+    image: {
+      base64: string;
+      scaleMode?: "FILL" | "FIT" | "CROP" | "TILE";
+      opacity?: number;
+    };
   };
   set_stroke_color: {
     nodeId: string;

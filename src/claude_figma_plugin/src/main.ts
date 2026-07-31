@@ -5,7 +5,7 @@
 import { getDocumentInfo, getSelection, getNodeInfo, getNodesInfo, readMyDesign, getAnnotations, setAnnotation, scanNodesByTypes, setMultipleAnnotations } from './document';
 import { setTextContent, scanTextNodes, setMultipleTextContents, setFontFamily, setTextAutoResize, setTextDecoration, setTextAlign, setTextFormat, setTextList, setRangeFormat } from './text';
 import { createRectangle, createFrame, createText, createEllipse, createSection, createSvg } from './creation';
-import { setFillColor, batchSetFillColor, setStrokeColor, setCornerRadius, removeFill, setStrokeDash, setStrokeProperties, setClipsContent, setEffects, setOpacity, setBlendMode, setRotation, setConstraints, setMinMaxSize, setMask } from './styling';
+import { setFillColor, batchSetFillColor, setStrokeColor, setCornerRadius, removeFill, setStrokeDash, setStrokeProperties, setClipsContent, setEffects, setOpacity, setBlendMode, setRotation, setConstraints, setMinMaxSize, setMask, setImageFill } from './styling';
 import { moveNode, resizeNode, deleteNode, deleteMultipleNodes, cloneNode, batchClone, renameNode, batchRename, groupNodes, batchReparent, insertChildAt, reorderChild, setLayoutPositioning } from './transforms';
 import { setLayoutMode, setPadding, setAxisAlign, setLayoutSizing, setItemSpacing } from './layout';
 import { getStyles, getLocalComponents, createComponentInstance, swapInstanceVariant, setComponentProperties, exportNodeAsImage, createComponent, getInstanceOverrides, getValidTargetInstances, getSourceInstanceData, setInstanceOverrides, createComponentSet, getLocalVariables } from './components';
@@ -94,12 +94,12 @@ async function handleCommand(command: string, params: any) {
       if (!params || !params.nodeId) {
         throw new Error("Missing nodeId parameter");
       }
-      return await getNodeInfo(params.nodeId);
+      return await getNodeInfo(params.nodeId, params.fields);
     case "get_nodes_info":
       if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
         throw new Error("Missing or invalid nodeIds parameter");
       }
-      return await getNodesInfo(params.nodeIds);
+      return await getNodesInfo(params.nodeIds, params.fields);
     case "read_my_design":
       return await readMyDesign();
     case "create_rectangle":
@@ -110,6 +110,8 @@ async function handleCommand(command: string, params: any) {
       return await createText(params);
     case "set_fill_color":
       return await setFillColor(params);
+    case "set_image_fill":
+      return await setImageFill(params);
     case "set_stroke_color":
       return await setStrokeColor(params);
     case "move_node":
@@ -220,6 +222,16 @@ async function handleCommand(command: string, params: any) {
       return await setFocus(params);
     case "set_selections":
       return await setSelections(params);
+    case "undo": {
+      const undoSteps = Math.min(Math.max((params && params.count) || 1, 1), 50);
+      for (let i = 0; i < undoSteps; i++) figma.triggerUndo();
+      return { success: true, steps: undoSteps };
+    }
+    case "redo": {
+      const redoSteps = Math.min(Math.max((params && params.count) || 1, 1), 50);
+      for (let i = 0; i < redoSteps; i++) figma.triggerRedo();
+      return { success: true, steps: redoSteps };
+    }
     case "set_font_family":
       return await setFontFamily(params);
     case "set_text_auto_resize":

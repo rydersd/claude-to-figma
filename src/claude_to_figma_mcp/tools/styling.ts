@@ -3,14 +3,38 @@ import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
 
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
-  server.tool("set_fill_color", "Set the fill color of a node in Figma can be TextNode or FrameNode", {
+  const GradientSpecSchema = z.object({
+    type: z.enum(["GRADIENT_LINEAR", "GRADIENT_RADIAL", "GRADIENT_ANGULAR", "GRADIENT_DIAMOND"]).optional().describe("Gradient type (default GRADIENT_LINEAR)"),
+    angle: z.number().optional().describe("CSS-convention angle in degrees for linear gradients: 0 = to top, 90 = to right, clockwise (default 180 = to bottom)"),
+    stops: z.array(z.object({
+      position: z.number().min(0).max(1).describe("Stop position along the gradient (0-1)"),
+      color: z.union([
+        z.object({ r: z.number(), g: z.number(), b: z.number(), a: z.number().optional() }),
+        z.string().describe("Hex color (#RRGGBB or #RRGGBBAA)"),
+      ]),
+    })).min(2).describe("Color stops (at least 2)"),
+  });
+
+  server.tool("set_fill_color", "Set the fill of a node in Figma (TextNode or FrameNode) — solid color via r/g/b/a, or a gradient via the gradient parameter", {
     nodeId: z.string().describe("The ID of the node to modify"),
-    r: z.number().min(0).max(1).describe("Red component (0-1)"),
-    g: z.number().min(0).max(1).describe("Green component (0-1)"),
-    b: z.number().min(0).max(1).describe("Blue component (0-1)"),
+    r: z.number().min(0).max(1).optional().describe("Red component (0-1). Required unless gradient is provided"),
+    g: z.number().min(0).max(1).optional().describe("Green component (0-1). Required unless gradient is provided"),
+    b: z.number().min(0).max(1).optional().describe("Blue component (0-1). Required unless gradient is provided"),
     a: z.number().min(0).max(1).optional().describe("Alpha component (0-1)"),
-  }, async ({ nodeId, r, g, b, a }: any) => {
+    gradient: z.union([
+      z.string().describe("CSS gradient string, e.g. 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' or 'radial-gradient(#fff, #000)'"),
+      GradientSpecSchema,
+    ]).optional().describe("Gradient fill — takes precedence over r/g/b"),
+  }, async ({ nodeId, r, g, b, a, gradient }: any) => {
     try {
+      if (gradient) {
+        const result = await sendCommandToFigma("set_fill_color", { nodeId, gradient });
+        const typedResult = result as { name: string };
+        return { content: [{ type: "text", text: `Set gradient fill on node "${typedResult.name}"` }] };
+      }
+      if (r === undefined || g === undefined || b === undefined) {
+        return { content: [{ type: "text", text: "Error: provide either r/g/b components or a gradient" }] };
+      }
       const result = await sendCommandToFigma("set_fill_color", { nodeId, color: { r, g, b, a: a || 1 } });
       const typedResult = result as { name: string };
       return { content: [{ type: "text", text: `Set fill color of node "${typedResult.name}" to RGBA(${r}, ${g}, ${b}, ${a || 1})` }] };
@@ -36,19 +60,8 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
-  server.tool("set_corner_radius", "Set the corner radius of a node in Figma", {
-    nodeId: z.string().describe("The ID of the node to modify"),
-    radius: z.number().min(0).describe("Corner radius value"),
-    corners: z.array(z.boolean()).length(4).optional().describe("Optional array of 4 booleans to specify which corners to round [topLeft, topRight, bottomRight, bottomLeft]"),
-  }, async ({ nodeId, radius, corners }: any) => {
-    try {
-      const result = await sendCommandToFigma("set_corner_radius", { nodeId, radius, corners });
-      const typedResult = result as { name: string };
-      return { content: [{ type: "text", text: `Set corner radius of node "${typedResult.name}" to ${radius}px` }] };
-    } catch (error) {
-      return { content: [{ type: "text", text: `Error setting corner radius: ${error instanceof Error ? error.message : String(error)}` }] };
-    }
-  });
+  // set_corner_radius and set_text_decoration are consolidated into batch_mutate
+  // (ops of the same name) to keep the top-level tool surface lean.
 
   server.tool("set_stroke_dash", "Set stroke dash pattern on a node (solid, dashed, dotted, or custom)", {
     nodeId: z.string().describe("The ID of the node"),
@@ -102,16 +115,4 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
-  server.tool("set_text_decoration", "Set text decoration (underline, strikethrough) on a text node", {
-    nodeId: z.string().describe("The ID of the text node"),
-    decoration: z.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).describe("Text decoration type"),
-  }, async ({ nodeId, decoration }: any) => {
-    try {
-      const result = await sendCommandToFigma("set_text_decoration", { nodeId, decoration });
-      const typedResult = result as { name: string; id: string };
-      return { content: [{ type: "text", text: `Set text decoration of "${typedResult.name}" to ${decoration}` }] };
-    } catch (error) {
-      return { content: [{ type: "text", text: `Error setting text decoration: ${error instanceof Error ? error.message : String(error)}` }] };
-    }
-  });
 }

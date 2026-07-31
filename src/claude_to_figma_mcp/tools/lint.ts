@@ -9,10 +9,16 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     {
       nodeId: z.string().describe("Root node ID to scan"),
       maxDepth: z.number().int().min(1).max(50).optional().describe("Maximum tree depth to walk (default 10)"),
+      fields: z.array(z.string()).optional().describe("Whitelist of keys to keep per node (e.g. ['id','fills','fontFamily']). Omit for all fields — large scans are token-heavy."),
     },
-    async ({ nodeId, maxDepth }: { nodeId: string; maxDepth?: number }) => {
+    async ({ nodeId, maxDepth, fields }: { nodeId: string; maxDepth?: number; fields?: string[] }) => {
       try {
-        const result = await sendCommandToFigma("scan_node_styles", { nodeId, maxDepth }, 60000);
+        const result = await sendCommandToFigma("scan_node_styles", { nodeId, maxDepth }, 60000) as any;
+        if (fields && Array.isArray(fields) && fields.length > 0 && result && Array.isArray(result.nodes)) {
+          result.nodes = result.nodes.map((n: any) =>
+            Object.fromEntries(fields.filter((f) => f in n).map((f) => [f, n[f]]))
+          );
+        }
         return {
           content: [{ type: "text", text: JSON.stringify(result) }],
         };

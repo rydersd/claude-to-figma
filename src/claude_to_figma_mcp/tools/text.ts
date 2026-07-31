@@ -16,18 +16,23 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
-  server.tool("scan_text_nodes", "Scan all text nodes in the selected Figma node", {
+  server.tool("scan_text_nodes", "Scan all text nodes under a Figma node. Returns id, name, characters, and layout per node. Pass fields to project only the keys you need — large scans are token-heavy.", {
     nodeId: z.string().describe("ID of the node to scan"),
-  }, async ({ nodeId }: any) => {
+    fields: z.array(z.string()).optional().describe("Whitelist of keys to keep per text node (e.g. ['id','characters']). Omit for all fields."),
+  }, async ({ nodeId, fields }: any) => {
     try {
       const initialStatus = { type: "text" as const, text: "Starting text node scanning. This may take a moment for large designs..." };
       const result = await sendCommandToFigma("scan_text_nodes", { nodeId, useChunking: true, chunkSize: 10 });
+      const project = (nodes: any[]) =>
+        (fields && Array.isArray(fields) && fields.length > 0)
+          ? nodes.map((n) => Object.fromEntries(fields.filter((f: string) => f in n).map((f: string) => [f, n[f]])))
+          : nodes;
       if (result && typeof result === 'object' && 'chunks' in result) {
         const typedResult = result as { success: boolean; totalNodes: number; processedNodes: number; chunks: number; textNodes: Array<any> };
-        const summaryText = `\n        Scan completed:\n        - Found ${typedResult.totalNodes} text nodes\n        - Processed in ${typedResult.chunks} chunks\n        `;
-        return { content: [initialStatus, { type: "text" as const, text: summaryText }, { type: "text" as const, text: JSON.stringify(typedResult.textNodes, null, 2) }] };
+        const summaryText = `Scan completed: found ${typedResult.totalNodes} text nodes in ${typedResult.chunks} chunks`;
+        return { content: [initialStatus, { type: "text" as const, text: summaryText }, { type: "text" as const, text: JSON.stringify(project(typedResult.textNodes)) }] };
       }
-      return { content: [initialStatus, { type: "text", text: JSON.stringify(result, null, 2) }] };
+      return { content: [initialStatus, { type: "text", text: JSON.stringify(result) }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Error scanning text nodes: ${error instanceof Error ? error.message : String(error)}` }] };
     }

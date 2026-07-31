@@ -18,27 +18,8 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
-  server.tool("set_padding", "Set padding values for an auto-layout frame in Figma", {
-    nodeId: z.string().describe("The ID of the frame to modify"),
-    paddingTop: z.number().optional().describe("Top padding value"),
-    paddingRight: z.number().optional().describe("Right padding value"),
-    paddingBottom: z.number().optional().describe("Bottom padding value"),
-    paddingLeft: z.number().optional().describe("Left padding value"),
-  }, async ({ nodeId, paddingTop, paddingRight, paddingBottom, paddingLeft }: any) => {
-    try {
-      const result = await sendCommandToFigma("set_padding", { nodeId, paddingTop, paddingRight, paddingBottom, paddingLeft });
-      const typedResult = result as { name: string };
-      const paddingMessages: string[] = [];
-      if (paddingTop !== undefined) paddingMessages.push(`top: ${paddingTop}`);
-      if (paddingRight !== undefined) paddingMessages.push(`right: ${paddingRight}`);
-      if (paddingBottom !== undefined) paddingMessages.push(`bottom: ${paddingBottom}`);
-      if (paddingLeft !== undefined) paddingMessages.push(`left: ${paddingLeft}`);
-      const paddingText = paddingMessages.length > 0 ? `padding (${paddingMessages.join(', ')})` : "padding";
-      return { content: [{ type: "text", text: `Set ${paddingText} for frame "${typedResult.name}"` }] };
-    } catch (error) {
-      return { content: [{ type: "text", text: `Error setting padding: ${error instanceof Error ? error.message : String(error)}` }] };
-    }
-  });
+  // set_padding and set_item_spacing are consolidated into batch_mutate (ops of the
+  // same name) to keep the top-level tool surface lean.
 
   server.tool("set_axis_align", "Set primary and counter axis alignment for an auto-layout frame in Figma", {
     nodeId: z.string().describe("The ID of the frame to modify"),
@@ -73,26 +54,6 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       return { content: [{ type: "text", text: `Set ${sizingText} for frame "${typedResult.name}"` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Error setting layout sizing: ${error instanceof Error ? error.message : String(error)}` }] };
-    }
-  });
-
-  server.tool("set_item_spacing", "Set distance between children in an auto-layout frame", {
-    nodeId: z.string().describe("The ID of the frame to modify"),
-    itemSpacing: z.number().optional().describe("Distance between children. Note: This value will be ignored if primaryAxisAlignItems is set to SPACE_BETWEEN."),
-    counterAxisSpacing: z.number().optional().describe("Distance between wrapped rows/columns. Only works when layoutWrap is set to WRAP.")
-  }, async ({ nodeId, itemSpacing, counterAxisSpacing }: any) => {
-    try {
-      const params: any = { nodeId };
-      if (itemSpacing !== undefined) params.itemSpacing = itemSpacing;
-      if (counterAxisSpacing !== undefined) params.counterAxisSpacing = counterAxisSpacing;
-      const result = await sendCommandToFigma("set_item_spacing", params);
-      const typedResult = result as { name: string; itemSpacing?: number; counterAxisSpacing?: number };
-      let message = `Updated spacing for frame "${typedResult.name}":`;
-      if (itemSpacing !== undefined) message += ` itemSpacing=${itemSpacing}`;
-      if (counterAxisSpacing !== undefined) message += ` counterAxisSpacing=${counterAxisSpacing}`;
-      return { content: [{ type: "text", text: message }] };
-    } catch (error) {
-      return { content: [{ type: "text", text: `Error setting spacing: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
 

@@ -2,6 +2,10 @@
 
 This project implements a Model Context Protocol (MCP) integration between Claude Code and Figma, allowing Claude Code to communicate with Figma for reading designs and modifying them programmatically.
 
+## Documentation
+
+Full documentation lives in the [project wiki](docs/Home.md) — setup, architecture, the complete tool reference, the HTML→Figma pipeline, animation workflows, and the feature roadmap.
+
 ## Project Structure
 
 - `src/claude_to_figma_mcp/` - TypeScript MCP server for Figma integration
@@ -164,17 +168,16 @@ The MCP server provides the following tools for interacting with Figma:
 - `create_section` - Places a labeled section container at (x, y) with given size, optionally adopting existing nodes as children
 - `create_vector` - Places a vector node from an SVG path string at (x, y) with given size and optional fill color
 - `create_ellipse` - Places an ellipse (circle or oval) at (x, y) with given size, optional fill color, and arc data for arcs/donuts
-- `create_node_tree` - Builds an entire node hierarchy from a JSON spec in one round-trip — supports nested frames, `$repeat` for data-driven repetition, `$var:` for Figma variable binding, and hex color shorthand
+- `create_node_tree` - Builds an entire node hierarchy from a JSON spec in one round-trip — supports nested frames, `$repeat` for data-driven repetition, `$var:` for Figma variable binding, hex color shorthand, gradients, image fills, effects (shadows/blurs), per-corner radii, and `layoutPositioning: ABSOLUTE` for floating children. Returns a compact summary by default (`verbose: true` for the full node map); call the `node_tree_guide` prompt for the complete spec reference
 - `create_svg` - Creates Figma nodes from a complete SVG markup string (logos, icons, illustrations) in one call — handles multi-path SVGs without splitting, returns a frame containing the parsed elements
 
 ### Text
 
-- `scan_text_nodes` - Returns all text nodes under a root, with chunked responses for large trees to avoid timeouts
+- `scan_text_nodes` - Returns all text nodes under a root, with chunked responses for large trees to avoid timeouts; accepts a `fields` whitelist to project only the keys you need
 - `set_text_content` - Replaces the text content of a single text node, loading the required font automatically
 - `set_multiple_text_contents` - Replaces text on many nodes in one call, each identified by node ID
 - `set_font_family` - Changes the font family and style (e.g. "Inter", "Bold") on a text node
 - `set_text_auto_resize` - Controls how a text node resizes to fit content: NONE, WIDTH_AND_HEIGHT, HEIGHT, or TRUNCATE
-- `set_text_decoration` - Applies underline, strikethrough, or removes decoration from a text node
 - `set_text_align` - Sets horizontal (LEFT, CENTER, RIGHT, JUSTIFIED) and/or vertical (TOP, CENTER, BOTTOM) text alignment
 - `set_text_format` - Sets node-level text formatting: line height, paragraph indent/spacing, letter spacing, text case (including SMALL_CAPS), leading trim, hanging punctuation/list, list spacing, truncation, and max lines
 - `set_text_list` - Applies native Figma ordered/unordered list formatting to a text node, with per-line type and indentation control for nested lists
@@ -183,24 +186,20 @@ The MCP server provides the following tools for interacting with Figma:
 ### Auto Layout & Spacing
 
 - `set_layout_mode` - Switches a frame to HORIZONTAL, VERTICAL, or NONE auto-layout, with optional wrap behavior
-- `set_padding` - Sets top, right, bottom, left padding on an auto-layout frame
 - `set_axis_align` - Sets primary axis (e.g. space-between) and counter axis (e.g. center) alignment on an auto-layout frame
 - `set_layout_sizing` - Sets horizontal and vertical sizing modes (FIXED, HUG, FILL) on an auto-layout frame
-- `set_item_spacing` - Sets the gap between children in an auto-layout frame
+- `set_padding`, `set_item_spacing` - Consolidated into `batch_mutate` ops (see Batch Operations)
 
 ### Styling
 
-- `set_fill_color` - Sets a solid fill color on a node using RGBA values (0–1 range)
+- `set_fill_color` - Sets a solid fill color on a node using RGBA values (0–1 range), or a gradient fill via a CSS gradient string or `{type, angle, stops}` object
+- `set_image_fill` - Fills a node with an image from a URL, local file path, or base64 data — the server fetches the bytes and the plugin creates a real Figma image fill with FILL/FIT/CROP/TILE scale modes
 - `set_stroke_color` - Sets a solid stroke color and optional weight on a node
-- `set_corner_radius` - Sets corner radius on a node, with optional per-corner control (top-left, top-right, bottom-right, bottom-left)
 - `set_stroke_dash` - Sets the dash pattern (array of dash/gap lengths) on a node's stroke
 - `set_stroke_properties` - Sets stroke weight, end cap, join style, alignment, and dash pattern in one call
 - `remove_fill` - Clears all fills from a node
-- `set_effects` - Sets effects on a node: drop shadow, inner shadow, layer blur, background blur — replaces all existing effects
-- `set_opacity` - Sets node opacity (0 = transparent, 1 = opaque)
-- `set_blend_mode` - Sets the blend mode of a node (NORMAL, MULTIPLY, SCREEN, OVERLAY, etc.)
-- `set_rotation` - Sets the rotation of a node in degrees (-180 to 180)
 - `set_mask` - Sets a node as a mask layer that clips subsequent siblings to its shape, with optional grouping to contain the effect
+- `set_corner_radius`, `set_effects`, `set_opacity`, `set_blend_mode`, `set_rotation` - Consolidated into `batch_mutate` ops (see Batch Operations); at creation time, `create_node_tree` also takes `effects` and per-corner radii directly
 
 ### Layout & Organization
 
@@ -256,11 +255,11 @@ The MCP server provides the following tools for interacting with Figma:
 - `batch_reparent` - Moves multiple nodes under a new parent node at an optional child index
 - `batch_set_fill_color` - Applies the same fill color to multiple nodes at once
 - `batch_clone` - Duplicates one source node to multiple (x, y) positions with optional names per clone
-- `batch_mutate` - Executes a mixed array of operations (rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path) in a single round-trip — each operation runs independently
+- `batch_mutate` - Executes a mixed array of operations (rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path, set_opacity, set_rotation, set_blend_mode, set_corner_radius, set_effects, set_padding, set_item_spacing, set_text_decoration) in a single round-trip — each operation runs independently. The last eight were previously standalone tools, consolidated here to keep the tool surface lean.
 
 ### Inspection & Linting
 
-- `scan_node_styles` - Walks a frame tree and returns fill, stroke, font, layout, corner-radius, and component data for every descendant — includes a `boundVariable` flag on each color for detecting hardcoded vs token-bound values
+- `scan_node_styles` - Walks a frame tree and returns fill, stroke, font, layout, corner-radius, and component data for every descendant — includes a `boundVariable` flag on each color for detecting hardcoded vs token-bound values; accepts a `fields` whitelist to project only the keys you need
 - `screenshot_region` - Captures a PNG screenshot of a rectangular canvas region at optional scale
 
 ### Query & Eval

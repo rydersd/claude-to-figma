@@ -21,7 +21,7 @@ bun run start            # Run built MCP server
 bun setup                # Full setup (install + write .mcp.json)
 ```
 
-There is no test suite or linter configured.
+Tests: `bun test tests/gradients.test.ts` runs pure unit tests (no Figma needed). The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel (`CHANNEL=<channel> bun test tests/sync-mode.test.ts`) and time out otherwise. No linter is configured.
 
 ## Architecture
 

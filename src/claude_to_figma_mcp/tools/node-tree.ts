@@ -4,6 +4,7 @@ import type { SendCommandFn } from "../types.js";
 import { sendCommandWithRetry } from "../connection.js";
 import { getOptimalChunkSize } from "../metrics.js";
 import { logger } from "../helpers.js";
+import { resolveImageToBase64 } from "./images.js";
 
 // --- Recursive node tree schema for batch creation ---
 const ColorObjectSchema = z.object({
@@ -13,11 +14,52 @@ const ColorObjectSchema = z.object({
   a: z.number().min(0).max(1).optional().describe("Alpha component (0-1)"),
 });
 
-// Color fields accept RGBA object, hex string "#RRGGBB"/"#RGB", or variable ref "$var:Collection/Name"
+const GradientObjectSchema = z.object({
+  type: z.enum(["GRADIENT_LINEAR", "GRADIENT_RADIAL", "GRADIENT_ANGULAR", "GRADIENT_DIAMOND"]).optional().describe("Gradient type (default GRADIENT_LINEAR)"),
+  angle: z.number().optional().describe("CSS-convention angle in degrees for linear gradients: 0 = to top, 90 = to right, clockwise (default 180)"),
+  stops: z.array(z.object({
+    position: z.number().min(0).max(1).describe("Stop position (0-1)"),
+    color: z.union([ColorObjectSchema, z.string().describe("Hex color")]),
+  })).min(2).describe("Color stops (at least 2)"),
+});
+
+// Color fields accept RGBA object, hex string "#RRGGBB"/"#RGB", variable ref "$var:Collection/Name",
+// a gradient object, or a CSS gradient string "linear-gradient(135deg, #667eea, #764ba2)"
 const ColorSchema = z.union([
   ColorObjectSchema,
-  z.string().describe("Hex color (#RGB, #RRGGBB, #RRGGBBAA) or Figma variable reference ($var:Collection/TokenName)"),
+  GradientObjectSchema,
+  z.string().describe("Hex color (#RGB, #RRGGBB, #RRGGBBAA), Figma variable reference ($var:Collection/TokenName), or CSS gradient string (linear-gradient(...)/radial-gradient(...))"),
 ]);
+
+const EffectSchema = z.object({
+  type: z.enum(["DROP_SHADOW", "INNER_SHADOW", "LAYER_BLUR", "BACKGROUND_BLUR"]),
+  color: ColorSchema.optional().describe("Shadow color — RGBA object or hex string (default black at 25% alpha). Variable refs are not supported in effects."),
+  offset: z.object({ x: z.number(), y: z.number() }).optional().describe("Shadow offset (default {x:0, y:4})"),
+  radius: z.number().optional().describe("Blur radius (default 4)"),
+  spread: z.number().optional().describe("Shadow spread (default 0)"),
+  visible: z.boolean().optional().describe("Effect visibility (default true)"),
+  blendMode: z.string().optional().describe("Blend mode for shadows (e.g. NORMAL, MULTIPLY)"),
+});
+
+const FillImageSchema = z.object({
+  url: z.string().optional().describe("HTTP(S) URL — the server prefetches it before sending the tree to Figma"),
+  filePath: z.string().optional().describe("Absolute local path to an image file"),
+  base64: z.string().optional().describe("Raw base64 image data or data: URI"),
+  scaleMode: z.enum(["FILL", "FIT", "CROP", "TILE"]).optional().describe("FILL = CSS cover (default), FIT = contain, TILE = repeat"),
+  opacity: z.number().min(0).max(1).optional(),
+});
+
+// Shape/appearance fields shared by frames and rectangles
+const AppearanceFields = {
+  fillImage: FillImageSchema.optional().describe("Image fill from url/filePath/base64 — replaces fillColor (maps CSS background-image / <img>)"),
+  effects: z.array(EffectSchema).optional().describe("Effects (shadows, blurs) — e.g. CSS box-shadow maps to one DROP_SHADOW"),
+  topLeftRadius: z.number().optional().describe("Per-corner radius (overrides cornerRadius for this corner)"),
+  topRightRadius: z.number().optional().describe("Per-corner radius"),
+  bottomRightRadius: z.number().optional().describe("Per-corner radius"),
+  bottomLeftRadius: z.number().optional().describe("Per-corner radius"),
+  strokeAlign: z.enum(["INSIDE", "OUTSIDE", "CENTER"]).optional().describe("Stroke alignment relative to the node bounds"),
+  layoutPositioning: z.enum(["AUTO", "ABSOLUTE"]).optional().describe("ABSOLUTE floats this node above auto-layout siblings at its x/y (CSS position:absolute); requires an auto-layout parent"),
+};
 
 const BaseFrameSchema = z.object({
   type: z.literal("frame"),
@@ -45,6 +87,7 @@ const BaseFrameSchema = z.object({
   counterAxisSpacing: z.number().optional().describe("Spacing between wrapped rows/columns when layoutWrap is WRAP"),
   itemReverseZIndex: z.boolean().optional().describe("Reverse z-index order (first child on top)"),
   opacity: z.number().min(0).max(1).optional().describe("Node opacity (0-1)"),
+  ...AppearanceFields,
 });
 
 const TextNodeSchema = z.object({
@@ -64,6 +107,7 @@ const TextNodeSchema = z.object({
   letterSpacing: z.number().optional().describe("Letter spacing in pixels"),
   textCase: z.enum(["ORIGINAL", "UPPER", "LOWER", "TITLE"]).optional(),
   opacity: z.number().min(0).max(1).optional().describe("Node opacity (0-1)"),
+  layoutPositioning: z.enum(["AUTO", "ABSOLUTE"]).optional().describe("ABSOLUTE floats this node above auto-layout siblings at its x/y; requires an auto-layout parent"),
 });
 
 const RectangleNodeSchema = z.object({
@@ -78,6 +122,7 @@ const RectangleNodeSchema = z.object({
   strokeWeight: z.number().positive().optional(),
   cornerRadius: z.number().optional().describe("Uniform corner radius"),
   opacity: z.number().min(0).max(1).optional().describe("Node opacity (0-1)"),
+  ...AppearanceFields,
 });
 
 const VectorNodeSchema = z.object({
@@ -132,6 +177,39 @@ const NodeTreeSchema: z.ZodType<NodeTree> = z.discriminatedUnion("type", [
   RectangleNodeSchema,
   VectorNodeSchema,
 ]);
+
+/**
+ * Prefetch all fillImage sources (url/filePath) in a tree to base64, in place.
+ * The plugin has no network access beyond localhost, so images must arrive as bytes.
+ * Failed fetches strip the fillImage and are returned as warnings instead of failing the tree.
+ */
+async function prefetchTreeImages(tree: any, warnings: string[]): Promise<void> {
+  if (!tree || typeof tree !== "object") return;
+
+  if (tree.$repeat) {
+    await prefetchTreeImages(tree.$repeat.template, warnings);
+    return;
+  }
+
+  const img = tree.fillImage;
+  if (img && (img.url || img.filePath || img.base64)) {
+    try {
+      const base64 = await resolveImageToBase64(img);
+      tree.fillImage = { base64, scaleMode: img.scaleMode, opacity: img.opacity };
+    } catch (error) {
+      warnings.push(
+        `fillImage on "${tree.name || tree.type}" skipped: ${error instanceof Error ? error.message : String(error)}`
+      );
+      delete tree.fillImage;
+    }
+  }
+
+  if (Array.isArray(tree.children)) {
+    for (const child of tree.children) {
+      await prefetchTreeImages(child, warnings);
+    }
+  }
+}
 
 /**
  * Count total nodes in a tree spec, expanding $repeat directives.
@@ -222,23 +300,42 @@ function splitTreeIntoChunks(tree: any, maxNodesPerChunk: number): any[] {
   return chunks;
 }
 
+/**
+ * Collapse a plugin create/sync result to a compact summary unless verbose.
+ * The per-node `nodes` array is the bulk of the payload and is rarely read — we
+ * keep the counts, the root node id (what callers actually act on), and errors.
+ */
+function summarizeTreeResult(result: any, verbose: boolean): any {
+  if (verbose || !result || !Array.isArray(result.nodes)) return result;
+  const { nodes, ...rest } = result;
+  return { ...rest, rootId: nodes[0]?.id, nodeCount: nodes.length };
+}
+
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
   // Create Node Tree Tool - batch recursive node creation
   server.tool(
     "create_node_tree",
-    "Create an entire node hierarchy in Figma in one call. Accepts a nested JSON tree of frames, text, rectangles, and vectors. Only frames may have children. Features: (1) $repeat directives in children arrays for data-driven repetition: {\"$repeat\": {\"data\": [[\"a\",\"b\"]], \"template\": {\"type\": \"text\", \"text\": \"$[0]\"}}}. Array rows use $[0],$[1]; object rows use $key. (2) All color fields accept RGBA objects, hex strings (\"#3d6daa\"), or Figma variable references (\"$var:Colors/Primary\") which bind as real Figma variables. Call get_styles or get_local_variables first to discover available tokens. Performance: progress updates fire every 5 nodes, resetting the 60s inactivity timeout — there is no hard node limit. ~30 nodes per call is a soft guideline for simple layouts; data tables and $repeat structures up to ~150+ nodes work reliably. Response includes stats (durationMs, maxDepth, nodesByType) for performance analysis. Sync mode: pass rootId to reconcile an existing tree instead of creating. Matches nodes by name+type, updates changed properties in place, creates new nodes, preserves unmatched existing nodes (or removes them with prune:true). Node IDs are preserved — prototype connections survive updates. Sync mode limitations: child ordering is not reconciled (existing visual order is preserved); duplicate name+type siblings are matched FIFO.",
+    "Create (or sync) an entire node hierarchy in one call from a nested JSON tree of frames, text, rectangles, and vectors. Supports $repeat, $var: variable binding, hex/gradient/image fills, effects, per-corner radii, and absolute positioning. Pass rootId (instead of parentId) to reconcile an existing tree in place. Returns a compact summary; pass verbose:true for the full node map. For the full spec format, call the 'node_tree_guide' prompt.",
     {
       tree: NodeTreeSchema.describe("The root node of the tree to create or sync"),
       parentId: z.string().optional().describe("Parent node ID for create mode"),
-      rootId: z.string().optional().describe("Existing root node ID for sync/reconcile mode. When provided, matches existing children by name+type and updates in place instead of creating new nodes. Node IDs are preserved."),
-      prune: z.boolean().optional().describe("In sync mode, remove existing children not present in the spec. Default false (preserve unmatched nodes)."),
+      rootId: z.string().optional().describe("Existing root node ID for sync/reconcile mode (matches children by name+type, updates in place, preserves node IDs)"),
+      prune: z.boolean().optional().describe("In sync mode, remove existing children not present in the spec. Default false."),
+      verbose: z.boolean().optional().describe("Include the full per-node id/name map in the response. Default false (returns counts + rootId + errors only)."),
     },
-    async ({ tree, parentId, rootId, prune }: any) => {
+    async ({ tree, parentId, rootId, prune, verbose }: any) => {
       if (rootId && parentId) {
         return { content: [{ type: "text", text: JSON.stringify({ error: "Cannot specify both rootId (sync mode) and parentId (create mode). Use rootId for sync/reconciliation or parentId for creating new nodes." }) }] };
       }
 
       try {
+        // Resolve fillImage urls/paths to base64 before anything crosses the WebSocket
+        const imageWarnings: string[] = [];
+        await prefetchTreeImages(tree, imageWarnings);
+        if (imageWarnings.length > 0) {
+          logger.warn(`create_node_tree image warnings: ${imageWarnings.join("; ")}`);
+        }
+
         const nodeCount = countTreeNodes(tree);
         const optimalChunkSize = getOptimalChunkSize();
 
@@ -251,8 +348,10 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
             { timeoutMs: 60000 }
           );
           // sendCommandWithRetry already records metrics — don't double-count (NEW-H1 fix)
+          const summary = summarizeTreeResult(result, !!verbose);
+          const payload = imageWarnings.length > 0 ? { ...summary, imageWarnings } : summary;
           return {
-            content: [{ type: "text", text: JSON.stringify(result) }],
+            content: [{ type: "text", text: JSON.stringify(payload) }],
           };
         }
 
@@ -282,8 +381,11 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
             // Skip recordOperation here — sendCommandWithRetry already records (H5 fix)
             allResults.push(result);
 
-            // Extract the created parent frame's ID for subsequent chunks
-            if (result && result.id) {
+            // Extract the created parent frame's ID for subsequent chunks.
+            // The plugin returns the root as nodes[0], so prefer that.
+            if (result && Array.isArray(result.nodes) && result.nodes[0]?.id) {
+              createdParentId = result.nodes[0].id;
+            } else if (result && result.id) {
               createdParentId = result.id;
             } else if (result && result.nodeId) {
               createdParentId = result.nodeId;
@@ -321,14 +423,23 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
 
         const overallDuration = Date.now() - overallStart;
 
-        // Aggregate results
-        const aggregated = {
+        // Aggregate results. Full per-chunk node arrays are large — only include
+        // them when verbose; otherwise return counts and the root id.
+        const createdTotal = allResults.reduce(
+          (sum: number, r: any) => sum + (typeof r?.createdCount === "number" ? r.createdCount : (Array.isArray(r?.nodes) ? r.nodes.length : 0)),
+          0
+        );
+        const errorTotal = allResults.reduce((sum: number, r: any) => sum + (r?.errorCount || 0), 0);
+        const aggregated: any = {
           chunked: true,
           totalChunks: chunks.length,
           totalNodes: nodeCount,
+          createdCount: createdTotal,
+          errorCount: errorTotal,
           durationMs: overallDuration,
-          parentId: createdParentId,
-          chunkResults: allResults,
+          rootId: createdParentId,
+          ...(imageWarnings.length > 0 ? { imageWarnings } : {}),
+          ...(verbose ? { chunkResults: allResults } : {}),
         };
 
         return {

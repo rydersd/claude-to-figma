@@ -2,8 +2,10 @@
 // Extracted from code.js as part of the plugin modularization refactor.
 
 import { sendProgressUpdate, generateCommandId, loadAllFonts, customBase64Encode, safeMixed, hexToFigmaColor, appendOrInsertChild, getVariableByName, bindVariableToColor, resolveColorValue, rgbaToHex } from './utils';
-import { setCharacters } from './text';
+import { setCharacters, setTextDecoration } from './text';
 import { normalizeSvgPath } from './vectors';
+import { setOpacity, setRotation, setBlendMode, setCornerRadius, setEffects } from './styling';
+import { setPadding, setItemSpacing } from './layout';
 
 // Shared helper: check if a node has a bound variable on a given field
 function hasBoundVariable(node: any, field: any) {
@@ -238,6 +240,48 @@ export async function batchMutate(params: any) {
             vpNode.resize(op.width, op.height);
           }
           result = { op: "set_vector_path", nodeId: op.nodeId, name: vpNode.name, width: vpNode.width, height: vpNode.height };
+          break;
+
+        // Consolidated single-property setters — delegate to the canonical handlers
+        // so behavior matches the (now internal) standalone commands exactly.
+        case "set_opacity":
+          await setOpacity({ nodeId: op.nodeId, opacity: op.opacity });
+          result = { op: "set_opacity", nodeId: op.nodeId };
+          break;
+
+        case "set_rotation":
+          await setRotation({ nodeId: op.nodeId, rotation: op.rotation });
+          result = { op: "set_rotation", nodeId: op.nodeId };
+          break;
+
+        case "set_blend_mode":
+          await setBlendMode({ nodeId: op.nodeId, blendMode: op.blendMode });
+          result = { op: "set_blend_mode", nodeId: op.nodeId };
+          break;
+
+        case "set_corner_radius":
+          await setCornerRadius({ nodeId: op.nodeId, radius: op.radius, corners: op.corners });
+          result = { op: "set_corner_radius", nodeId: op.nodeId };
+          break;
+
+        case "set_effects":
+          await setEffects({ nodeId: op.nodeId, effects: op.effects });
+          result = { op: "set_effects", nodeId: op.nodeId };
+          break;
+
+        case "set_padding":
+          await setPadding({ nodeId: op.nodeId, paddingTop: op.paddingTop, paddingRight: op.paddingRight, paddingBottom: op.paddingBottom, paddingLeft: op.paddingLeft });
+          result = { op: "set_padding", nodeId: op.nodeId };
+          break;
+
+        case "set_item_spacing":
+          await setItemSpacing({ nodeId: op.nodeId, itemSpacing: op.itemSpacing, counterAxisSpacing: op.counterAxisSpacing });
+          result = { op: "set_item_spacing", nodeId: op.nodeId };
+          break;
+
+        case "set_text_decoration":
+          await setTextDecoration({ nodeId: op.nodeId, decoration: op.decoration });
+          result = { op: "set_text_decoration", nodeId: op.nodeId };
           break;
 
         default:

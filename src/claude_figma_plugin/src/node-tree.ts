@@ -1,4 +1,4 @@
-import { sendProgressUpdate, generateCommandId, resolveColorValue, hexToFigmaColor, getVariableByName, bindVariableToColor, appendOrInsertChild, loadAllFonts, fontWeightToStyle, applyColorPaint } from './utils';
+import { sendProgressUpdate, generateCommandId, resolveColorValue, hexToFigmaColor, getVariableByName, bindVariableToColor, appendOrInsertChild, loadAllFonts, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyImageFill } from './utils';
 import { setCharacters } from './text';
 import { createFrame, createText, createRectangle } from './creation';
 import { createVector, normalizeSvgPath } from './vectors';
@@ -158,6 +158,30 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
     if (spec.opacity !== undefined && existingNode.opacity !== spec.opacity) {
       existingNode.opacity = spec.opacity;
       changedProps.push("opacity");
+    }
+    if (spec.effects !== undefined && "effects" in existingNode) {
+      existingNode.effects = buildFigmaEffects(spec.effects);
+      changedProps.push("effects");
+    }
+    if (spec.fillImage && spec.fillImage.base64 && "fills" in existingNode) {
+      applyImageFill(existingNode, spec.fillImage);
+      changedProps.push("fillImage");
+    }
+    var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
+    for (var ci = 0; ci < cornerProps.length; ci++) {
+      var cp = cornerProps[ci];
+      if (spec[cp] !== undefined && cp in existingNode && existingNode[cp] !== spec[cp]) {
+        existingNode[cp] = spec[cp];
+        changedProps.push(cp);
+      }
+    }
+    if (spec.strokeAlign !== undefined && "strokeAlign" in existingNode && existingNode.strokeAlign !== spec.strokeAlign) {
+      existingNode.strokeAlign = spec.strokeAlign;
+      changedProps.push("strokeAlign");
+    }
+    if (spec.layoutPositioning !== undefined && "layoutPositioning" in existingNode && existingNode.layoutPositioning !== spec.layoutPositioning) {
+      applyLayoutPositioning(existingNode, spec);
+      changedProps.push("layoutPositioning");
     }
 
     // --- Frame properties ---

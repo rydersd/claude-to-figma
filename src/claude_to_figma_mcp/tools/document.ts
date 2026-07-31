@@ -67,12 +67,13 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     "Get detailed information about a specific node in Figma",
     {
       nodeId: z.string().describe("The ID of the node to get information about"),
+      fields: z.array(z.string()).optional().describe("Optional whitelist of fields to return (e.g. ['id','name','absoluteBoundingBox']). Projection is applied recursively to children. Omit to get the full filtered node."),
     },
-    async ({ nodeId }: any) => {
+    async ({ nodeId, fields }: any) => {
       try {
-        const result = await sendCommandToFigma("get_node_info", { nodeId });
+        const result = await sendCommandToFigma("get_node_info", { nodeId, fields });
         return {
-          content: [{ type: "text", text: JSON.stringify(filterFigmaNode(result)) }]
+          content: [{ type: "text", text: JSON.stringify(filterFigmaNode(result, fields)) }]
         };
       } catch (error) {
         return {
@@ -87,18 +88,19 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     "get_nodes_info",
     "Get detailed information about multiple nodes in Figma",
     {
-      nodeIds: z.array(z.string()).describe("Array of node IDs to get information about")
+      nodeIds: z.array(z.string()).describe("Array of node IDs to get information about"),
+      fields: z.array(z.string()).optional().describe("Optional whitelist of fields to return per node (e.g. ['id','name','absoluteBoundingBox']). Projection is applied recursively to children. Omit to get the full filtered nodes."),
     },
-    async ({ nodeIds }: any) => {
+    async ({ nodeIds, fields }: any) => {
       try {
         const results = await Promise.all(
           nodeIds.map(async (nodeId: any) => {
-            const result = await sendCommandToFigma('get_node_info', { nodeId });
+            const result = await sendCommandToFigma('get_node_info', { nodeId, fields });
             return { nodeId, info: result };
           })
         );
         return {
-          content: [{ type: "text", text: JSON.stringify(results.map((result) => filterFigmaNode(result.info))) }]
+          content: [{ type: "text", text: JSON.stringify(results.map((result) => filterFigmaNode(result.info, fields))) }]
         };
       } catch (error) {
         return {

@@ -41,7 +41,20 @@
       return x.toString(16).padStart(2, "0");
     }).join("");
   }
-  function filterFigmaNode(node) {
+  function projectNode(node, fields) {
+    var out = {};
+    for (var i = 0; i < fields.length; i++) {
+      var f = fields[i];
+      if (node[f] !== void 0) out[f] = node[f];
+    }
+    if (node.children && fields.indexOf("children") !== -1) {
+      out.children = node.children.map(function(c) {
+        return projectNode(c, fields);
+      });
+    }
+    return out;
+  }
+  function filterFigmaNode(node, fields) {
     if (node.type === "VECTOR") {
       return null;
     }
@@ -105,10 +118,13 @@
     }
     if (node.children) {
       filtered.children = node.children.map((child) => {
-        return filterFigmaNode(child);
+        return filterFigmaNode(child, fields);
       }).filter((child) => {
         return child !== null;
       });
+    }
+    if (fields && fields.length > 0) {
+      return projectNode(filtered, fields);
     }
     return filtered;
   }
@@ -141,6 +157,43 @@
       base64 += chars[a] + chars[b] + chars[c] + "=";
     }
     return base64;
+  }
+  function customBase64Decode(base64) {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const lookup = {};
+    for (let i = 0; i < chars.length; i++) lookup[chars[i]] = i;
+    const clean = base64.replace(/[\r\n\s]/g, "");
+    let padding = 0;
+    if (clean.endsWith("==")) padding = 2;
+    else if (clean.endsWith("=")) padding = 1;
+    const byteLength = clean.length / 4 * 3 - padding;
+    const bytes = new Uint8Array(byteLength);
+    let byteIndex = 0;
+    for (let i = 0; i < clean.length; i += 4) {
+      const a = lookup[clean[i]];
+      const b = lookup[clean[i + 1]];
+      const c = clean[i + 2] === "=" ? 0 : lookup[clean[i + 2]];
+      const d = clean[i + 3] === "=" ? 0 : lookup[clean[i + 3]];
+      if (a === void 0 || b === void 0) throw new Error("Invalid base64 input");
+      const chunk = a << 18 | b << 12 | c << 6 | d;
+      if (byteIndex < byteLength) bytes[byteIndex++] = chunk >> 16 & 255;
+      if (byteIndex < byteLength) bytes[byteIndex++] = chunk >> 8 & 255;
+      if (byteIndex < byteLength) bytes[byteIndex++] = chunk & 255;
+    }
+    return bytes;
+  }
+  function applyImageFill(node, imageSpec) {
+    if (!imageSpec || !imageSpec.base64) throw new Error("Missing image base64 data");
+    const bytes = customBase64Decode(imageSpec.base64);
+    const image = figma.createImage(bytes);
+    const paint = {
+      type: "IMAGE",
+      imageHash: image.hash,
+      scaleMode: imageSpec.scaleMode || "FILL"
+    };
+    if (imageSpec.opacity !== void 0) paint.opacity = imageSpec.opacity;
+    node.fills = [paint];
+    return { imageHash: image.hash, scaleMode: paint.scaleMode };
   }
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -263,7 +316,153 @@
         return "Regular";
     }
   }
+  function isGradientValue(value) {
+    if (value && typeof value === "object" && Array.isArray(value.stops)) return true;
+    if (typeof value === "string" && /^(linear|radial)-gradient\(/.test(value.trim())) return true;
+    return false;
+  }
+  function gradientTransformFromAngle(deg) {
+    var rad = (deg - 90) * Math.PI / 180;
+    var cos = Math.cos(rad);
+    var sin = Math.sin(rad);
+    return [
+      [cos, sin, 0.5 - 0.5 * cos - 0.5 * sin],
+      [-sin, cos, 0.5 + 0.5 * sin - 0.5 * cos]
+    ];
+  }
+  function splitTopLevel(str) {
+    var parts = [];
+    var depth = 0;
+    var current = "";
+    for (var i = 0; i < str.length; i++) {
+      var ch = str[i];
+      if (ch === "(") depth++;
+      if (ch === ")") depth--;
+      if (ch === "," && depth === 0) {
+        parts.push(current.trim());
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    if (current.trim()) parts.push(current.trim());
+    return parts;
+  }
+  function parseCssColor(token) {
+    token = token.trim();
+    if (token.startsWith("#")) return hexToFigmaColor(token);
+    var m = token.match(/^rgba?\(([^)]*)\)$/);
+    if (m) {
+      var nums = m[1].split(",").map(function(s) {
+        return parseFloat(s.trim());
+      });
+      if (nums.length >= 3) {
+        return {
+          r: (nums[0] || 0) / 255,
+          g: (nums[1] || 0) / 255,
+          b: (nums[2] || 0) / 255,
+          a: nums.length > 3 && !isNaN(nums[3]) ? nums[3] : 1
+        };
+      }
+    }
+    return null;
+  }
+  var SIDE_ANGLES = {
+    "to top": 0,
+    "to top right": 45,
+    "to right top": 45,
+    "to right": 90,
+    "to bottom right": 135,
+    "to right bottom": 135,
+    "to bottom": 180,
+    "to bottom left": 225,
+    "to left bottom": 225,
+    "to left": 270,
+    "to top left": 315,
+    "to left top": 315
+  };
+  function parseCssGradient(css) {
+    var m = css.trim().match(/^(linear|radial)-gradient\((.*)\)$/s);
+    if (!m) return null;
+    var kind = m[1];
+    var parts = splitTopLevel(m[2]);
+    if (parts.length === 0) return null;
+    var angle = 180;
+    var first = parts[0].toLowerCase();
+    if (kind === "linear") {
+      var angleMatch = first.match(/^(-?[\d.]+)deg$/);
+      if (angleMatch) {
+        angle = parseFloat(angleMatch[1]);
+        parts.shift();
+      } else if (SIDE_ANGLES[first] !== void 0) {
+        angle = SIDE_ANGLES[first];
+        parts.shift();
+      }
+    } else {
+      if (/^(circle|ellipse|closest-|farthest-|at )/.test(first)) parts.shift();
+    }
+    var stops = [];
+    for (var i = 0; i < parts.length; i++) {
+      var stopMatch = parts[i].match(/^(.*?)(?:\s+([\d.]+)%)?$/s);
+      if (!stopMatch) return null;
+      var color = parseCssColor(stopMatch[1]);
+      if (!color) return null;
+      stops.push({
+        color,
+        position: stopMatch[2] !== void 0 ? parseFloat(stopMatch[2]) / 100 : void 0
+      });
+    }
+    if (stops.length < 2) return null;
+    if (stops[0].position === void 0) stops[0].position = 0;
+    if (stops[stops.length - 1].position === void 0) stops[stops.length - 1].position = 1;
+    for (var j = 1; j < stops.length - 1; j++) {
+      if (stops[j].position === void 0) {
+        var prev = j - 1;
+        var next = j + 1;
+        while (stops[next].position === void 0) next++;
+        var span = next - prev;
+        for (var k = prev + 1; k < next; k++) {
+          stops[k].position = stops[prev].position + (stops[next].position - stops[prev].position) * (k - prev) / span;
+        }
+      }
+    }
+    return {
+      type: kind === "radial" ? "GRADIENT_RADIAL" : "GRADIENT_LINEAR",
+      angle,
+      stops
+    };
+  }
+  function buildGradientPaint(gradient) {
+    var spec = typeof gradient === "string" ? parseCssGradient(gradient) : gradient;
+    if (!spec || !Array.isArray(spec.stops) || spec.stops.length < 2) return null;
+    var gradientStops = [];
+    for (var i = 0; i < spec.stops.length; i++) {
+      var stop = spec.stops[i];
+      var color = typeof stop.color === "string" ? hexToFigmaColor(stop.color) : stop.color;
+      if (!color) return null;
+      gradientStops.push({
+        position: stop.position !== void 0 ? stop.position : i / (spec.stops.length - 1),
+        color: { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== void 0 ? color.a : 1 }
+      });
+    }
+    var type = spec.type || "GRADIENT_LINEAR";
+    var transform = type === "GRADIENT_LINEAR" ? gradientTransformFromAngle(spec.angle !== void 0 ? spec.angle : 180) : [[1, 0, 0], [0, 1, 0]];
+    return {
+      type,
+      gradientStops,
+      gradientTransform: transform
+    };
+  }
   function applyColorPaint(node, field, colorObj) {
+    if (isGradientValue(colorObj)) {
+      var paint = buildGradientPaint(colorObj);
+      if (paint) {
+        node[field] = [paint];
+      } else {
+        console.warn("[applyColorPaint] Could not parse gradient value; leaving " + field + " unchanged");
+      }
+      return;
+    }
     if (colorObj.a !== void 0 && parseFloat(colorObj.a) === 0) {
       node[field] = [];
     } else {
@@ -276,6 +475,57 @@
         },
         opacity: colorObj.a !== void 0 ? parseFloat(colorObj.a) : 1
       }];
+    }
+  }
+  function buildFigmaEffects(effects) {
+    var figmaEffects = [];
+    for (var i = 0; i < effects.length; i++) {
+      var e = effects[i];
+      var effect = {
+        type: e.type,
+        visible: e.visible !== false
+      };
+      if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
+        var color = e.color || { r: 0, g: 0, b: 0, a: 0.25 };
+        if (typeof color === "string") {
+          var parsed = hexToFigmaColor(color);
+          if (parsed) color = parsed;
+          else color = { r: 0, g: 0, b: 0, a: 0.25 };
+        }
+        effect.color = { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== void 0 ? color.a : 0.25 };
+        effect.offset = { x: e.offset && e.offset.x || 0, y: e.offset && e.offset.y || 4 };
+        effect.radius = e.radius !== void 0 ? e.radius : 4;
+        effect.spread = e.spread !== void 0 ? e.spread : 0;
+        if (e.blendMode) effect.blendMode = e.blendMode;
+      } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+        effect.radius = e.radius !== void 0 ? e.radius : 4;
+      }
+      figmaEffects.push(effect);
+    }
+    return figmaEffects;
+  }
+  function applyCornerRadii(node, spec) {
+    if (spec.cornerRadius !== void 0 && "cornerRadius" in node) {
+      node.cornerRadius = spec.cornerRadius;
+    }
+    var corners = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
+    for (var i = 0; i < corners.length; i++) {
+      var prop = corners[i];
+      if (spec[prop] !== void 0 && prop in node) {
+        node[prop] = spec[prop];
+      }
+    }
+  }
+  function applyLayoutPositioning(node, spec) {
+    if (spec.layoutPositioning === void 0) return;
+    if (!("layoutPositioning" in node)) return;
+    try {
+      node.layoutPositioning = spec.layoutPositioning;
+      if (spec.layoutPositioning === "ABSOLUTE") {
+        if (spec.x !== void 0) node.x = spec.x;
+        if (spec.y !== void 0) node.y = spec.y;
+      }
+    } catch (e) {
     }
   }
   async function loadAllFonts(textNode) {
@@ -333,7 +583,7 @@
       }))
     };
   }
-  async function getNodeInfo(nodeId) {
+  async function getNodeInfo(nodeId, fields) {
     const node = await figma.getNodeByIdAsync(nodeId);
     if (!node) {
       throw new Error(`Node not found with ID: ${nodeId}`);
@@ -341,9 +591,9 @@
     const response = await node.exportAsync({
       format: "JSON_REST_V1"
     });
-    return filterFigmaNode(response.document);
+    return filterFigmaNode(response.document, fields);
   }
-  async function getNodesInfo(nodeIds) {
+  async function getNodesInfo(nodeIds, fields) {
     try {
       const nodes = await Promise.all(
         nodeIds.map((id) => figma.getNodeByIdAsync(id))
@@ -356,7 +606,7 @@
           });
           return {
             nodeId: node.id,
-            document: filterFigmaNode(response.document)
+            document: filterFigmaNode(response.document, fields)
           };
         })
       );
@@ -1720,11 +1970,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     rect.y = y;
     rect.resize(width, height);
     rect.name = name;
-    if (params.cornerRadius !== void 0) {
-      rect.cornerRadius = params.cornerRadius;
-    }
+    applyCornerRadii(rect, params);
     if (fillColor) {
       applyColorPaint(rect, "fills", fillColor);
+    }
+    if (params.fillImage && params.fillImage.base64) {
+      applyImageFill(rect, params.fillImage);
     }
     if (params.strokeColor) {
       applyColorPaint(rect, "strokes", params.strokeColor);
@@ -1732,10 +1983,17 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (params.strokeWeight !== void 0) {
       rect.strokeWeight = params.strokeWeight;
     }
+    if (params.strokeAlign !== void 0) {
+      rect.strokeAlign = params.strokeAlign;
+    }
+    if (params.effects && Array.isArray(params.effects)) {
+      rect.effects = buildFigmaEffects(params.effects);
+    }
     if (params.opacity !== void 0) {
       rect.opacity = params.opacity;
     }
     await appendOrInsertChild(rect, parentId, params.insertAt);
+    applyLayoutPositioning(rect, params);
     return {
       id: rect.id,
       name: rect.name,
@@ -1777,9 +2035,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (params.clipsContent !== void 0) {
       frame.clipsContent = !!params.clipsContent;
     }
-    if (params.cornerRadius !== void 0) {
-      frame.cornerRadius = params.cornerRadius;
-    }
+    applyCornerRadii(frame, params);
     if (params.opacity !== void 0) {
       frame.opacity = params.opacity;
     }
@@ -1809,13 +2065,23 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (fillColor) {
       applyColorPaint(frame, "fills", fillColor);
     }
+    if (params.fillImage && params.fillImage.base64) {
+      applyImageFill(frame, params.fillImage);
+    }
     if (strokeColor) {
       applyColorPaint(frame, "strokes", strokeColor);
     }
     if (strokeWeight !== void 0) {
       frame.strokeWeight = strokeWeight;
     }
+    if (params.strokeAlign !== void 0) {
+      frame.strokeAlign = params.strokeAlign;
+    }
+    if (params.effects && Array.isArray(params.effects)) {
+      frame.effects = buildFigmaEffects(params.effects);
+    }
     await appendOrInsertChild(frame, parentId, params.insertAt);
+    applyLayoutPositioning(frame, params);
     if (layoutMode !== "NONE") {
       if (layoutSizingHorizontal === "FILL" || layoutSizingVertical === "FILL") {
         try {
@@ -1913,6 +2179,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       textNode.textAutoResize = "HEIGHT";
     }
     await appendOrInsertChild(textNode, parentId, params.insertAt);
+    applyLayoutPositioning(textNode, params);
     return {
       id: textNode.id,
       name: textNode.name,
@@ -2021,10 +2288,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   // src/claude_figma_plugin/src/styling.ts
   async function setFillColor(params) {
     console.log("setFillColor", params);
-    const {
-      nodeId,
-      color: { r, g, b, a }
-    } = params || {};
+    const nodeId = params && params.nodeId;
     if (!nodeId) {
       throw new Error("Missing nodeId parameter");
     }
@@ -2035,6 +2299,19 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!("fills" in node)) {
       throw new Error(`Node does not support fills: ${nodeId}`);
     }
+    if (params.gradient) {
+      const paint = buildGradientPaint(params.gradient);
+      if (!paint) {
+        throw new Error("Could not parse gradient value");
+      }
+      node.fills = [paint];
+      return {
+        id: node.id,
+        name: node.name,
+        fills: [paint]
+      };
+    }
+    const { r, g, b, a } = params.color || {};
     if (a !== void 0 && parseFloat(a) === 0) {
       node.fills = [];
       return {
@@ -2299,6 +2576,21 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       clipsContent: node.clipsContent
     };
   }
+  async function setImageFill(params) {
+    const { nodeId, image } = params || {};
+    if (!nodeId) throw new Error("Missing nodeId parameter");
+    if (!image || !image.base64) throw new Error("Missing image data");
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+    if (!("fills" in node)) throw new Error(`Node does not support fills: ${nodeId}`);
+    const result = applyImageFill(node, image);
+    return {
+      id: node.id,
+      name: node.name,
+      imageHash: result.imageHash,
+      scaleMode: result.scaleMode
+    };
+  }
   async function setEffects(params) {
     var nodeId = params.nodeId;
     var node = await figma.getNodeByIdAsync(nodeId);
@@ -2306,30 +2598,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!("effects" in node)) throw new Error("Node does not support effects (type: " + node.type + ")");
     var effects = params.effects;
     if (!effects || !Array.isArray(effects)) throw new Error("Missing or invalid effects array");
-    var figmaEffects = [];
-    for (var i = 0; i < effects.length; i++) {
-      var e = effects[i];
-      var effect = {
-        type: e.type,
-        visible: e.visible !== false
-      };
-      if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
-        var color = e.color || { r: 0, g: 0, b: 0, a: 0.25 };
-        if (typeof color === "string") {
-          var parsed = hexToFigmaColor(color);
-          if (parsed) color = parsed;
-          else color = { r: 0, g: 0, b: 0, a: 0.25 };
-        }
-        effect.color = { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== void 0 ? color.a : 0.25 };
-        effect.offset = { x: e.offset && e.offset.x || 0, y: e.offset && e.offset.y || 4 };
-        effect.radius = e.radius !== void 0 ? e.radius : 4;
-        effect.spread = e.spread !== void 0 ? e.spread : 0;
-        if (e.blendMode) effect.blendMode = e.blendMode;
-      } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
-        effect.radius = e.radius !== void 0 ? e.radius : 4;
-      }
-      figmaEffects.push(effect);
-    }
+    var figmaEffects = buildFigmaEffects(effects);
     node.effects = figmaEffects;
     return {
       id: node.id,
@@ -5203,6 +5472,30 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         existingNode.opacity = spec.opacity;
         changedProps.push("opacity");
       }
+      if (spec.effects !== void 0 && "effects" in existingNode) {
+        existingNode.effects = buildFigmaEffects(spec.effects);
+        changedProps.push("effects");
+      }
+      if (spec.fillImage && spec.fillImage.base64 && "fills" in existingNode) {
+        applyImageFill(existingNode, spec.fillImage);
+        changedProps.push("fillImage");
+      }
+      var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
+      for (var ci = 0; ci < cornerProps.length; ci++) {
+        var cp = cornerProps[ci];
+        if (spec[cp] !== void 0 && cp in existingNode && existingNode[cp] !== spec[cp]) {
+          existingNode[cp] = spec[cp];
+          changedProps.push(cp);
+        }
+      }
+      if (spec.strokeAlign !== void 0 && "strokeAlign" in existingNode && existingNode.strokeAlign !== spec.strokeAlign) {
+        existingNode.strokeAlign = spec.strokeAlign;
+        changedProps.push("strokeAlign");
+      }
+      if (spec.layoutPositioning !== void 0 && "layoutPositioning" in existingNode && existingNode.layoutPositioning !== spec.layoutPositioning) {
+        applyLayoutPositioning(existingNode, spec);
+        changedProps.push("layoutPositioning");
+      }
       if (type === "frame") {
         if (spec.width !== void 0 && spec.height !== void 0) {
           if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
@@ -5882,6 +6175,40 @@ Processing annotation ${i + 1}/${annotations.length}:`,
               vpNode.resize(op.width, op.height);
             }
             result = { op: "set_vector_path", nodeId: op.nodeId, name: vpNode.name, width: vpNode.width, height: vpNode.height };
+            break;
+          // Consolidated single-property setters — delegate to the canonical handlers
+          // so behavior matches the (now internal) standalone commands exactly.
+          case "set_opacity":
+            await setOpacity({ nodeId: op.nodeId, opacity: op.opacity });
+            result = { op: "set_opacity", nodeId: op.nodeId };
+            break;
+          case "set_rotation":
+            await setRotation({ nodeId: op.nodeId, rotation: op.rotation });
+            result = { op: "set_rotation", nodeId: op.nodeId };
+            break;
+          case "set_blend_mode":
+            await setBlendMode({ nodeId: op.nodeId, blendMode: op.blendMode });
+            result = { op: "set_blend_mode", nodeId: op.nodeId };
+            break;
+          case "set_corner_radius":
+            await setCornerRadius({ nodeId: op.nodeId, radius: op.radius, corners: op.corners });
+            result = { op: "set_corner_radius", nodeId: op.nodeId };
+            break;
+          case "set_effects":
+            await setEffects({ nodeId: op.nodeId, effects: op.effects });
+            result = { op: "set_effects", nodeId: op.nodeId };
+            break;
+          case "set_padding":
+            await setPadding({ nodeId: op.nodeId, paddingTop: op.paddingTop, paddingRight: op.paddingRight, paddingBottom: op.paddingBottom, paddingLeft: op.paddingLeft });
+            result = { op: "set_padding", nodeId: op.nodeId };
+            break;
+          case "set_item_spacing":
+            await setItemSpacing({ nodeId: op.nodeId, itemSpacing: op.itemSpacing, counterAxisSpacing: op.counterAxisSpacing });
+            result = { op: "set_item_spacing", nodeId: op.nodeId };
+            break;
+          case "set_text_decoration":
+            await setTextDecoration({ nodeId: op.nodeId, decoration: op.decoration });
+            result = { op: "set_text_decoration", nodeId: op.nodeId };
             break;
           default:
             throw new Error("Unknown operation: " + op.op);
@@ -7224,12 +7551,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         if (!params || !params.nodeId) {
           throw new Error("Missing nodeId parameter");
         }
-        return await getNodeInfo(params.nodeId);
+        return await getNodeInfo(params.nodeId, params.fields);
       case "get_nodes_info":
         if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
           throw new Error("Missing or invalid nodeIds parameter");
         }
-        return await getNodesInfo(params.nodeIds);
+        return await getNodesInfo(params.nodeIds, params.fields);
       case "read_my_design":
         return await readMyDesign();
       case "create_rectangle":
@@ -7240,6 +7567,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         return await createText(params);
       case "set_fill_color":
         return await setFillColor(params);
+      case "set_image_fill":
+        return await setImageFill(params);
       case "set_stroke_color":
         return await setStrokeColor(params);
       case "move_node":
@@ -7336,6 +7665,16 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         return await setFocus(params);
       case "set_selections":
         return await setSelections(params);
+      case "undo": {
+        const undoSteps = Math.min(Math.max(params && params.count || 1, 1), 50);
+        for (let i = 0; i < undoSteps; i++) figma.triggerUndo();
+        return { success: true, steps: undoSteps };
+      }
+      case "redo": {
+        const redoSteps = Math.min(Math.max(params && params.count || 1, 1), 50);
+        for (let i = 0; i < redoSteps; i++) figma.triggerRedo();
+        return { success: true, steps: redoSteps };
+      }
       case "set_font_family":
         return await setFontFamily(params);
       case "set_text_auto_resize":
