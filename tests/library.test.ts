@@ -13,6 +13,11 @@ import {
   resolveLibraryRef,
   chooseVariant,
   LibraryRefError,
+  getLibraryConfig,
+  loadLibraryIndex,
+  clearLibraryCache,
+  LibraryConfigError,
+  CONFIG_HELP,
 } from "../src/claude_to_figma_mcp/tools/library";
 
 describe("parseVariantProperties", () => {
@@ -207,5 +212,77 @@ describe("resolveLibraryRef", () => {
   test("duplicate exact names across libraries are ambiguous", () => {
     const dup = [...index, makeSet("Badge", { libraryName: "Other Lib" })];
     expect(() => resolveLibraryRef("$lib:Badge", dup)).toThrow(/multiple libraries|Candidates:/);
+  });
+});
+
+describe("getLibraryConfig", () => {
+  test("splits and trims comma-separated file keys", () => {
+    const cfg = getLibraryConfig({ FIGMA_API_TOKEN: "figd_x", FIGMA_LIBRARY_FILE_KEYS: " abc , def ,, " } as any);
+    expect(cfg.token).toBe("figd_x");
+    expect(cfg.fileKeys).toEqual(["abc", "def"]);
+  });
+
+  test("empty env yields no token and no keys", () => {
+    const cfg = getLibraryConfig({} as any);
+    expect(cfg.token).toBeUndefined();
+    expect(cfg.fileKeys).toEqual([]);
+  });
+});
+
+describe("loadLibraryIndex", () => {
+  const realFetch = globalThis.fetch;
+  const realToken = process.env.FIGMA_API_TOKEN;
+  const realKeys = process.env.FIGMA_LIBRARY_FILE_KEYS;
+
+  function restore() {
+    globalThis.fetch = realFetch;
+    if (realToken === undefined) delete process.env.FIGMA_API_TOKEN; else process.env.FIGMA_API_TOKEN = realToken;
+    if (realKeys === undefined) delete process.env.FIGMA_LIBRARY_FILE_KEYS; else process.env.FIGMA_LIBRARY_FILE_KEYS = realKeys;
+    clearLibraryCache();
+  }
+
+  test("throws LibraryConfigError with setup help when unconfigured", async () => {
+    delete process.env.FIGMA_API_TOKEN;
+    delete process.env.FIGMA_LIBRARY_FILE_KEYS;
+    clearLibraryCache();
+    try {
+      await expect(loadLibraryIndex()).rejects.toBeInstanceOf(LibraryConfigError);
+    } finally { restore(); }
+  });
+
+  test("fetches components + component_sets per file key and caches the result", async () => {
+    process.env.FIGMA_API_TOKEN = "figd_test";
+    process.env.FIGMA_LIBRARY_FILE_KEYS = "KEY1";
+    clearLibraryCache();
+    let calls: string[] = [];
+    globalThis.fetch = (async (url: any) => {
+      calls.push(String(url));
+      const path = String(url);
+      const body = path.includes("/component_sets")
+        ? { meta: { component_sets: FIXTURE_SETS } }
+        : path.includes("/components")
+        ? { meta: { components: FIXTURE_COMPONENTS } }
+        : { name: "QUIX v2" }; // /v1/files/KEY1/meta
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as any;
+    try {
+      const index = await loadLibraryIndex();
+      expect(index.find((s) => s.setName === "Badge")).toBeTruthy();
+      const callCount = calls.length;
+      await loadLibraryIndex(); // second call served from cache
+      expect(calls.length).toBe(callCount);
+      await loadLibraryIndex({ refresh: true }); // refresh refetches
+      expect(calls.length).toBeGreaterThan(callCount);
+    } finally { restore(); }
+  });
+
+  test("maps HTTP errors to actionable hints", async () => {
+    process.env.FIGMA_API_TOKEN = "figd_bad";
+    process.env.FIGMA_LIBRARY_FILE_KEYS = "KEY1";
+    clearLibraryCache();
+    globalThis.fetch = (async () => new Response("{}", { status: 403 })) as any;
+    try {
+      await expect(loadLibraryIndex()).rejects.toThrow(/scopes|token/i);
+    } finally { restore(); }
   });
 });

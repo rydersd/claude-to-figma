@@ -230,3 +230,95 @@ export function resolveLibraryRef(
   const variant = chooseVariant(winner, properties);
   return { componentKey: variant.key, setName: winner.setName, variantName: variant.name };
 }
+
+// ---------------------------------------------------------------------------
+// Config + REST fetch + session cache
+// ---------------------------------------------------------------------------
+
+const FIGMA_API_BASE = "https://api.figma.com";
+
+export class LibraryConfigError extends Error {}
+
+export const CONFIG_HELP =
+  "Library tools need two environment variables:\n" +
+  "  FIGMA_API_TOKEN — a Figma personal access token (Figma → Settings → Security → " +
+  "Personal access tokens) with scopes 'File content: read' and 'Library content: read'.\n" +
+  "  FIGMA_LIBRARY_FILE_KEYS — comma-separated file keys of the libraries to index, " +
+  "from each library file's URL: figma.com/design/<FILE_KEY>/...\n" +
+  "Set them in your shell (e.g. ~/.zshrc) and reference them from .mcp.json as " +
+  '"${FIGMA_API_TOKEN}", then restart the MCP server.';
+
+export function getLibraryConfig(env: NodeJS.ProcessEnv = process.env): {
+  token?: string;
+  fileKeys: string[];
+} {
+  return {
+    token: env.FIGMA_API_TOKEN || undefined,
+    fileKeys: (env.FIGMA_LIBRARY_FILE_KEYS || "")
+      .split(",")
+      .map((k) => k.trim())
+      .filter(Boolean),
+  };
+}
+
+async function figmaGet(path: string, token: string): Promise<any> {
+  const response = await fetch(`${FIGMA_API_BASE}${path}`, {
+    headers: { "X-Figma-Token": token },
+  });
+  if (!response.ok) {
+    const hint =
+      response.status === 401 || response.status === 403
+        ? "check FIGMA_API_TOKEN and its scopes ('File content: read' + 'Library content: read')"
+        : response.status === 404
+          ? "check the file key in FIGMA_LIBRARY_FILE_KEYS (from the library file's URL)"
+          : response.status === 429
+            ? `rate limited — retry after ${response.headers.get("retry-after") || "a moment"}`
+            : "unexpected Figma API error";
+    throw new Error(`Figma API ${response.status} on ${path}: ${hint}`);
+  }
+  return response.json();
+}
+
+// Session-lifetime cache: file key → set entries. refresh:true refetches.
+const indexCache = new Map<string, LibraryComponentSet[]>();
+
+export function clearLibraryCache(): void {
+  indexCache.clear();
+}
+
+async function fetchLibraryFile(fileKey: string, token: string): Promise<LibraryComponentSet[]> {
+  let libraryName = fileKey;
+  try {
+    const meta = await figmaGet(`/v1/files/${fileKey}/meta`, token);
+    libraryName = meta?.file?.name || meta?.name || fileKey;
+  } catch (error) {
+    logger.warn(`Could not fetch library name for ${fileKey}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const [compRes, setRes] = await Promise.all([
+    figmaGet(`/v1/files/${fileKey}/components`, token),
+    figmaGet(`/v1/files/${fileKey}/component_sets`, token),
+  ]);
+  return buildLibraryIndex(
+    fileKey,
+    libraryName,
+    compRes?.meta?.components || [],
+    setRes?.meta?.component_sets || []
+  );
+}
+
+export async function loadLibraryIndex(opts: { refresh?: boolean } = {}): Promise<LibraryIndex> {
+  const { token, fileKeys } = getLibraryConfig();
+  if (!token || fileKeys.length === 0) {
+    throw new LibraryConfigError(CONFIG_HELP);
+  }
+  const index: LibraryIndex = [];
+  for (const fileKey of fileKeys) {
+    if (opts.refresh || !indexCache.has(fileKey)) {
+      const sets = await fetchLibraryFile(fileKey, token);
+      indexCache.set(fileKey, sets);
+      logger.info(`Indexed library ${fileKey}: ${sets.length} component sets`);
+    }
+    index.push(...indexCache.get(fileKey)!);
+  }
+  return index;
+}
