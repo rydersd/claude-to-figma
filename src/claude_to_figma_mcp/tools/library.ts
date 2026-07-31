@@ -140,3 +140,88 @@ export function searchIndex(
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }
+
+// ---------------------------------------------------------------------------
+// $lib: resolution (pure)
+// ---------------------------------------------------------------------------
+
+export class LibraryRefError extends Error {}
+
+/** Pick the variant whose parsed properties best match the requested ones; first variant otherwise. */
+export function chooseVariant(
+  set: LibraryComponentSet,
+  properties?: Record<string, string | boolean>
+): LibraryVariant {
+  if (!properties || Object.keys(properties).length === 0 || set.variants.length === 1) {
+    return set.variants[0];
+  }
+  let best = set.variants[0];
+  let bestHits = -1;
+  for (const variant of set.variants) {
+    const hits = Object.entries(properties).filter(
+      ([prop, value]) =>
+        (variant.properties[prop] || "").toLowerCase() === String(value).toLowerCase()
+    ).length;
+    if (hits > bestHits) {
+      best = variant;
+      bestHits = hits;
+    }
+  }
+  return best;
+}
+
+/**
+ * Resolve "$lib:<name>" to a concrete component key.
+ * A unique exact name match always wins. Otherwise the top score must be ≥ 60
+ * with a ≥ 20 lead over the runner-up — anything else throws with candidates,
+ * so a wrong component is never silently placed.
+ */
+export function resolveLibraryRef(
+  ref: string,
+  index: LibraryIndex,
+  properties?: Record<string, string | boolean>
+): { componentKey: string; setName: string; variantName: string } {
+  const query = ref.replace(/^\$lib:/, "").trim();
+  const scored = index
+    .map((set) => ({ set, score: scoreMatch(query, set) }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (scored.length === 0) {
+    throw new LibraryRefError(
+      `No library component matches "${query}". Use search_library_components to explore, ` +
+        `or — if nothing in the library fits — follow the component_proposal_guide prompt ` +
+        `instead of imitating a component with raw shapes.`
+    );
+  }
+
+  const describe = (r: { set: LibraryComponentSet; score: number }) =>
+    `"${r.set.setName}" (${r.set.libraryName}, score ${r.score})`;
+
+  const exactMatches = scored.filter((r) => r.set.setName.toLowerCase() === query.toLowerCase());
+  if (exactMatches.length > 1) {
+    throw new LibraryRefError(
+      `"${query}" exists in multiple libraries: ${exactMatches.map(describe).join(", ")}. ` +
+        `Use a raw componentKey from search_library_components instead.`
+    );
+  }
+
+  let winner: LibraryComponentSet;
+  if (exactMatches.length === 1) {
+    winner = exactMatches[0].set;
+  } else {
+    const top = scored[0];
+    const second = scored[1];
+    if (top.score < 60 || (second && top.score - second.score < 20)) {
+      throw new LibraryRefError(
+        `Ambiguous library reference "${query}". Candidates: ` +
+          `${scored.slice(0, 5).map(describe).join(", ")}. ` +
+          `Use the exact set name or a raw componentKey from search_library_components.`
+      );
+    }
+    winner = top.set;
+  }
+
+  const variant = chooseVariant(winner, properties);
+  return { componentKey: variant.key, setName: winner.setName, variantName: variant.name };
+}

@@ -10,6 +10,9 @@ import {
   buildLibraryIndex,
   scoreMatch,
   searchIndex,
+  resolveLibraryRef,
+  chooseVariant,
+  LibraryRefError,
 } from "../src/claude_to_figma_mcp/tools/library";
 
 describe("parseVariantProperties", () => {
@@ -150,5 +153,54 @@ describe("searchIndex", () => {
   test("excludes zero-score sets", () => {
     const names = searchIndex(index, "badge", 10).map((r) => r.set.setName);
     expect(names).toEqual(["Badge", "Badge Group"]);
+  });
+});
+
+describe("chooseVariant", () => {
+  const badge = makeSet("Badge", {
+    variants: [
+      { key: "k-default", name: "State=Default, Size=MD", properties: { State: "Default", Size: "MD" } },
+      { key: "k-success", name: "State=Success, Size=MD", properties: { State: "Success", Size: "MD" } },
+      { key: "k-success-lg", name: "State=Success, Size=LG", properties: { State: "Success", Size: "LG" } },
+    ],
+    propertyValues: { State: ["Default", "Success"], Size: ["MD", "LG"] },
+  });
+
+  test("no properties → first variant", () => {
+    expect(chooseVariant(badge).key).toBe("k-default");
+  });
+
+  test("picks the variant with the most matching property values (case-insensitive)", () => {
+    expect(chooseVariant(badge, { State: "success", Size: "LG" }).key).toBe("k-success-lg");
+    expect(chooseVariant(badge, { State: "Success" }).key).toBe("k-success");
+  });
+});
+
+describe("resolveLibraryRef", () => {
+  const index = [
+    makeSet("Badge"),
+    makeSet("Badge Group"),
+    makeSet("Banner"),
+  ];
+
+  test("unique exact match wins even with close runner-up", () => {
+    const r = resolveLibraryRef("$lib:Badge", index);
+    expect(r.componentKey).toBe("badge-key");
+    expect(r.setName).toBe("Badge");
+  });
+
+  test("no match throws with proposal-workflow directive", () => {
+    expect(() => resolveLibraryRef("$lib:Data Table", index)).toThrow(LibraryRefError);
+    expect(() => resolveLibraryRef("$lib:Data Table", index)).toThrow(/component_proposal_guide/);
+  });
+
+  test("ambiguous (low lead) throws listing candidates", () => {
+    // "ba" prefixes Badge, Badge Group, and Banner — all score 80, no exact match
+    expect(() => resolveLibraryRef("$lib:ba", index)).toThrow(/Candidates:.*Badge.*Banner/s);
+  });
+
+  test("duplicate exact names across libraries are ambiguous", () => {
+    const dup = [...index, makeSet("Badge", { libraryName: "Other Lib" })];
+    expect(() => resolveLibraryRef("$lib:Badge", dup)).toThrow(/multiple libraries|Candidates:/);
   });
 });
