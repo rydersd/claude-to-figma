@@ -13,6 +13,7 @@ import { normalizeSvgPath, createVector, createLine, setVectorPath, getVectorNet
 import { getReactions, setReactions, addReaction, removeReactions, getInteractions, batchSetReactions, setDefaultConnector, createConnections, setFocus, setSelections } from './prototyping';
 import { createNodeTree } from './node-tree';
 import { screenshotRegion, batchMutate, scanNodeStyles, introspectNode, setProperties, optimizeStructure, designQuery, figmaEval, diffComponents, migrateInstance, batchMigrate } from './analysis';
+import { formatError } from './utils';
 
 // Plugin state
 const state = {
@@ -23,6 +24,38 @@ const state = {
 
 // Show UI
 figma.showUI(__html__, { width: 350, height: 600 });
+
+// --- Uncaught error reporting ---
+// Every command goes through handleCommand's try/catch below, so a red "Plugin
+// error" toast in Figma means the throw escaped the dispatcher entirely —
+// typically a floating promise (`forEach(async ...)`, an un-awaited .then()).
+// Those never reach the WebSocket, so without this the stack dies in the toast.
+// Figma's sandbox does not document a global error hook, so each listener is
+// feature-detected; console.error is the one channel that always works.
+function reportUncaught(source: string, error: any) {
+  const detail = formatError(error);
+  console.error(`[claude-to-figma] uncaught ${source}:\n${detail}`);
+  try {
+    figma.ui.postMessage({ type: "uncaught-error", source, error: detail });
+  } catch (e) {
+    // UI may be closed — the console.error above is still on the record.
+  }
+}
+
+const globalScope: any = globalThis as any;
+if (typeof globalScope.addEventListener === "function") {
+  globalScope.addEventListener("unhandledrejection", (event: any) =>
+    reportUncaught("promise rejection", event && "reason" in event ? event.reason : event)
+  );
+  globalScope.addEventListener("error", (event: any) =>
+    reportUncaught("error", event && "error" in event ? event.error : event)
+  );
+} else {
+  globalScope.onunhandledrejection = (event: any) =>
+    reportUncaught("promise rejection", event && "reason" in event ? event.reason : event);
+  globalScope.onerror = (message: any, _source: any, _line: any, _col: any, error: any) =>
+    reportUncaught("error", error !== undefined ? error : message);
+}
 
 // Plugin commands from UI
 figma.ui.onmessage = async (msg: any) => {
@@ -50,7 +83,7 @@ figma.ui.onmessage = async (msg: any) => {
         figma.ui.postMessage({
           type: "command-error",
           id: msg.id,
-          error: error.message || "Error executing command",
+          error: formatError(error) || "Error executing command",
         });
       }
       break;

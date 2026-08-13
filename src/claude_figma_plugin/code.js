@@ -27,6 +27,13 @@
     await new Promise((resolve) => setTimeout(resolve, 0));
     return update;
   }
+  function formatError(error) {
+    if (error === null || error === void 0) return String(error);
+    var message = typeof error.message === "string" && error.message ? error.message : String(error);
+    var stack = typeof error.stack === "string" ? error.stack : "";
+    if (!stack) return message;
+    return stack.indexOf(message) !== -1 ? stack : message + "\n" + stack;
+  }
   function rgbaToHex(color) {
     var r = Math.round(color.r * 255);
     var g = Math.round(color.g * 255);
@@ -7099,7 +7106,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       );
       return { success: true, result: safeSerialize(rawResult) };
     } catch (error) {
-      return { success: false, error: error.message || String(error) };
+      return { success: false, error: formatError(error) };
     }
   }
   function autoMapProperties(sourceProps, targetProps, strategy) {
@@ -7545,6 +7552,29 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     // Auto-connect on plugin launch
   };
   figma.showUI(__html__, { width: 350, height: 600 });
+  function reportUncaught(source, error) {
+    const detail = formatError(error);
+    console.error(`[claude-to-figma] uncaught ${source}:
+${detail}`);
+    try {
+      figma.ui.postMessage({ type: "uncaught-error", source, error: detail });
+    } catch (e) {
+    }
+  }
+  var globalScope = globalThis;
+  if (typeof globalScope.addEventListener === "function") {
+    globalScope.addEventListener(
+      "unhandledrejection",
+      (event) => reportUncaught("promise rejection", event && "reason" in event ? event.reason : event)
+    );
+    globalScope.addEventListener(
+      "error",
+      (event) => reportUncaught("error", event && "error" in event ? event.error : event)
+    );
+  } else {
+    globalScope.onunhandledrejection = (event) => reportUncaught("promise rejection", event && "reason" in event ? event.reason : event);
+    globalScope.onerror = (message, _source, _line, _col, error) => reportUncaught("error", error !== void 0 ? error : message);
+  }
   figma.ui.onmessage = async (msg) => {
     switch (msg.type) {
       case "update-settings":
@@ -7568,7 +7598,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           figma.ui.postMessage({
             type: "command-error",
             id: msg.id,
-            error: error.message || "Error executing command"
+            error: formatError(error) || "Error executing command"
           });
         }
         break;

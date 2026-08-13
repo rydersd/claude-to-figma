@@ -1,7 +1,7 @@
 // analysis.ts — Analysis, introspection, batch mutation, design query, and component migration
 // Extracted from code.js as part of the plugin modularization refactor.
 
-import { sendProgressUpdate, generateCommandId, loadAllFonts, customBase64Encode, safeMixed, hexToFigmaColor, appendOrInsertChild, getVariableByName, bindVariableToColor, resolveColorValue, rgbaToHex } from './utils';
+import { sendProgressUpdate, generateCommandId, loadAllFonts, customBase64Encode, safeMixed, hexToFigmaColor, appendOrInsertChild, getVariableByName, bindVariableToColor, resolveColorValue, rgbaToHex, formatError } from './utils';
 import { setCharacters, setTextDecoration } from './text';
 import { normalizeSvgPath } from './vectors';
 import { setOpacity, setRotation, setBlendMode, setCornerRadius, setEffects } from './styling';
@@ -1246,7 +1246,7 @@ export async function figmaEval(params: any) {
       resolveColorValue, sendProgressUpdate, introspectNode, setProperties);
     return { success: true, result: safeSerialize(rawResult) };
   } catch (error: any) {
-    return { success: false, error: error.message || String(error) };
+    return { success: false, error: formatError(error) };
   }
 }
 

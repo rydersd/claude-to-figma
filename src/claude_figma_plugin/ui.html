@@ -832,6 +832,27 @@
         );
       }
 
+      // Report an uncaught plugin-code error to the server. Carries no request
+      // id on purpose — see the "uncaught-error" case above.
+      function sendUncaughtErrorToServer(source, error) {
+        if (!state.connected || !state.socket) {
+          console.error("Cannot report uncaught error: socket not connected");
+          return;
+        }
+
+        state.socket.send(
+          JSON.stringify({
+            type: "message",
+            channel: state.channel,
+            message: {
+              type: "uncaught_error",
+              source: source,
+              error: error,
+            },
+          })
+        );
+      }
+
       // Reset progress UI
       function resetProgressUI() {
         progressContainer.classList.add("hidden");
@@ -879,6 +900,17 @@
           case "command-error":
             // Forward the error from plugin code back to WebSocket
             sendErrorResponse(message.id, message.error);
+            break;
+          case "uncaught-error":
+            // Out-of-band: an escaped rejection belongs to no request, so this
+            // must not settle one — it would mask that command's real result.
+            console.error(
+              "Uncaught error in plugin code (" +
+                message.source +
+                "):\n" +
+                message.error
+            );
+            sendUncaughtErrorToServer(message.source, message.error);
             break;
           case "command_progress":
             // Update UI with progress information

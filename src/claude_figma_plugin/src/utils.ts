@@ -47,6 +47,25 @@ export async function sendProgressUpdate(
   return update;
 }
 
+// Render a thrown value as a string that keeps the stack. Figma's error toast
+// shows only the message, so the throwing frame is lost exactly when it matters
+// — "in get_mainComponent: Cannot call with documentAccess: dynamic-page" names
+// the API but not the call site. Everything that reports an error back over the
+// WebSocket should go through this.
+export function formatError(error: any): string {
+  if (error === null || error === undefined) return String(error);
+
+  var message =
+    typeof error.message === "string" && error.message
+      ? error.message
+      : String(error);
+  var stack = typeof error.stack === "string" ? error.stack : "";
+
+  if (!stack) return message;
+  // V8-style stacks already lead with "Error: <message>" — don't repeat it.
+  return stack.indexOf(message) !== -1 ? stack : message + "\n" + stack;
+}
+
 export function rgbaToHex(color: any) {
   var r = Math.round(color.r * 255);
   var g = Math.round(color.g * 255);

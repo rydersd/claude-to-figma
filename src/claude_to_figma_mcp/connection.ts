@@ -86,6 +86,16 @@ export function connectToFigma(port: number = 3055) {
         return;
       }
 
+      // Handle out-of-band uncaught errors from the plugin sandbox. These carry
+      // no request id by design, so they must not settle a pending request —
+      // they only surface the stack that Figma's error toast truncates away.
+      if (json.message && json.message.type === 'uncaught_error') {
+        logger.error(
+          `Uncaught error in Figma plugin (${json.message.source}): ${json.message.error}`
+        );
+        return;
+      }
+
       // Handle regular responses
       const myResponse = json.message;
 
