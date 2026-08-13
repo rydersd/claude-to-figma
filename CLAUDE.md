@@ -18,6 +18,7 @@ Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay ←(WebSo
 
 ```bash
 bun install              # Install dependencies
+bun run typecheck        # tsc --noEmit — REQUIRED before claiming a change compiles
 bun run build            # Build MCP server (dist/) AND Figma plugin (src/claude_figma_plugin/code.js) via tsup
 bun run build:plugin     # Build Figma plugin only (src/claude_figma_plugin/code.js)
 bun run dev              # Build in watch mode
@@ -25,6 +26,8 @@ bun socket               # Start WebSocket relay server (port 3055)
 bun run start            # Run built MCP server
 bun setup                # Full setup (install + write .mcp.json)
 ```
+
+`bun run build` uses tsup/esbuild, which **strips types without checking them** — a build can succeed on code that does not typecheck. Run `bun run typecheck` separately; "build succeeded" is not evidence the code compiles.
 
 Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts` runs pure unit tests (no Figma needed). `tests/library-live.test.ts` hits the real Figma REST API and only runs when `FIGMA_API_TOKEN`/`FIGMA_LIBRARY_FILE_KEYS` are set (skipped otherwise). The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel and time out otherwise. No linter is configured.
 

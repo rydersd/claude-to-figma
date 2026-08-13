@@ -83,7 +83,13 @@ figma.ui.onmessage = async (msg: any) => {
         figma.ui.postMessage({
           type: "command-error",
           id: msg.id,
-          error: formatError(error) || "Error executing command",
+          // formatError stringifies null/undefined to "null"/"undefined", both
+          // truthy, so `||` could never reach the fallback — a bare `throw`
+          // reported the literal string "undefined" to the caller.
+          error:
+            error === null || error === undefined
+              ? "Error executing command"
+              : formatError(error),
         });
       }
       break;

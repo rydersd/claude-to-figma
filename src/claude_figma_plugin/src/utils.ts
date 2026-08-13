@@ -384,13 +384,18 @@ export async function getVariableByName(namePath: any) {
 // enumerate library components, which is why component discovery goes through
 // the REST API in tools/library.ts. Variables we can resolve natively: no
 // FIGMA_API_TOKEN, no file keys, just the libraries enabled on this file.
-var _libraryVariableIndex: any = null;
+// Memoize the in-flight promise rather than the object. Publishing a partial
+// index up front let a concurrent caller read an empty map and report a
+// spurious miss; and retaining a *failed* enumeration meant one transient error
+// — permission not yet granted, a dropped request — poisoned every later $var:
+// for the rest of the session with "no variables resolved at all".
+var _libraryVariableIndexPromise: Promise<any> | null = null;
 
-async function buildLibraryVariableIndex() {
-  if (_libraryVariableIndex) return _libraryVariableIndex;
-  _libraryVariableIndex = {};
+function buildLibraryVariableIndex(): Promise<any> {
+  if (_libraryVariableIndexPromise) return _libraryVariableIndexPromise;
 
-  try {
+  _libraryVariableIndexPromise = (async function () {
+    var index: any = {};
     var collections =
       await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
     for (var c = 0; c < collections.length; c++) {
@@ -399,27 +404,37 @@ async function buildLibraryVariableIndex() {
         await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
       for (var v = 0; v < variables.length; v++) {
         var variable = variables[v];
-        _libraryVariableIndex[collection.name + "/" + variable.name] = variable.key;
+        index[collection.name + "/" + variable.name] = variable.key;
         // Bare name only when unambiguous, matching the local-variable rules.
-        if (!_libraryVariableIndex[variable.name]) {
-          _libraryVariableIndex[variable.name] = variable.key;
-        }
+        if (!index[variable.name]) index[variable.name] = variable.key;
       }
     }
-  } catch (err: any) {
-    // No libraries enabled, or the file lacks permission. Not fatal — the
-    // caller reports the miss with the full list of what *was* searchable.
+    return index;
+  })().catch(function (err: any) {
+    // Drop the memo so the next call retries instead of inheriting the failure.
+    _libraryVariableIndexPromise = null;
     console.log("Could not enumerate library variables: " + formatError(err));
-  }
+    return {};
+  });
 
-  return _libraryVariableIndex;
+  return _libraryVariableIndexPromise;
 }
 
 async function importLibraryVariableByName(namePath: any) {
   var index = await buildLibraryVariableIndex();
   var key = index[namePath];
   if (!key) return null;
-  return await figma.variables.importVariableByKeyAsync(key);
+  try {
+    return await figma.variables.importVariableByKeyAsync(key);
+  } catch (err: any) {
+    // Stale key — unpublished, deleted, or access lost since the index was
+    // built. Treat it as a miss so the caller's "not found, here's what is
+    // available" error wins over a raw Figma message.
+    console.log(
+      "Could not import library variable " + namePath + ": " + formatError(err)
+    );
+    return null;
+  }
 }
 
 // Every variable name resolvable right now, local and library, for error

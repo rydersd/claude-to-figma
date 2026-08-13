@@ -504,10 +504,22 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
       return;
     }
 
-    // 4. Bind $var: references
+    // 4. Bind $var: references. An unresolvable token now throws, so keep it
+    // inside this function's error contract: unwinding here would abandon the
+    // run mid-write with nodes already mutated and no ids reported back.
     if (pendingVarBindings.length > 0) {
-      for (var binding of pendingVarBindings) {
-        await bindVariableToColor(existingNode, binding.figmaField, binding.varRef);
+      try {
+        for (var binding of pendingVarBindings) {
+          await bindVariableToColor(existingNode, binding.figmaField, binding.varRef);
+        }
+      } catch (err: any) {
+        errorCount++;
+        errors.push({
+          type,
+          name: spec.name || "(unnamed)",
+          error: "Variable binding failed: " + (err.message || String(err)),
+        });
+        return;
       }
     }
 
@@ -670,13 +682,26 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
       return;
     }
 
-    // Bind any $var: references as real Figma variables on the created node
+    // Bind any $var: references as real Figma variables on the created node.
+    // An unresolvable token now throws; keep it inside the error contract so a
+    // bad ref costs one node rather than abandoning the tree with the nodes
+    // already created and no ids returned to clean them up.
     if (pendingVarBindings.length > 0) {
-      const node = await figma.getNodeByIdAsync(result.id);
-      if (node) {
-        for (const binding of pendingVarBindings) {
-          await bindVariableToColor(node, binding.figmaField, binding.varRef);
+      try {
+        const node = await figma.getNodeByIdAsync(result.id);
+        if (node) {
+          for (const binding of pendingVarBindings) {
+            await bindVariableToColor(node, binding.figmaField, binding.varRef);
+          }
         }
+      } catch (err: any) {
+        errorCount++;
+        errors.push({
+          type,
+          name: props.name || "(unnamed)",
+          error: "Variable binding failed: " + (err.message || String(err)),
+        });
+        return;
       }
     }
 

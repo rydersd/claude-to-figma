@@ -16,6 +16,7 @@
     "start": "bun run dist/server.js",
     "socket": "bun run src/socket.ts",
     "setup": "./scripts/setup.sh",
+    "typecheck": "tsc --noEmit",
     "build": "tsup",
     "build:plugin": "tsup --config tsup.config.ts -- src/claude_figma_plugin/src/main.ts",
     "build:watch": "tsup --watch",

@@ -111,6 +111,7 @@ export type FigmaCommand =
   | "set_text_decoration"
   | "create_node_tree"
   | "get_local_variables"
+  | "get_library_variables"
   | "rename_node"
   | "batch_rename"
   | "create_line"
@@ -433,6 +434,7 @@ export type CommandParams = {
     }>;
   };
   get_local_variables: Record<string, never>;
+  get_library_variables: Record<string, never>;
   rename_node: {
     nodeId: string;
     name: string;

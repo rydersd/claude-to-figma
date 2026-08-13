@@ -270,33 +270,41 @@
     }
     return null;
   }
-  var _libraryVariableIndex = null;
-  async function buildLibraryVariableIndex() {
-    if (_libraryVariableIndex) return _libraryVariableIndex;
-    _libraryVariableIndex = {};
-    try {
+  var _libraryVariableIndexPromise = null;
+  function buildLibraryVariableIndex() {
+    if (_libraryVariableIndexPromise) return _libraryVariableIndexPromise;
+    _libraryVariableIndexPromise = async function() {
+      var index = {};
       var collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
       for (var c = 0; c < collections.length; c++) {
         var collection = collections[c];
         var variables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
         for (var v = 0; v < variables.length; v++) {
           var variable = variables[v];
-          _libraryVariableIndex[collection.name + "/" + variable.name] = variable.key;
-          if (!_libraryVariableIndex[variable.name]) {
-            _libraryVariableIndex[variable.name] = variable.key;
-          }
+          index[collection.name + "/" + variable.name] = variable.key;
+          if (!index[variable.name]) index[variable.name] = variable.key;
         }
       }
-    } catch (err) {
+      return index;
+    }().catch(function(err) {
+      _libraryVariableIndexPromise = null;
       console.log("Could not enumerate library variables: " + formatError(err));
-    }
-    return _libraryVariableIndex;
+      return {};
+    });
+    return _libraryVariableIndexPromise;
   }
   async function importLibraryVariableByName(namePath) {
     var index = await buildLibraryVariableIndex();
     var key = index[namePath];
     if (!key) return null;
-    return await figma.variables.importVariableByKeyAsync(key);
+    try {
+      return await figma.variables.importVariableByKeyAsync(key);
+    } catch (err) {
+      console.log(
+        "Could not import library variable " + namePath + ": " + formatError(err)
+      );
+      return null;
+    }
   }
   async function listResolvableVariableNames() {
     await getVariableByName("");
@@ -4272,10 +4280,25 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
   async function getLibraryVariables() {
-    var collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    var commandId = generateCommandId();
     var result = [];
+    var collections = [];
+    try {
+      collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    } catch (err) {
+      return { collections: [], collectionCount: 0, libraryCount: 0, unavailable: String(err && err.message ? err.message : err) };
+    }
     for (var c = 0; c < collections.length; c++) {
       var collection = collections[c];
+      await sendProgressUpdate(
+        commandId,
+        "get_library_variables",
+        "in_progress",
+        Math.round(c / Math.max(collections.length, 1) * 100),
+        collections.length,
+        c,
+        `Reading collection ${c + 1}/${collections.length}: ${collection.name}`
+      );
       var variables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
       result.push({
         key: collection.key,
@@ -4292,7 +4315,22 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         })
       });
     }
-    return { collections: result, libraryCount: result.length };
+    await sendProgressUpdate(
+      commandId,
+      "get_library_variables",
+      "completed",
+      100,
+      collections.length,
+      collections.length,
+      `Read ${result.length} collections`
+    );
+    var libraryNames = {};
+    for (var i = 0; i < result.length; i++) libraryNames[result[i].libraryName] = true;
+    return {
+      collections: result,
+      collectionCount: result.length,
+      libraryCount: Object.keys(libraryNames).length
+    };
   }
   async function getLocalVariables() {
     var collections = await figma.variables.getLocalVariableCollectionsAsync();
@@ -5890,8 +5928,18 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         return;
       }
       if (pendingVarBindings.length > 0) {
-        for (var binding of pendingVarBindings) {
-          await bindVariableToColor(existingNode, binding.figmaField, binding.varRef);
+        try {
+          for (var binding of pendingVarBindings) {
+            await bindVariableToColor(existingNode, binding.figmaField, binding.varRef);
+          }
+        } catch (err) {
+          errorCount++;
+          errors.push({
+            type,
+            name: spec.name || "(unnamed)",
+            error: "Variable binding failed: " + (err.message || String(err))
+          });
+          return;
         }
       }
       nodes.push({
@@ -6032,11 +6080,21 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         return;
       }
       if (pendingVarBindings.length > 0) {
-        const node = await figma.getNodeByIdAsync(result.id);
-        if (node) {
-          for (const binding of pendingVarBindings) {
-            await bindVariableToColor(node, binding.figmaField, binding.varRef);
+        try {
+          const node = await figma.getNodeByIdAsync(result.id);
+          if (node) {
+            for (const binding of pendingVarBindings) {
+              await bindVariableToColor(node, binding.figmaField, binding.varRef);
+            }
           }
+        } catch (err) {
+          errorCount++;
+          errors.push({
+            type,
+            name: props.name || "(unnamed)",
+            error: "Variable binding failed: " + (err.message || String(err))
+          });
+          return;
         }
       }
       createdCount++;
@@ -7669,7 +7727,10 @@ ${detail}`);
           figma.ui.postMessage({
             type: "command-error",
             id: msg.id,
-            error: formatError(error) || "Error executing command"
+            // formatError stringifies null/undefined to "null"/"undefined", both
+            // truthy, so `||` could never reach the fallback — a bare `throw`
+            // reported the literal string "undefined" to the caller.
+            error: error === null || error === void 0 ? "Error executing command" : formatError(error)
           });
         }
         break;

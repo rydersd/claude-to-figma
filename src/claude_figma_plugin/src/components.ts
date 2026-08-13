@@ -792,12 +792,35 @@ export async function createComponentSet(params: any) {
 // discovered over REST in tools/library.ts — but variables resolve natively,
 // with no FIGMA_API_TOKEN and no file keys.
 export async function getLibraryVariables() {
-  var collections =
-    await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+  var commandId = generateCommandId();
   var result: any[] = [];
+  var collections: any[] = [];
 
+  try {
+    collections =
+      await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+  } catch (err: any) {
+    // The tool documents an empty list when nothing is enabled, so honour that
+    // rather than surfacing a raw Figma error for the ordinary "no libraries"
+    // case. The reason still travels back for diagnosis.
+    return { collections: [], collectionCount: 0, libraryCount: 0, unavailable: String(err && err.message ? err.message : err) };
+  }
+
+  // One round-trip per collection: a large design system can otherwise blow
+  // the 30s command timeout with no sign of life.
   for (var c = 0; c < collections.length; c++) {
     var collection = collections[c];
+
+    await sendProgressUpdate(
+      commandId,
+      "get_library_variables",
+      "in_progress",
+      Math.round((c / Math.max(collections.length, 1)) * 100),
+      collections.length,
+      c,
+      `Reading collection ${c + 1}/${collections.length}: ${collection.name}`
+    );
+
     var variables =
       await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
 
@@ -817,7 +840,25 @@ export async function getLibraryVariables() {
     });
   }
 
-  return { collections: result, libraryCount: result.length };
+  await sendProgressUpdate(
+    commandId,
+    "get_library_variables",
+    "completed",
+    100,
+    collections.length,
+    collections.length,
+    `Read ${result.length} collections`
+  );
+
+  // One library commonly publishes several collections, so these differ.
+  var libraryNames: any = {};
+  for (var i = 0; i < result.length; i++) libraryNames[result[i].libraryName] = true;
+
+  return {
+    collections: result,
+    collectionCount: result.length,
+    libraryCount: Object.keys(libraryNames).length,
+  };
 }
 
 export async function getLocalVariables() {
