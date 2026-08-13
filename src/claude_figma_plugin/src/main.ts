@@ -8,7 +8,7 @@ import { createRectangle, createFrame, createText, createEllipse, createSection,
 import { setFillColor, batchSetFillColor, setStrokeColor, setCornerRadius, removeFill, setStrokeDash, setStrokeProperties, setClipsContent, setEffects, setOpacity, setBlendMode, setRotation, setConstraints, setMinMaxSize, setMask, setImageFill } from './styling';
 import { moveNode, resizeNode, deleteNode, deleteMultipleNodes, cloneNode, batchClone, renameNode, batchRename, groupNodes, batchReparent, insertChildAt, reorderChild, setLayoutPositioning } from './transforms';
 import { setLayoutMode, setPadding, setAxisAlign, setLayoutSizing, setItemSpacing } from './layout';
-import { getStyles, getLocalComponents, createComponentInstance, swapInstanceVariant, setComponentProperties, exportNodeAsImage, createComponent, getInstanceOverrides, getValidTargetInstances, getSourceInstanceData, setInstanceOverrides, createComponentSet, getLocalVariables } from './components';
+import { getStyles, getLocalComponents, createComponentInstance, swapInstanceVariant, setComponentProperties, exportNodeAsImage, createComponent, getInstanceOverrides, getValidTargetInstances, getSourceInstanceData, setInstanceOverrides, createComponentSet, getLocalVariables, getLibraryVariables } from './components';
 import { normalizeSvgPath, createVector, createLine, setVectorPath, getVectorNetwork, setVectorNetwork } from './vectors';
 import { getReactions, setReactions, addReaction, removeReactions, getInteractions, batchSetReactions, setDefaultConnector, createConnections, setFocus, setSelections } from './prototyping';
 import { createNodeTree } from './node-tree';
@@ -296,6 +296,8 @@ async function handleCommand(command: string, params: any) {
       return await createNodeTree(params, state.firstOnTop);
     case "get_local_variables":
       return await getLocalVariables();
+    case "get_library_variables":
+      return await getLibraryVariables();
     case "create_line":
       return await createLine(params);
     case "rename_node":

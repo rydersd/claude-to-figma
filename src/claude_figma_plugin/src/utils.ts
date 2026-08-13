@@ -368,15 +368,94 @@ export async function getVariableByName(namePath: any) {
       }
     }
   }
-  return _variableCache[namePath] || null;
+  if (_variableCache[namePath]) return _variableCache[namePath];
+
+  // Local variables win: a file that overrides a library token should keep
+  // using its own. Only fall through to the library when nothing local matched.
+  var imported = await importLibraryVariableByName(namePath);
+  if (imported) {
+    _variableCache[namePath] = imported;
+    return imported;
+  }
+  return null;
+}
+
+// figma.teamLibrary enumerates *variables* only — there is no plugin API to
+// enumerate library components, which is why component discovery goes through
+// the REST API in tools/library.ts. Variables we can resolve natively: no
+// FIGMA_API_TOKEN, no file keys, just the libraries enabled on this file.
+var _libraryVariableIndex: any = null;
+
+async function buildLibraryVariableIndex() {
+  if (_libraryVariableIndex) return _libraryVariableIndex;
+  _libraryVariableIndex = {};
+
+  try {
+    var collections =
+      await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    for (var c = 0; c < collections.length; c++) {
+      var collection = collections[c];
+      var variables =
+        await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
+      for (var v = 0; v < variables.length; v++) {
+        var variable = variables[v];
+        _libraryVariableIndex[collection.name + "/" + variable.name] = variable.key;
+        // Bare name only when unambiguous, matching the local-variable rules.
+        if (!_libraryVariableIndex[variable.name]) {
+          _libraryVariableIndex[variable.name] = variable.key;
+        }
+      }
+    }
+  } catch (err: any) {
+    // No libraries enabled, or the file lacks permission. Not fatal — the
+    // caller reports the miss with the full list of what *was* searchable.
+    console.log("Could not enumerate library variables: " + formatError(err));
+  }
+
+  return _libraryVariableIndex;
+}
+
+async function importLibraryVariableByName(namePath: any) {
+  var index = await buildLibraryVariableIndex();
+  var key = index[namePath];
+  if (!key) return null;
+  return await figma.variables.importVariableByKeyAsync(key);
+}
+
+// Every variable name resolvable right now, local and library, for error
+// messages and for the get_library_variables tool.
+export async function listResolvableVariableNames(): Promise<string[]> {
+  await getVariableByName("");
+  var index = await buildLibraryVariableIndex();
+  var names: any = {};
+  for (var localName in _variableCache) {
+    if (localName) names[localName] = true;
+  }
+  for (var libName in index) {
+    if (libName) names[libName] = true;
+  }
+  return Object.keys(names).sort();
 }
 
 // Bind a Figma variable to a node's color property
 export async function bindVariableToColor(node: any, field: any, varRef: any) {
   var variable = await getVariableByName(varRef);
   if (!variable) {
-    console.log("Variable not found: " + varRef + " — skipping binding for " + field);
-    return false;
+    // Previously a console.log + silent skip, which shipped a hardcoded colour
+    // where a token was asked for and told nobody. A missing token is a broken
+    // build, so say so.
+    var available = await listResolvableVariableNames();
+    throw new Error(
+      "Variable not found: " + varRef + " (binding " + field + "). " +
+        "Searched local variables and enabled team libraries. " +
+        (available.length
+          ? "Available: " +
+            available.slice(0, 40).join(", ") +
+            (available.length > 40
+              ? ", …and " + (available.length - 40) + " more"
+              : "")
+          : "No variables resolved at all — is the library enabled on this file?")
+    );
   }
   try {
     node.setBoundVariable(field, variable);

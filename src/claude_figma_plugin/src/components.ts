@@ -787,6 +787,39 @@ export async function createComponentSet(params: any) {
   };
 }
 
+// Enumerate variables published by the team libraries enabled on this file.
+// figma.teamLibrary has no component equivalent — library *components* are
+// discovered over REST in tools/library.ts — but variables resolve natively,
+// with no FIGMA_API_TOKEN and no file keys.
+export async function getLibraryVariables() {
+  var collections =
+    await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+  var result: any[] = [];
+
+  for (var c = 0; c < collections.length; c++) {
+    var collection = collections[c];
+    var variables =
+      await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
+
+    result.push({
+      key: collection.key,
+      name: collection.name,
+      libraryName: collection.libraryName,
+      variables: variables.map(function (v: any) {
+        return {
+          key: v.key,
+          name: v.name,
+          resolvedType: v.resolvedType,
+          // Exactly what you pass to $var: in create_node_tree.
+          ref: collection.name + "/" + v.name,
+        };
+      }),
+    });
+  }
+
+  return { collections: result, libraryCount: result.length };
+}
+
 export async function getLocalVariables() {
   var collections = await figma.variables.getLocalVariableCollectionsAsync();
   var result: any[] = [];

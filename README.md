@@ -111,6 +111,21 @@ Then pass them through in `.mcp.json`'s `ClaudeToFigma` server entry:
 
 Restart the MCP server after setting these. Without them, the two library tools return setup instructions instead of a component list.
 
+#### Library components vs. library variables
+
+These two are **not** symmetrical, and only one of them needs the token above:
+
+| | Discovery route | Needs `FIGMA_API_TOKEN` |
+|---|---|---|
+| Library **components** (`$lib:`) | Figma REST API | Yes |
+| Library **variables** (`$var:`) | Plugin API (`figma.teamLibrary`) | No |
+
+Figma's plugin API exposes no way to enumerate library *components* — verified against typings 1.133.0, where `figma.teamLibrary` still offers only `getAvailableLibraryVariableCollectionsAsync` and `getVariablesInLibraryCollectionAsync`. That asymmetry is why component discovery goes over REST while variables resolve natively.
+
+In practice: `$var:Collection/Name` resolves against local variables first, then falls through to any team library **enabled on the current file** — no token, no file keys, just the library turned on in Figma. Use `get_library_variables` to list what's reachable.
+
+A `$var:` ref that resolves to nothing is now a hard error naming the ref and listing available tokens. It previously logged to the console and carried on, which silently shipped a hardcoded colour wherever a token was requested.
+
 ### WebSocket Server
 
 Start the WebSocket server:
@@ -252,6 +267,7 @@ The MCP server provides the following tools for interacting with Figma:
 
 - `get_styles` - Returns all local paint, text, effect, and grid styles in the document
 - `get_local_variables` - Returns all local variables (design tokens) organized by collection — use names with `$var:Collection/Name` in color fields to bind real Figma variables
+- `get_library_variables` - Returns design tokens published by the team libraries **enabled on this file**, each with a ready-to-use `$var:` ref. Needs no `FIGMA_API_TOKEN` — unlike library *components*, variables are readable straight from the plugin API
 - `get_local_components` - Returns all local components with their IDs, names, descriptions, and published keys
 - `create_component` - Converts an existing frame into a reusable Figma component, returning its new component ID and key
 - `create_component_instance` - Places an instance of a component by local ID or published key at (x, y), with optional parent

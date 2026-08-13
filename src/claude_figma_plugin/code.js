@@ -262,13 +262,61 @@
         }
       }
     }
-    return _variableCache[namePath] || null;
+    if (_variableCache[namePath]) return _variableCache[namePath];
+    var imported = await importLibraryVariableByName(namePath);
+    if (imported) {
+      _variableCache[namePath] = imported;
+      return imported;
+    }
+    return null;
+  }
+  var _libraryVariableIndex = null;
+  async function buildLibraryVariableIndex() {
+    if (_libraryVariableIndex) return _libraryVariableIndex;
+    _libraryVariableIndex = {};
+    try {
+      var collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+      for (var c = 0; c < collections.length; c++) {
+        var collection = collections[c];
+        var variables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
+        for (var v = 0; v < variables.length; v++) {
+          var variable = variables[v];
+          _libraryVariableIndex[collection.name + "/" + variable.name] = variable.key;
+          if (!_libraryVariableIndex[variable.name]) {
+            _libraryVariableIndex[variable.name] = variable.key;
+          }
+        }
+      }
+    } catch (err) {
+      console.log("Could not enumerate library variables: " + formatError(err));
+    }
+    return _libraryVariableIndex;
+  }
+  async function importLibraryVariableByName(namePath) {
+    var index = await buildLibraryVariableIndex();
+    var key = index[namePath];
+    if (!key) return null;
+    return await figma.variables.importVariableByKeyAsync(key);
+  }
+  async function listResolvableVariableNames() {
+    await getVariableByName("");
+    var index = await buildLibraryVariableIndex();
+    var names = {};
+    for (var localName in _variableCache) {
+      if (localName) names[localName] = true;
+    }
+    for (var libName in index) {
+      if (libName) names[libName] = true;
+    }
+    return Object.keys(names).sort();
   }
   async function bindVariableToColor(node, field, varRef) {
     var variable = await getVariableByName(varRef);
     if (!variable) {
-      console.log("Variable not found: " + varRef + " \u2014 skipping binding for " + field);
-      return false;
+      var available = await listResolvableVariableNames();
+      throw new Error(
+        "Variable not found: " + varRef + " (binding " + field + "). Searched local variables and enabled team libraries. " + (available.length ? "Available: " + available.slice(0, 40).join(", ") + (available.length > 40 ? ", \u2026and " + (available.length - 40) + " more" : "") : "No variables resolved at all \u2014 is the library enabled on this file?")
+      );
     }
     try {
       node.setBoundVariable(field, variable);
@@ -4223,6 +4271,29 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       height: componentSet.height
     };
   }
+  async function getLibraryVariables() {
+    var collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    var result = [];
+    for (var c = 0; c < collections.length; c++) {
+      var collection = collections[c];
+      var variables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
+      result.push({
+        key: collection.key,
+        name: collection.name,
+        libraryName: collection.libraryName,
+        variables: variables.map(function(v) {
+          return {
+            key: v.key,
+            name: v.name,
+            resolvedType: v.resolvedType,
+            // Exactly what you pass to $var: in create_node_tree.
+            ref: collection.name + "/" + v.name
+          };
+        })
+      });
+    }
+    return { collections: result, libraryCount: result.length };
+  }
   async function getLocalVariables() {
     var collections = await figma.variables.getLocalVariableCollectionsAsync();
     var result = [];
@@ -7790,6 +7861,8 @@ ${detail}`);
         return await createNodeTree(params, state.firstOnTop);
       case "get_local_variables":
         return await getLocalVariables();
+      case "get_library_variables":
+        return await getLibraryVariables();
       case "create_line":
         return await createLine(params);
       case "rename_node":
