@@ -53,6 +53,16 @@ export function connectToFigma(port: number = 3055) {
 
       const json = JSON.parse(data) as ProgressMessage;
 
+      // The Figma plugin in our channel closed: forget the channel so the next
+      // command auto-joins whichever file is connected now.
+      if (json.type === "system" && json.event === "peer_left") {
+        if (json.role === "plugin" && json.channel === currentChannel) {
+          logger.info(`Figma plugin left channel ${currentChannel}; will auto-join on next command`);
+          currentChannel = null;
+        }
+        return;
+      }
+
       // Handle progress updates
       if (json.type === 'progress_update') {
         const progressData = json.message.data as CommandProgressUpdate;
@@ -194,6 +204,9 @@ export function listChannels(timeoutMs: number = 5000): Promise<{ name: string; 
   });
 }
 
+// Errors that retrying cannot fix: the user has to open, close or pick a file.
+export class ChannelSelectionError extends Error {}
+
 // Join the channel automatically when exactly one Figma file is connected.
 // Concurrent callers share one attempt so a burst of tool calls joins once.
 let autoJoinInFlight: Promise<string> | null = null;
@@ -204,12 +217,14 @@ export function autoJoinChannel(): Promise<string> {
     autoJoinInFlight = (async () => {
       const active = await listChannels();
       if (active.length === 0) {
-        throw new Error("No Figma file is connected. In the Figma desktop app, run the Claude to Figma plugin and click Connect.");
+        throw new ChannelSelectionError("No Figma file is connected. In the Figma desktop app, run the Claude to Figma plugin and click Connect.");
       }
       if (active.length > 1) {
         const names = active.map((c) => c.name).join(", ");
-        throw new Error(`Several Figma files are connected (${names}). Call join_channel with the channel shown in the plugin you want.`);
+        throw new ChannelSelectionError(`Several Figma files are connected (${names}). Call join_channel with the channel shown in the plugin you want.`);
       }
+      // An explicit join_channel may have finished while we were asking.
+      if (currentChannel) return currentChannel;
       await joinChannel(active[0].name);
       return active[0].name;
     })().finally(() => {
@@ -247,7 +262,7 @@ export function sendCommandToFigma(
       id,
       type: command === "join" ? "join" : "message",
       ...(command === "join"
-        ? { channel: (params as any).channel }
+        ? { channel: (params as any).channel, role: "mcp" }
         : { channel: currentChannel }),
       message: {
         id,
@@ -315,6 +330,9 @@ export async function sendCommandWithRetry(
 
       return result;
     } catch (error) {
+      // Not a Figma failure: report it now, don't retry or skew metrics.
+      if (error instanceof ChannelSelectionError) throw error;
+
       const durationMs = Date.now() - startTime;
       lastError = error instanceof Error ? error : new Error(String(error));
 

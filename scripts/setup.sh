@@ -79,7 +79,11 @@ if [ "$REGISTER_USER" -eq 1 ]; then
   fi
   # Replace any earlier user-scope entry so a moved repo or upgraded bun is picked up.
   claude mcp remove --scope user ClaudeToFigma >/dev/null 2>&1 || true
-  claude mcp add --scope user ClaudeToFigma -- "$BUN_PATH" "$SERVER_TS"
+  if ! claude mcp add --scope user ClaudeToFigma -- "$BUN_PATH" "$SERVER_TS"; then
+    echo "✗ claude mcp add failed, so ClaudeToFigma is not registered for your user." >&2
+    echo "  Fix the error above, then re-run: bun setup --user" >&2
+    exit 1
+  fi
   echo "✓ Registered ClaudeToFigma for your user: available in every project"
 else
   echo ""

@@ -5,6 +5,11 @@ import { Server, ServerWebSocket } from "bun";
 // Store clients by channel
 const channels = new Map<string, Set<ServerWebSocket<any>>>();
 
+// Who each socket is. MCP servers say role "mcp" when they join; anything
+// else (the Figma plugin) counts as a plugin.
+const roles = new WeakMap<ServerWebSocket<any>, "mcp" | "plugin">();
+const isPlugin = (ws: ServerWebSocket<any>) => roles.get(ws) !== "mcp";
+
 function handleConnection(ws: ServerWebSocket<any>) {
   // Don't add to clients immediately - wait for channel join
   console.log("New client connected");
@@ -104,6 +109,7 @@ const server = Bun.serve({
           // Add client to channel
           const channelClients = channels.get(channelName)!;
           channelClients.add(ws);
+          roles.set(ws, data.role === "mcp" ? "mcp" : "plugin");
 
           console.log(`\n✓ Client joined channel "${channelName}" (${channelClients.size} total clients)`);
 
@@ -140,7 +146,7 @@ const server = Bun.serve({
         // auto-join when exactly one Figma file is connected.
         if (data.type === "list_channels") {
           const active = [...channels.entries()]
-            .filter(([, clients]) => clients.size > 0 && !clients.has(ws))
+            .filter(([, clients]) => [...clients].some(isPlugin))
             .map(([name, clients]) => ({ name, clients: clients.size }));
           ws.send(JSON.stringify({
             type: "system",
@@ -229,9 +235,17 @@ const server = Bun.serve({
       }
     },
     close(ws: ServerWebSocket<any>) {
-      // Remove client from their channel
-      channels.forEach((clients) => {
-        clients.delete(ws);
+      // Remove client from their channel and tell the others who left, so an
+      // MCP server can drop a channel whose Figma plugin has gone.
+      const role = isPlugin(ws) ? "plugin" : "mcp";
+      channels.forEach((clients, channelName) => {
+        if (!clients.delete(ws)) return;
+        clients.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: "system", event: "peer_left", role, channel: channelName }));
+          }
+        });
+        if (clients.size === 0) channels.delete(channelName);
       });
     }
   }
