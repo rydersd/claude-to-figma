@@ -136,6 +136,19 @@ const server = Bun.serve({
           return;
         }
 
+        // List channels that have someone in them, so the MCP server can
+        // auto-join when exactly one Figma file is connected.
+        if (data.type === "list_channels") {
+          const active = [...channels.entries()]
+            .filter(([, clients]) => clients.size > 0 && !clients.has(ws))
+            .map(([name, clients]) => ({ name, clients: clients.size }));
+          ws.send(JSON.stringify({
+            type: "system",
+            message: { id: data.id, result: active },
+          }));
+          return;
+        }
+
         // Handle regular messages
         if (data.type === "message") {
           const channelName = data.channel;

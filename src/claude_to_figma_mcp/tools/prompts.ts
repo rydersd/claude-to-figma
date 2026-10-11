@@ -449,7 +449,7 @@ This strategy enables transferring content and property overrides from a source 
 - Confirm text content and style overrides have transferred successfully
 
 ## Key Tips
-- Always join the appropriate channel first with \`join_channel()\`
+- Tools auto-join the connected Figma file; call \`join_channel()\` only when several files are connected
 - When working with multiple targets, check the full selection with \`get_selection()\`
 - Preserve component relationships by using instance overrides rather than direct text manipulation`,
             },
