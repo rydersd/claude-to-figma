@@ -1,0 +1,16 @@
+{
+  "name": "figma-bridge",
+  "displayName": "Claude to Figma",
+  "version": "0.2.0",
+  "description": "Lets Claude read and draw in the open Figma file through a local plugin: auto layout, variables, components, text, vectors and batch edits.",
+  "author": { "name": "Ryder Booth", "url": "https://github.com/rydersd" },
+  "repository": "https://github.com/rydersd/claude-to-figma",
+  "license": "MIT",
+  "keywords": ["figma", "design", "design-system", "mcp"],
+  "mcpServers": {
+    "ClaudeToFigma": {
+      "command": "bash",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/run-server.sh"]
+    }
+  }
+}

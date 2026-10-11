@@ -45,8 +45,9 @@ function handleConnection(ws: ServerWebSocket<any>) {
 
 const server = Bun.serve({
   port: 3055,
-  // uncomment this to allow connections in windows wsl
-  // hostname: "0.0.0.0",
+  // Loopback only, so nothing else on the network can drive Figma. For
+  // Windows + WSL, start the relay with C2F_RELAY_HOST=0.0.0.0.
+  hostname: process.env.C2F_RELAY_HOST || "127.0.0.1",
   fetch(req: Request, server: Server) {
     // Handle CORS preflight
     if (req.method === "OPTIONS") {
