@@ -17252,7 +17252,14 @@ function onDisconnect() {
 import fs2 from "fs";
 import net from "net";
 import path2 from "path";
-import { spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
+
+// src/relay-protocol.ts
+var RELAY_PROTOCOL_VERSION = "2";
+var RELAY_VERSION_HEADER = "X-C2F-Relay-Protocol";
+var RELAY_PORT = Number(process.env.C2F_RELAY_PORT) || 3055;
+
+// src/claude_to_figma_mcp/plugin-runtime.ts
 var PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 var PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
 var isPluginInstall = Boolean(PLUGIN_ROOT && PLUGIN_DATA);
@@ -17285,14 +17292,50 @@ function isRelayListening(port, timeoutMs = 500) {
     socket.once("error", () => done(false));
   });
 }
+async function relayVersion(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1000) });
+    return res.headers.get(RELAY_VERSION_HEADER) ?? "";
+  } catch {
+    return null;
+  }
+}
+async function stopOwnRelay(pidFile, port) {
+  let pid;
+  try {
+    pid = Number(fs2.readFileSync(pidFile, "utf-8").trim());
+    const command = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf-8" });
+    if (!command.includes(path2.join("server", "relay.js")))
+      return false;
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return false;
+  }
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (!await isRelayListening(port))
+      return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
 var relayStart = null;
 function ensureRelay(port) {
   if (!PLUGIN_ROOT || !PLUGIN_DATA)
     return isRelayListening(port);
   if (!relayStart) {
     relayStart = (async () => {
-      if (await isRelayListening(port))
+      const pidFile = path2.join(PLUGIN_DATA, "relay.pid");
+      const version = await relayVersion(port);
+      if (version === RELAY_PROTOCOL_VERSION)
         return true;
+      if (version !== null) {
+        if (!await stopOwnRelay(pidFile, port)) {
+          logger.warn(`An older relay (protocol "${version}") is running on port ${port} and wasn't started by this plugin.`);
+          return true;
+        }
+        logger.info("Replaced an older relay started by this plugin");
+      }
       if (!process.versions.bun) {
         logger.error("The relay needs Bun. Install it: curl -fsSL https://bun.sh/install | bash");
         return false;
@@ -17300,16 +17343,15 @@ function ensureRelay(port) {
       const relayScript = path2.join(PLUGIN_ROOT, "server", "relay.js");
       const logPath = path2.join(PLUGIN_DATA, "relay.log");
       fs2.mkdirSync(PLUGIN_DATA, { recursive: true });
-      const log = fs2.openSync(logPath, "a");
+      const log = fs2.openSync(logPath, "w");
       const child = spawn(process.execPath, [relayScript], {
         detached: true,
-        stdio: ["ignore", log, log]
+        stdio: ["ignore", log, log],
+        env: { ...process.env, C2F_RELAY_PID_FILE: pidFile }
       });
       child.unref();
       fs2.closeSync(log);
-      if (child.pid)
-        fs2.writeFileSync(path2.join(PLUGIN_DATA, "relay.pid"), String(child.pid));
-      logger.info(`Started relay (pid ${child.pid}); log: ${logPath}`);
+      logger.info(`Starting relay; log: ${logPath}`);
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline) {
         if (await isRelayListening(port))
@@ -17326,19 +17368,19 @@ function ensureRelay(port) {
 }
 
 // src/claude_to_figma_mcp/connection.ts
-var RELAY_PORT = 3055;
 var ws = null;
 var pendingRequests = new Map;
 var currentChannel = null;
 var args = process.argv.slice(2);
 var serverArg = args.find((arg) => arg.startsWith("--server="));
 var serverUrl = serverArg ? serverArg.split("=")[1] : "localhost";
-var WS_URL = serverUrl === "localhost" ? `ws://${serverUrl}` : `wss://${serverUrl}`;
+var isLocalRelay = serverUrl === "localhost";
+var WS_URL = isLocalRelay ? "ws://127.0.0.1" : `wss://${serverUrl}`;
 function connectToFigma(port = RELAY_PORT) {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return;
   }
-  const wsUrl = serverUrl === "localhost" ? `${WS_URL}:${port}` : WS_URL;
+  const wsUrl = isLocalRelay ? `${WS_URL}:${port}` : WS_URL;
   logger.info(`Connecting to Figma socket server at ${wsUrl}...`);
   ws = new WebSocket(wsUrl);
   ws.on("open", () => {
@@ -17434,8 +17476,8 @@ async function joinChannel(channelName) {
   }
 }
 async function ensureConnected(timeoutMs = 5000) {
-  if (!await ensureRelay(RELAY_PORT)) {
-    throw new Error("The relay isn't running on port 3055. Start it with `bun socket` in the claude-to-figma repo.");
+  if (isLocalRelay && !await ensureRelay(RELAY_PORT)) {
+    throw new Error(isPluginInstall ? `Couldn't start the relay on port ${RELAY_PORT}. Run setup_status for details.` : `The relay isn't running on port ${RELAY_PORT}. Start it with \`bun socket\` in the claude-to-figma repo.`);
   }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -17444,7 +17486,7 @@ async function ensureConnected(timeoutMs = 5000) {
     connectToFigma();
     await new Promise((r) => setTimeout(r, 100));
   }
-  throw new Error("Couldn't connect to the relay on port 3055.");
+  throw new Error(`Couldn't connect to the relay on port ${RELAY_PORT}.`);
 }
 function listChannels(timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
@@ -17455,7 +17497,7 @@ function listChannels(timeoutMs = 5000) {
     const id = v4_default();
     const timeout = setTimeout(() => {
       if (pendingRequests.delete(id)) {
-        reject(new Error("The relay did not answer list_channels. Restart `bun socket` to pick up the current relay."));
+        reject(new Error(isPluginInstall ? `An older relay is running on port ${RELAY_PORT} (probably \`bun socket\` from a clone). Stop it so the plugin can start its own.` : "The relay did not answer list_channels. Restart `bun socket` to pick up the current relay."));
       }
     }, timeoutMs);
     pendingRequests.set(id, {
@@ -22687,7 +22729,7 @@ This detailed process ensures you correctly interpret the reaction data, prepare
 // src/claude_to_figma_mcp/tools/setup.ts
 function registerSetupTools(server) {
   server.tool("setup_status", "Check the claude-to-figma connection: whether the relay is running (starting it when installed as a Claude Code plugin), which Figma files have the plugin open, and where the Figma plugin manifest is for importing into Figma. Use it when setting up or when a Figma tool reports it isn't connected.", {}, async () => {
-    const relay = await ensureRelay(3055);
+    const relay = await ensureRelay(RELAY_PORT);
     let files = [];
     let channelError;
     if (relay) {
@@ -22751,7 +22793,8 @@ async function main() {
   const transport = new StdioServerTransport;
   await server.connect(transport);
   logger.info("FigmaMCP server running on stdio");
-  process.stdin.on("close", () => process.exit(0));
+  if (isPluginInstall)
+    process.stdin.on("end", () => process.exit(0));
 }
 main().catch((error) => {
   logger.error(`Error starting FigmaMCP server: ${error instanceof Error ? error.message : String(error)}`);

@@ -5,8 +5,9 @@ import type { FigmaCommand, CommandProgressUpdate } from "./types.js";
 import { recordOperation, getAdaptiveParams, getOptimalTimeout } from "./metrics.js";
 import { pushEvent, onDisconnect } from "./events.js";
 import { ensureRelay, isPluginInstall } from "./plugin-runtime.js";
+import { RELAY_PORT } from "../relay-protocol.js";
 
-const RELAY_PORT = 3055;
+
 
 // WebSocket connection and request tracking
 let ws: WebSocket | null = null;
@@ -24,7 +25,10 @@ let currentChannel: string | null = null;
 const args = process.argv.slice(2);
 const serverArg = args.find(arg => arg.startsWith('--server='));
 const serverUrl = serverArg ? serverArg.split('=')[1] : 'localhost';
-const WS_URL = serverUrl === 'localhost' ? `ws://${serverUrl}` : `wss://${serverUrl}`;
+// Use the IPv4 loopback the relay binds to, so "localhost" resolving to ::1
+// first can't miss it.
+const isLocalRelay = serverUrl === 'localhost';
+const WS_URL = isLocalRelay ? 'ws://127.0.0.1' : `wss://${serverUrl}`;
 
 // Update the connectToFigma function
 export function connectToFigma(port: number = RELAY_PORT) {
@@ -34,7 +38,7 @@ export function connectToFigma(port: number = RELAY_PORT) {
     return;
   }
 
-  const wsUrl = serverUrl === 'localhost' ? `${WS_URL}:${port}` : WS_URL;
+  const wsUrl = isLocalRelay ? `${WS_URL}:${port}` : WS_URL;
   logger.info(`Connecting to Figma socket server at ${wsUrl}...`);
   ws = new WebSocket(wsUrl);
 
@@ -183,8 +187,11 @@ export async function joinChannel(channelName: string): Promise<void> {
 
 // Connect to the relay, starting it first when running as an installed plugin.
 async function ensureConnected(timeoutMs: number = 5000): Promise<void> {
-  if (!(await ensureRelay(RELAY_PORT))) {
-    throw new Error("The relay isn't running on port 3055. Start it with `bun socket` in the claude-to-figma repo.");
+  // A remote relay (--server=host) is never started or probed locally.
+  if (isLocalRelay && !(await ensureRelay(RELAY_PORT))) {
+    throw new Error(isPluginInstall
+      ? `Couldn't start the relay on port ${RELAY_PORT}. Run setup_status for details.`
+      : `The relay isn't running on port ${RELAY_PORT}. Start it with \`bun socket\` in the claude-to-figma repo.`);
   }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -192,7 +199,7 @@ async function ensureConnected(timeoutMs: number = 5000): Promise<void> {
     connectToFigma();
     await new Promise((r) => setTimeout(r, 100));
   }
-  throw new Error("Couldn't connect to the relay on port 3055.");
+  throw new Error(`Couldn't connect to the relay on port ${RELAY_PORT}.`);
 }
 
 // Ask the relay which channels have a Figma plugin in them.
@@ -208,7 +215,9 @@ export function listChannels(timeoutMs: number = 5000): Promise<{ name: string; 
     const id = uuidv4();
     const timeout = setTimeout(() => {
       if (pendingRequests.delete(id)) {
-        reject(new Error("The relay did not answer list_channels. Restart `bun socket` to pick up the current relay."));
+        reject(new Error(isPluginInstall
+          ? `An older relay is running on port ${RELAY_PORT} (probably \`bun socket\` from a clone). Stop it so the plugin can start its own.`
+          : "The relay did not answer list_channels. Restart `bun socket` to pick up the current relay."));
       }
     }, timeoutMs);
 

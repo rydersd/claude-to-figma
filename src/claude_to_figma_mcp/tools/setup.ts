@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { listChannels } from "../connection.js";
 import { ensureRelay, figmaPluginManifestPath, isPluginInstall } from "../plugin-runtime.js";
+import { RELAY_PORT } from "../../relay-protocol.js";
 
 // One call that answers "is everything connected, and if not, what's next?"
 export function registerSetupTools(server: McpServer) {
@@ -9,7 +10,7 @@ export function registerSetupTools(server: McpServer) {
     "Check the claude-to-figma connection: whether the relay is running (starting it when installed as a Claude Code plugin), which Figma files have the plugin open, and where the Figma plugin manifest is for importing into Figma. Use it when setting up or when a Figma tool reports it isn't connected.",
     {},
     async () => {
-      const relay = await ensureRelay(3055);
+      const relay = await ensureRelay(RELAY_PORT);
       let files: { name: string; clients: number }[] = [];
       let channelError: string | undefined;
       if (relay) {

@@ -2,6 +2,23 @@
 // @bun
 
 // src/socket.ts
+import { writeFileSync } from "fs";
+
+// src/relay-protocol.ts
+var RELAY_PROTOCOL_VERSION = "2";
+var RELAY_VERSION_HEADER = "X-C2F-Relay-Protocol";
+var RELAY_PORT = Number(process.env.C2F_RELAY_PORT) || 3055;
+
+// src/socket.ts
+var DEBUG = process.env.C2F_RELAY_DEBUG === "1";
+var debug = (...args) => {
+  if (DEBUG)
+    console.log(...args);
+};
+var FIGMA_ORIGINS = new Set(["null", "https://www.figma.com", "https://figma.com"]);
+function allowedOrigin(origin) {
+  return origin === null || FIGMA_ORIGINS.has(origin);
+}
 var channels = new Map;
 var roles = new WeakMap;
 var isPlugin = (ws) => roles.get(ws) !== "mcp";
@@ -30,7 +47,7 @@ function handleConnection(ws) {
   };
 }
 var server = Bun.serve({
-  port: 3055,
+  port: RELAY_PORT,
   hostname: process.env.C2F_RELAY_HOST || "127.0.0.1",
   fetch(req, server2) {
     if (req.method === "OPTIONS") {
@@ -42,6 +59,9 @@ var server = Bun.serve({
         }
       });
     }
+    if (!allowedOrigin(req.headers.get("origin"))) {
+      return new Response("Forbidden origin", { status: 403 });
+    }
     const success = server2.upgrade(req, {
       headers: {
         "Access-Control-Allow-Origin": "*"
@@ -52,7 +72,7 @@ var server = Bun.serve({
     }
     return new Response("WebSocket server running", {
       headers: {
-        "Access-Control-Allow-Origin": "*"
+        [RELAY_VERSION_HEADER]: RELAY_PROTOCOL_VERSION
       }
     });
   },
@@ -61,15 +81,15 @@ var server = Bun.serve({
     message(ws, message) {
       try {
         const data = JSON.parse(message);
-        console.log(`
+        debug(`
 === Received message from client ===`);
-        console.log(`Type: ${data.type}, Channel: ${data.channel || "N/A"}`);
+        debug(`Type: ${data.type}, Channel: ${data.channel || "N/A"}`);
         if (data.message?.command) {
-          console.log(`Command: ${data.message.command}, ID: ${data.id}`);
+          debug(`Command: ${data.message.command}, ID: ${data.id}`);
         } else if (data.message?.result) {
-          console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
+          debug(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
         }
-        console.log(`Full message:`, JSON.stringify(data, null, 2));
+        debug(`Full message:`, JSON.stringify(data, null, 2));
         if (data.type === "join") {
           const channelName = data.channel;
           if (!channelName || typeof channelName !== "string") {
@@ -146,16 +166,16 @@ var server = Bun.serve({
                 sender: "peer",
                 channel: channelName
               };
-              console.log(`
+              debug(`
 === Broadcasting to peer #${broadcastCount} ===`);
-              console.log(JSON.stringify(broadcastMessage, null, 2));
+              debug(JSON.stringify(broadcastMessage, null, 2));
               client.send(JSON.stringify(broadcastMessage));
             }
           });
           if (broadcastCount === 0) {
             console.log(`\u26A0\uFE0F  No other clients in channel "${channelName}" to receive message!`);
           } else {
-            console.log(`\u2713 Broadcast to ${broadcastCount} peer(s) in channel "${channelName}"`);
+            debug(`\u2713 Broadcast to ${broadcastCount} peer(s) in channel "${channelName}"`);
           }
         }
         if (data.type === "progress_update") {
@@ -205,4 +225,7 @@ var server = Bun.serve({
     }
   }
 });
-console.log(`WebSocket server running on port ${server.port}`);
+if (process.env.C2F_RELAY_PID_FILE) {
+  writeFileSync(process.env.C2F_RELAY_PID_FILE, String(process.pid));
+}
+console.log(`WebSocket server running on ${server.hostname}:${server.port} (protocol ${RELAY_PROTOCOL_VERSION})`);

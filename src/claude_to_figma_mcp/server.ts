@@ -30,7 +30,7 @@ import { registerTools as registerWireframeParserTools } from "./tools/wireframe
 import { registerTools as registerPageCompilerTools } from "./tools/page-compiler.js";
 import { registerTools as registerEventTools } from "./tools/events.js";
 import { registerPrompts } from "./tools/prompts.js";
-import { installFigmaPluginFiles } from "./plugin-runtime.js";
+import { installFigmaPluginFiles, isPluginInstall } from "./plugin-runtime.js";
 import { registerSetupTools } from "./tools/setup.js";
 
 // Create MCP server
@@ -85,9 +85,9 @@ async function main() {
   await server.connect(transport);
   logger.info('FigmaMCP server running on stdio');
 
-  // Exit when Claude Code closes our stdin; otherwise the relay reconnect
-  // timer keeps an orphaned server alive.
-  process.stdin.on("close", () => process.exit(0));
+  // As a plugin, Claude Code always talks to us over a stdin pipe: exit when
+  // it closes, or the relay reconnect timer keeps an orphaned server alive.
+  if (isPluginInstall) process.stdin.on("end", () => process.exit(0));
 }
 
 // Run the server
