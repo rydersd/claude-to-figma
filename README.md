@@ -8,7 +8,20 @@ This project implements a Model Context Protocol (MCP) integration between Claud
 - `src/claude_figma_plugin/` - Figma plugin for communicating with Claude Code
 - `src/socket.ts` - WebSocket server that facilitates communication between the MCP server and Figma plugin
 
-## How to use
+## Install as a Claude Code plugin (recommended)
+
+You need the **Figma desktop app** and [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`). In Claude Code:
+
+```
+/plugin marketplace add rydersd/claude-to-figma
+/plugin install figma-bridge@rydersd
+```
+
+Restart Claude Code, then run `/figma-bridge:setup`. It starts the relay for you and gives you the path to import the Figma plugin (Plugins → Development → Import plugin from manifest…). After that, open a file, run the Claude to Figma Plugin, and ask Claude to work in it. The `draw-in-figma` skill teaches Claude to read your variables and components first and build with them.
+
+The plugin lives in `plugin/`. Its server and relay are bundled builds of `src/`, so after changing `src/` run `bun run build` and commit `plugin/`.
+
+## How to use (from a clone)
 
 You need the **Figma desktop app** (development plugins don't run in the browser) and [Claude Code](https://claude.com/claude-code).
 
@@ -95,11 +108,10 @@ Settings persist across sessions via Figma's client storage.
 powershell -c "irm bun.sh/install.ps1|iex"
 ```
 
-2. Uncomment the hostname `0.0.0.0` in `src/socket.ts`
+2. Let the relay accept connections from Windows (it listens on 127.0.0.1 only by default):
 
-```typescript
-// uncomment this to allow connections in windows wsl
-hostname: "0.0.0.0",
+```bash
+export C2F_RELAY_HOST=0.0.0.0
 ```
 
 3. Start the websocket

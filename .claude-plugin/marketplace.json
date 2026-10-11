@@ -1,0 +1,15 @@
+{
+  "name": "rydersd",
+  "description": "Ryder Booth's Claude Code plugins for design work.",
+  "owner": {
+    "name": "Ryder Booth",
+    "url": "https://github.com/rydersd"
+  },
+  "plugins": [
+    {
+      "name": "figma-bridge",
+      "source": "./plugin",
+      "description": "Lets Claude read and draw in the open Figma file through a local plugin."
+    }
+  ]
+}

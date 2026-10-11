@@ -1,6 +1,6 @@
 {
   "name": "claude-to-figma",
-  "description": "Claude Code to Figma MCP — batch node creation, design token binding, and data-driven prototyping",
+  "description": "Claude Code to Figma MCP \u2014 batch node creation, design token binding, and data-driven prototyping",
   "version": "0.1.0",
   "module": "dist/server.js",
   "main": "dist/server.js",
@@ -16,11 +16,12 @@
     "start": "bun run dist/server.js",
     "socket": "bun run src/socket.ts",
     "setup": "./scripts/setup.sh",
-    "build": "tsup",
+    "build": "tsup && ./scripts/build-claude-plugin.sh",
     "build:plugin": "tsup --config tsup.config.ts -- src/claude_figma_plugin/src/main.ts",
     "build:watch": "tsup --watch",
     "dev": "bun run build:watch",
-    "pub:release": "bun run build && npm publish"
+    "pub:release": "bun run build && npm publish",
+    "build:claude-plugin": "./scripts/build-claude-plugin.sh"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.123.0",
