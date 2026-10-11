@@ -90,7 +90,7 @@ Full details and gotchas: [`wiki/concepts/event-streaming.md`](wiki/concepts/eve
 1. Run `bun setup` — installs dependencies and writes MCP config (machine-specific)
 2. `bun socket` in one terminal (WebSocket relay)
 3. In Figma: Plugins → Development → Link existing plugin → select `src/claude_figma_plugin/manifest.json`
-4. Run plugin in Figma, join a channel, then use tools from Claude Code
+4. Run plugin in Figma and click Connect, then use tools from Claude Code (they auto-join when one file is connected)
 
 Add the MCP server to Claude Code:
 
