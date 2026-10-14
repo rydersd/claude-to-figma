@@ -257,6 +257,9 @@ export function customBase64Decode(base64: string): Uint8Array {
   for (let i = 0; i < chars.length; i++) lookup[chars[i]] = i;
 
   const clean = base64.replace(/[\r\n\s]/g, "");
+  if (clean.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(clean)) {
+    throw new Error("Invalid base64 input");
+  }
   let padding = 0;
   if (clean.endsWith("==")) padding = 2;
   else if (clean.endsWith("=")) padding = 1;
@@ -349,35 +352,43 @@ export function resolveColorValue(colorInput: any) {
 }
 
 // Cache for variable lookups by name path (e.g. "Colors/Primary")
-var _variableCache: any = null;
+var _variableCache: any = Object.create(null);
+var _localVariableIndexPromise: Promise<void> | null = null;
+
+function indexVariable(index: any, name: string, value: any, identity: string) {
+  if (!Object.prototype.hasOwnProperty.call(index, name)) index[name] = value;
+  else if (index[name] !== null && (typeof index[name] === "string" ? index[name] : index[name].id) !== identity) index[name] = null;
+}
+
 export async function getVariableByName(namePath: any) {
-  if (!_variableCache) {
-    _variableCache = {};
-    var collections = await figma.variables.getLocalVariableCollectionsAsync();
-    for (var c = 0; c < collections.length; c++) {
-      var collection = collections[c];
-      for (var v = 0; v < collection.variableIds.length; v++) {
-        var variable = await figma.variables.getVariableByIdAsync(collection.variableIds[v]);
-        if (!variable) continue;
-        // Index by "Collection/VariableName" and by just "VariableName"
-        _variableCache[collection.name + "/" + variable.name] = variable;
-        // Also index by variable name alone (for convenience when unambiguous)
-        if (!_variableCache[variable.name]) {
-          _variableCache[variable.name] = variable;
+  if (!_localVariableIndexPromise) {
+    _localVariableIndexPromise = (async function () {
+      const index: any = Object.create(null);
+      const collections = await figma.variables.getLocalVariableCollectionsAsync();
+      for (const collection of collections) {
+        for (const id of collection.variableIds) {
+          const variable = await figma.variables.getVariableByIdAsync(id);
+          if (!variable) continue;
+          indexVariable(index, collection.name + "/" + variable.name, variable, variable.id);
+          indexVariable(index, variable.name, variable, variable.id);
         }
       }
-    }
+      _variableCache = index;
+    })().catch(function (err: any) {
+      _localVariableIndexPromise = null;
+      throw err;
+    });
   }
-  if (_variableCache[namePath]) return _variableCache[namePath];
+  await _localVariableIndexPromise;
+  if (Object.prototype.hasOwnProperty.call(_variableCache, namePath)) {
+    if (_variableCache[namePath] === null) throw new Error("Ambiguous local variable: " + namePath + ". Use a unique Collection/Name reference.");
+    return _variableCache[namePath];
+  }
 
-  // Local variables win: a file that overrides a library token should keep
-  // using its own. Only fall through to the library when nothing local matched.
-  var imported = await importLibraryVariableByName(namePath);
-  if (imported) {
-    _variableCache[namePath] = imported;
-    return imported;
-  }
-  return null;
+  // Local variables win. Only fall through to a team library on a local miss.
+  const imported = await importLibraryVariableByName(namePath);
+  if (imported) _variableCache[namePath] = imported;
+  return imported || null;
 }
 
 // figma.teamLibrary enumerates *variables* only — there is no plugin API to
@@ -395,7 +406,7 @@ function buildLibraryVariableIndex(): Promise<any> {
   if (_libraryVariableIndexPromise) return _libraryVariableIndexPromise;
 
   _libraryVariableIndexPromise = (async function () {
-    var index: any = {};
+    var index: any = Object.create(null);
     var collections =
       await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
     for (var c = 0; c < collections.length; c++) {
@@ -404,9 +415,8 @@ function buildLibraryVariableIndex(): Promise<any> {
         await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
       for (var v = 0; v < variables.length; v++) {
         var variable = variables[v];
-        index[collection.name + "/" + variable.name] = variable.key;
-        // Bare name only when unambiguous, matching the local-variable rules.
-        if (!index[variable.name]) index[variable.name] = variable.key;
+        indexVariable(index, collection.name + "/" + variable.name, variable.key, variable.key);
+        indexVariable(index, variable.name, variable.key, variable.key);
       }
     }
     return index;
@@ -423,6 +433,7 @@ function buildLibraryVariableIndex(): Promise<any> {
 async function importLibraryVariableByName(namePath: any) {
   var index = await buildLibraryVariableIndex();
   var key = index[namePath];
+  if (key === null) throw new Error("Ambiguous library variable: " + namePath + ". Use a unique Collection/Name reference or a local variable.");
   if (!key) return null;
   try {
     return await figma.variables.importVariableByKeyAsync(key);
@@ -444,10 +455,10 @@ export async function listResolvableVariableNames(): Promise<string[]> {
   var index = await buildLibraryVariableIndex();
   var names: any = {};
   for (var localName in _variableCache) {
-    if (localName) names[localName] = true;
+    if (localName && _variableCache[localName]) names[localName] = true;
   }
   for (var libName in index) {
-    if (libName) names[libName] = true;
+    if (libName && index[libName]) names[libName] = true;
   }
   return Object.keys(names).sort();
 }
@@ -472,12 +483,20 @@ export async function bindVariableToColor(node: any, field: any, varRef: any) {
           : "No variables resolved at all — is the library enabled on this file?")
     );
   }
+  if (variable.resolvedType !== "COLOR") {
+    throw new Error("Variable " + varRef + " is not a COLOR variable (got " + variable.resolvedType + ")");
+  }
   try {
-    node.setBoundVariable(field, variable);
+    // Fills/strokes are immutable paint arrays, not node bindable fields.
+    if (field !== "fills" && field !== "strokes") throw new Error("Unsupported color field: " + field);
+    const paints = node[field];
+    const basePaint = Array.isArray(paints) && paints[0]?.type === "SOLID"
+      ? paints[0]
+      : { type: "SOLID", color: { r: 0, g: 0, b: 0 } };
+    node[field] = [figma.variables.setBoundVariableForPaint(basePaint, "color", variable)];
     return true;
   } catch (err: any) {
-    console.log("Failed to bind variable " + varRef + " to " + field + ": " + err.message);
-    return false;
+    throw new Error("Failed to bind variable " + varRef + " to " + field + ": " + formatError(err));
   }
 }
 
@@ -719,10 +738,10 @@ export function buildFigmaEffects(effects: any[]): any[] {
         else color = { r: 0, g: 0, b: 0, a: 0.25 };
       }
       effect.color = { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== undefined ? color.a : 0.25 };
-      effect.offset = { x: (e.offset && e.offset.x) || 0, y: (e.offset && e.offset.y) || 4 };
+      effect.offset = { x: e.offset?.x ?? 0, y: e.offset?.y ?? 4 };
       effect.radius = e.radius !== undefined ? e.radius : 4;
       effect.spread = e.spread !== undefined ? e.spread : 0;
-      if (e.blendMode) effect.blendMode = e.blendMode;
+      effect.blendMode = e.blendMode || "NORMAL";
     } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
       effect.radius = e.radius !== undefined ? e.radius : 4;
     }

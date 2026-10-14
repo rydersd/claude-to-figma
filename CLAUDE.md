@@ -29,7 +29,7 @@ bun setup                # Full setup (install + write .mcp.json)
 
 `bun run build` uses tsup/esbuild, which **strips types without checking them** — a build can succeed on code that does not typecheck. Run `bun run typecheck` separately; "build succeeded" is not evidence the code compiles.
 
-Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts` runs pure unit tests (no Figma needed). `tests/library-live.test.ts` hits the real Figma REST API and only runs when `FIGMA_API_TOKEN`/`FIGMA_LIBRARY_FILE_KEYS` are set (skipped otherwise). The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel and time out otherwise. No linter is configured.
+Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts` runs unit and plugin-contract tests (no Figma needed). `tests/library-live.test.ts` hits the real Figma REST API and only runs when `FIGMA_API_TOKEN`/`FIGMA_LIBRARY_FILE_KEYS` are set (skipped otherwise). The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel and time out otherwise. No linter is configured.
 
 ## Architecture
 

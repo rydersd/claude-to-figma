@@ -382,7 +382,7 @@ function splitTreeIntoChunks(tree: any, maxNodesPerChunk: number): any[] {
 function summarizeTreeResult(result: any, verbose: boolean): any {
   if (verbose || !result || !Array.isArray(result.nodes)) return result;
   const { nodes, ...rest } = result;
-  return { ...rest, rootId: nodes[0]?.id, nodeCount: nodes.length };
+  return { ...rest, rootId: rest.rootId || nodes[0]?.id, nodeCount: nodes.length };
 }
 
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
@@ -426,7 +426,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
             { timeoutMs: 60000 }
           );
           // sendCommandWithRetry already records metrics — don't double-count (NEW-H1 fix)
-          const summary = summarizeTreeResult(result, !!verbose);
+          const summary = summarizeTreeResult(rootId ? { ...(result as any), rootId } : result, !!verbose);
           const payload = imageWarnings.length > 0 ? { ...summary, imageWarnings } : summary;
           return {
             content: [{ type: "text", text: JSON.stringify(payload) }],
@@ -514,6 +514,8 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
           totalNodes: nodeCount,
           createdCount: createdTotal,
           errorCount: errorTotal,
+          success: errorTotal === 0 && !!createdParentId,
+          errors: allResults.flatMap((r: any) => r?.errors || []),
           durationMs: overallDuration,
           rootId: createdParentId,
           ...(imageWarnings.length > 0 ? { imageWarnings } : {}),

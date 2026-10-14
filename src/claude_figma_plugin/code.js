@@ -170,6 +170,9 @@
     const lookup = {};
     for (let i = 0; i < chars.length; i++) lookup[chars[i]] = i;
     const clean = base64.replace(/[\r\n\s]/g, "");
+    if (clean.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(clean)) {
+      throw new Error("Invalid base64 input");
+    }
     let padding = 0;
     if (clean.endsWith("==")) padding = 2;
     else if (clean.endsWith("=")) padding = 1;
@@ -245,44 +248,53 @@
     }
     return { color: null, varRef: null };
   }
-  var _variableCache = null;
+  var _variableCache = /* @__PURE__ */ Object.create(null);
+  var _localVariableIndexPromise = null;
+  function indexVariable(index, name, value, identity) {
+    if (!Object.prototype.hasOwnProperty.call(index, name)) index[name] = value;
+    else if (index[name] !== null && (typeof index[name] === "string" ? index[name] : index[name].id) !== identity) index[name] = null;
+  }
   async function getVariableByName(namePath) {
-    if (!_variableCache) {
-      _variableCache = {};
-      var collections = await figma.variables.getLocalVariableCollectionsAsync();
-      for (var c = 0; c < collections.length; c++) {
-        var collection = collections[c];
-        for (var v = 0; v < collection.variableIds.length; v++) {
-          var variable = await figma.variables.getVariableByIdAsync(collection.variableIds[v]);
-          if (!variable) continue;
-          _variableCache[collection.name + "/" + variable.name] = variable;
-          if (!_variableCache[variable.name]) {
-            _variableCache[variable.name] = variable;
+    if (!_localVariableIndexPromise) {
+      _localVariableIndexPromise = async function() {
+        const index = /* @__PURE__ */ Object.create(null);
+        const collections = await figma.variables.getLocalVariableCollectionsAsync();
+        for (const collection of collections) {
+          for (const id of collection.variableIds) {
+            const variable = await figma.variables.getVariableByIdAsync(id);
+            if (!variable) continue;
+            indexVariable(index, collection.name + "/" + variable.name, variable, variable.id);
+            indexVariable(index, variable.name, variable, variable.id);
           }
         }
-      }
+        _variableCache = index;
+      }().catch(function(err) {
+        _localVariableIndexPromise = null;
+        throw err;
+      });
     }
-    if (_variableCache[namePath]) return _variableCache[namePath];
-    var imported = await importLibraryVariableByName(namePath);
-    if (imported) {
-      _variableCache[namePath] = imported;
-      return imported;
+    await _localVariableIndexPromise;
+    if (Object.prototype.hasOwnProperty.call(_variableCache, namePath)) {
+      if (_variableCache[namePath] === null) throw new Error("Ambiguous local variable: " + namePath + ". Use a unique Collection/Name reference.");
+      return _variableCache[namePath];
     }
-    return null;
+    const imported = await importLibraryVariableByName(namePath);
+    if (imported) _variableCache[namePath] = imported;
+    return imported || null;
   }
   var _libraryVariableIndexPromise = null;
   function buildLibraryVariableIndex() {
     if (_libraryVariableIndexPromise) return _libraryVariableIndexPromise;
     _libraryVariableIndexPromise = async function() {
-      var index = {};
+      var index = /* @__PURE__ */ Object.create(null);
       var collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
       for (var c = 0; c < collections.length; c++) {
         var collection = collections[c];
         var variables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
         for (var v = 0; v < variables.length; v++) {
           var variable = variables[v];
-          index[collection.name + "/" + variable.name] = variable.key;
-          if (!index[variable.name]) index[variable.name] = variable.key;
+          indexVariable(index, collection.name + "/" + variable.name, variable.key, variable.key);
+          indexVariable(index, variable.name, variable.key, variable.key);
         }
       }
       return index;
@@ -296,6 +308,7 @@
   async function importLibraryVariableByName(namePath) {
     var index = await buildLibraryVariableIndex();
     var key = index[namePath];
+    if (key === null) throw new Error("Ambiguous library variable: " + namePath + ". Use a unique Collection/Name reference or a local variable.");
     if (!key) return null;
     try {
       return await figma.variables.importVariableByKeyAsync(key);
@@ -311,10 +324,10 @@
     var index = await buildLibraryVariableIndex();
     var names = {};
     for (var localName in _variableCache) {
-      if (localName) names[localName] = true;
+      if (localName && _variableCache[localName]) names[localName] = true;
     }
     for (var libName in index) {
-      if (libName) names[libName] = true;
+      if (libName && index[libName]) names[libName] = true;
     }
     return Object.keys(names).sort();
   }
@@ -326,12 +339,17 @@
         "Variable not found: " + varRef + " (binding " + field + "). Searched local variables and enabled team libraries. " + (available.length ? "Available: " + available.slice(0, 40).join(", ") + (available.length > 40 ? ", \u2026and " + (available.length - 40) + " more" : "") : "No variables resolved at all \u2014 is the library enabled on this file?")
       );
     }
+    if (variable.resolvedType !== "COLOR") {
+      throw new Error("Variable " + varRef + " is not a COLOR variable (got " + variable.resolvedType + ")");
+    }
     try {
-      node.setBoundVariable(field, variable);
+      if (field !== "fills" && field !== "strokes") throw new Error("Unsupported color field: " + field);
+      const paints = node[field];
+      const basePaint = Array.isArray(paints) && paints[0]?.type === "SOLID" ? paints[0] : { type: "SOLID", color: { r: 0, g: 0, b: 0 } };
+      node[field] = [figma.variables.setBoundVariableForPaint(basePaint, "color", variable)];
       return true;
     } catch (err) {
-      console.log("Failed to bind variable " + varRef + " to " + field + ": " + err.message);
-      return false;
+      throw new Error("Failed to bind variable " + varRef + " to " + field + ": " + formatError(err));
     }
   }
   async function appendOrInsertChild(child, parentId, insertAt) {
@@ -556,10 +574,10 @@
           else color = { r: 0, g: 0, b: 0, a: 0.25 };
         }
         effect.color = { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== void 0 ? color.a : 0.25 };
-        effect.offset = { x: e.offset && e.offset.x || 0, y: e.offset && e.offset.y || 4 };
+        effect.offset = { x: e.offset?.x ?? 0, y: e.offset?.y ?? 4 };
         effect.radius = e.radius !== void 0 ? e.radius : 4;
         effect.spread = e.spread !== void 0 ? e.spread : 0;
-        if (e.blendMode) effect.blendMode = e.blendMode;
+        effect.blendMode = e.blendMode || "NORMAL";
       } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
         effect.radius = e.radius !== void 0 ? e.radius : 4;
       }
@@ -3761,7 +3779,9 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   async function applyTextOverrides(node, overrides) {
     if (node.type === "TEXT" && overrides[node.name] !== void 0) {
       await loadAllFonts(node);
-      await setCharacters(node, String(overrides[node.name]));
+      if (!await setCharacters(node, String(overrides[node.name]))) {
+        throw new Error(`Failed to override text on "${node.name}"`);
+      }
     }
     if ("children" in node && node.children) {
       for (var i = 0; i < node.children.length; i++) {
@@ -3774,6 +3794,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!componentKey && !componentId) {
       throw new Error("Missing componentKey or componentId parameter. Use componentId for local components (from get_local_components), or componentKey for published library components.");
     }
+    let instance;
     try {
       let component;
       if (componentId) {
@@ -3788,7 +3809,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       } else {
         component = await figma.importComponentByKeyAsync(componentKey);
       }
-      const instance = component.createInstance();
+      instance = component.createInstance();
       instance.x = x;
       instance.y = y;
       if (params.name) {
@@ -3814,11 +3835,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         }
       }
       if (params.properties && typeof params.properties === "object") {
-        try {
-          instance.setProperties(params.properties);
-        } catch (e) {
-          console.error("Error setting component properties:", e);
-        }
+        instance.setProperties(params.properties);
       }
       if (params.textOverrides && typeof params.textOverrides === "object") {
         await applyTextOverrides(instance, params.textOverrides);
@@ -3834,7 +3851,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         mainComponentId: mainComponent ? mainComponent.id : void 0
       };
     } catch (error) {
-      throw new Error(`Error creating component instance: ${error.message}`);
+      if (instance && !instance.removed) instance.remove();
+      throw new Error(`Error creating component instance: ${error.message || String(error)}`);
     }
   }
   async function swapInstanceVariant(params) {
@@ -5613,18 +5631,6 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         existingNode.effects = buildFigmaEffects(spec.effects);
         changedProps.push("effects");
       }
-      if (spec.fillImage && spec.fillImage.base64 && "fills" in existingNode) {
-        applyImageFill(existingNode, spec.fillImage);
-        changedProps.push("fillImage");
-      }
-      var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
-      for (var ci = 0; ci < cornerProps.length; ci++) {
-        var cp = cornerProps[ci];
-        if (spec[cp] !== void 0 && cp in existingNode && existingNode[cp] !== spec[cp]) {
-          existingNode[cp] = spec[cp];
-          changedProps.push(cp);
-        }
-      }
       if (spec.strokeAlign !== void 0 && "strokeAlign" in existingNode && existingNode.strokeAlign !== spec.strokeAlign) {
         existingNode.strokeAlign = spec.strokeAlign;
         changedProps.push("strokeAlign");
@@ -5833,13 +5839,17 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         }
       }
       if (type === "instance") {
-        if (spec.properties !== void 0) {
-          try {
-            existingNode.setProperties(spec.properties);
-            changedProps.push("properties");
-          } catch (e) {
-            console.error("Error setting component properties during sync:", e);
+        if (spec.componentKey) {
+          const mainComponent = await existingNode.getMainComponentAsync();
+          if (!mainComponent || mainComponent.key !== spec.componentKey) {
+            const component = await figma.importComponentByKeyAsync(spec.componentKey);
+            existingNode.swapComponent(component);
+            changedProps.push("componentKey");
           }
+        }
+        if (spec.properties !== void 0) {
+          existingNode.setProperties(spec.properties);
+          changedProps.push("properties");
         }
         if (spec.textOverrides !== void 0) {
           await applyTextOverrides(existingNode, spec.textOverrides);
@@ -5862,6 +5872,18 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           }
         }
       }
+      var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
+      for (var ci = 0; ci < cornerProps.length; ci++) {
+        var cp = cornerProps[ci];
+        if (spec[cp] !== void 0 && cp in existingNode && existingNode[cp] !== spec[cp]) {
+          existingNode[cp] = spec[cp];
+          changedProps.push(cp);
+        }
+      }
+      if (spec.fillImage && spec.fillImage.base64 && "fills" in existingNode) {
+        applyImageFill(existingNode, spec.fillImage);
+        changedProps.push("fillImage");
+      }
       return { changed: changedProps.length > 0, changedProps };
     }
     let updatedCount = 0;
@@ -5873,6 +5895,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       var type = spec.type;
       nodeTypeCounts[type] = (nodeTypeCounts[type] || 0) + 1;
       if (existingNode.type.toLowerCase() !== type) {
+        errorCount++;
         errors.push({
           type,
           name: spec.name || "(unnamed)",
@@ -5884,34 +5907,34 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       delete resolvedSpec.type;
       delete resolvedSpec.children;
       var pendingVarBindings = [];
-      for (var _ref of Object.entries(COLOR_FIELDS)) {
-        var colorProp = _ref[0], figmaField = _ref[1];
-        if (resolvedSpec[colorProp] != null) {
-          var resolved = resolveColorValue(resolvedSpec[colorProp]);
-          if (resolved.varRef) {
-            var variable = await getVariableByName(resolved.varRef);
-            if (variable && variable.resolvedType === "COLOR") {
-              var modeIds = Object.keys(variable.valuesByMode);
-              if (modeIds.length > 0) {
-                var val = variable.valuesByMode[modeIds[0]];
-                if (val && typeof val === "object" && "r" in val) {
-                  resolvedSpec[colorProp] = val;
+      try {
+        for (var _ref of Object.entries(COLOR_FIELDS)) {
+          var colorProp = _ref[0], figmaField = _ref[1];
+          if (resolvedSpec[colorProp] != null) {
+            var resolved = resolveColorValue(resolvedSpec[colorProp]);
+            if (resolved.varRef) {
+              var variable = await getVariableByName(resolved.varRef);
+              if (variable && variable.resolvedType === "COLOR") {
+                var modeIds = Object.keys(variable.valuesByMode);
+                if (modeIds.length > 0) {
+                  var val = variable.valuesByMode[modeIds[0]];
+                  if (val && typeof val === "object" && "r" in val) {
+                    resolvedSpec[colorProp] = val;
+                  } else {
+                    delete resolvedSpec[colorProp];
+                  }
                 } else {
                   delete resolvedSpec[colorProp];
                 }
               } else {
                 delete resolvedSpec[colorProp];
               }
-            } else {
-              delete resolvedSpec[colorProp];
+              pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
+            } else if (resolved.color) {
+              resolvedSpec[colorProp] = resolved.color;
             }
-            pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
-          } else if (resolved.color) {
-            resolvedSpec[colorProp] = resolved.color;
           }
         }
-      }
-      try {
         var result = await updateNodeProperties(existingNode, resolvedSpec);
         if (result.changed) {
           updatedCount++;
@@ -5937,6 +5960,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           errors.push({
             type,
             name: spec.name || "(unnamed)",
+            nodeId: existingNode.id,
             error: "Variable binding failed: " + (err.message || String(err))
           });
           return;
@@ -6021,36 +6045,36 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       delete props.children;
       const pendingVarBindings = [];
       const createParams = Object.assign({}, props, { parentId: parentNodeId });
-      for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
-        if (createParams[colorProp] != null) {
-          const resolved = resolveColorValue(createParams[colorProp]);
-          if (resolved.varRef) {
-            const variable = await getVariableByName(resolved.varRef);
-            if (variable && variable.resolvedType === "COLOR") {
-              const modeIds = Object.keys(variable.valuesByMode);
-              if (modeIds.length > 0) {
-                const val = variable.valuesByMode[modeIds[0]];
-                if (val && typeof val === "object" && "r" in val) {
-                  createParams[colorProp] = val;
+      let result;
+      try {
+        for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
+          if (createParams[colorProp] != null) {
+            const resolved = resolveColorValue(createParams[colorProp]);
+            if (resolved.varRef) {
+              const variable = await getVariableByName(resolved.varRef);
+              if (variable && variable.resolvedType === "COLOR") {
+                const modeIds = Object.keys(variable.valuesByMode);
+                if (modeIds.length > 0) {
+                  const val = variable.valuesByMode[modeIds[0]];
+                  if (val && typeof val === "object" && "r" in val) {
+                    createParams[colorProp] = val;
+                  } else {
+                    delete createParams[colorProp];
+                  }
                 } else {
                   delete createParams[colorProp];
                 }
               } else {
                 delete createParams[colorProp];
               }
-            } else {
-              delete createParams[colorProp];
+              pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
+            } else if (resolved.color) {
+              createParams[colorProp] = resolved.color;
             }
-            pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
-          } else if (resolved.color) {
-            createParams[colorProp] = resolved.color;
           }
         }
-      }
-      if (createParams.x === void 0) createParams.x = 0;
-      if (createParams.y === void 0) createParams.y = 0;
-      let result;
-      try {
+        if (createParams.x === void 0) createParams.x = 0;
+        if (createParams.y === void 0) createParams.y = 0;
         switch (type) {
           case "frame":
             result = await createFrame(createParams, firstOnTop);
@@ -6092,8 +6116,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           errors.push({
             type,
             name: props.name || "(unnamed)",
+            nodeId: result.id,
             error: "Variable binding failed: " + (err.message || String(err))
           });
+          const failedNode = await figma.getNodeByIdAsync(result.id);
+          if (failedNode) failedNode.remove();
           return;
         }
       }
@@ -8032,11 +8059,6 @@ ${detail}`);
         const undoSteps = Math.min(Math.max(params && params.count || 1, 1), 50);
         for (let i = 0; i < undoSteps; i++) figma.triggerUndo();
         return { success: true, steps: undoSteps };
-      }
-      case "redo": {
-        const redoSteps = Math.min(Math.max(params && params.count || 1, 1), 50);
-        for (let i = 0; i < redoSteps; i++) figma.triggerRedo();
-        return { success: true, steps: redoSteps };
       }
       case "set_font_family":
         return await setFontFamily(params);

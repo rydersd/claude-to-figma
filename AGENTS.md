@@ -21,7 +21,7 @@ bun run start            # Run built MCP server
 bun setup                # Full setup (install + write .mcp.json)
 ```
 
-Tests: `bun test tests/gradients.test.ts` runs pure unit tests (no Figma needed). The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel (`CHANNEL=<channel> bun test tests/sync-mode.test.ts`) and time out otherwise. No linter is configured.
+Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts` runs unit and plugin-contract tests without Figma. `tests/library-live.test.ts` requires REST credentials and skips when unconfigured. `tests/sync-mode.test.ts` and `tests/prototyping.test.ts` require a live Figma plugin on a WebSocket channel (`CHANNEL=<channel> bun test tests/sync-mode.test.ts`) and time out otherwise. No linter is configured.
 
 ## Architecture
 
@@ -32,7 +32,7 @@ The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. E
 Lightweight Bun WebSocket server on port 3055 (configurable via `PORT` env). Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
 
 ### Figma Plugin (`src/claude_figma_plugin/`)
-Runs inside Figma. `code.js` is the plugin main thread handling 80+ commands via a dispatcher. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares permissions (dynamic-page access, localhost network). The plugin is **not built/bundled** — `code.js` is written directly as the runtime artifact.
+Runs inside Figma. `code.js` is the plugin main thread handling 80+ commands via a dispatcher. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares permissions (dynamic-page access, localhost network). The plugin is bundled from `src/` by `bun run build`; commit the generated `code.js` runtime artifact after source changes.
 
 ## Key Patterns
 

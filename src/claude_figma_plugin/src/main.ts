@@ -274,11 +274,6 @@ async function handleCommand(command: string, params: any) {
       for (let i = 0; i < undoSteps; i++) figma.triggerUndo();
       return { success: true, steps: undoSteps };
     }
-    case "redo": {
-      const redoSteps = Math.min(Math.max((params && params.count) || 1, 1), 50);
-      for (let i = 0; i < redoSteps; i++) figma.triggerRedo();
-      return { success: true, steps: redoSteps };
-    }
     case "set_font_family":
       return await setFontFamily(params);
     case "set_text_auto_resize":

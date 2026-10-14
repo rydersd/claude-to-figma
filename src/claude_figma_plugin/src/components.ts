@@ -102,7 +102,9 @@ export async function getLocalComponents(params: any) {
 export async function applyTextOverrides(node: any, overrides: Record<string, string>): Promise<void> {
   if (node.type === "TEXT" && overrides[node.name] !== undefined) {
     await loadAllFonts(node);
-    await setCharacters(node, String(overrides[node.name]));
+    if (!await setCharacters(node, String(overrides[node.name]))) {
+      throw new Error(`Failed to override text on "${node.name}"`);
+    }
   }
   if ("children" in node && node.children) {
     for (var i = 0; i < node.children.length; i++) {
@@ -118,6 +120,7 @@ export async function createComponentInstance(params: any) {
     throw new Error("Missing componentKey or componentId parameter. Use componentId for local components (from get_local_components), or componentKey for published library components.");
   }
 
+  let instance: any;
   try {
     let component: any;
 
@@ -136,7 +139,7 @@ export async function createComponentInstance(params: any) {
       component = await figma.importComponentByKeyAsync(componentKey);
     }
 
-    const instance = component.createInstance();
+    instance = component.createInstance();
     instance.x = x;
     instance.y = y;
 
@@ -172,12 +175,7 @@ export async function createComponentInstance(params: any) {
 
     // Apply component property overrides if provided
     if (params.properties && typeof params.properties === "object") {
-      try {
-        instance.setProperties(params.properties);
-      } catch (e) {
-        // Non-fatal — instance is created, overrides just failed
-        console.error("Error setting component properties:", e);
-      }
+      instance.setProperties(params.properties);
     }
 
     // Apply text overrides by child name if provided
@@ -197,7 +195,9 @@ export async function createComponentInstance(params: any) {
       mainComponentId: mainComponent ? mainComponent.id : undefined,
     };
   } catch (error: any) {
-    throw new Error(`Error creating component instance: ${error.message}`);
+    // A rejected override must not leave an unreported, incorrectly configured instance.
+    if (instance && !instance.removed) instance.remove();
+    throw new Error(`Error creating component instance: ${error.message || String(error)}`);
   }
 }
 

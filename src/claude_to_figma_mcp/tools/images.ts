@@ -25,12 +25,17 @@ export async function resolveImageToBase64(source: { url?: string; filePath?: st
   if (source.base64) {
     // Strip data-URI prefix if present
     const match = source.base64.match(/^data:[^;]+;base64,(.*)$/s);
-    return match ? match[1] : source.base64;
+    const data = (match ? match[1] : source.base64).replace(/\s/g, "");
+    const decodedSize = data.length / 4 * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+    if (decodedSize > MAX_IMAGE_BYTES) throw new Error("Image exceeds the 6MB limit. Resize it first.");
+    return data;
   }
 
   let bytes: Buffer;
   if (source.url) {
-    const response = await fetch(source.url);
+    const protocol = new URL(source.url).protocol;
+    if (protocol !== "http:" && protocol !== "https:") throw new Error("Image URL must use HTTP(S)");
+    const response = await fetch(source.url, { signal: AbortSignal.timeout(15000) });
     if (!response.ok) {
       throw new Error(`Failed to fetch image: ${response.status} ${response.statusText} (${source.url})`);
     }
@@ -38,7 +43,26 @@ export async function resolveImageToBase64(source: { url?: string; filePath?: st
     if (contentType && !contentType.startsWith("image/")) {
       throw new Error(`URL did not return an image (content-type: ${contentType})`);
     }
-    bytes = Buffer.from(await response.arrayBuffer());
+    // Bound streaming downloads as well as their final payload size.
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Image response had no body");
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > MAX_IMAGE_BYTES) {
+          await reader.cancel();
+          throw new Error("Image exceeds the 6MB limit. Resize it first.");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    bytes = Buffer.concat(chunks);
   } else if (source.filePath) {
     bytes = await readFile(source.filePath);
   } else {

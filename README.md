@@ -116,6 +116,7 @@ Figma's plugin API exposes no way to enumerate library *components* — verified
 In practice: `$var:Collection/Name` resolves against local variables first, then falls through to any team library **enabled on the current file** — no token, no file keys, just the library turned on in Figma. Use `get_library_variables` to list what's reachable.
 
 A `$var:` ref that resolves to nothing is now a hard error naming the ref and listing available tokens. It previously logged to the console and carried on, which silently shipped a hardcoded colour wherever a token was requested.
+
 To run the built output with Node instead, run `bun run build` and point the command at `node` with `/path-to-repo/dist/server.js`.
 
 ### WebSocket Server

@@ -40,18 +40,6 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
-  server.tool("redo", "Redo the last undone action(s) in Figma.", {
-    count: z.number().int().min(1).max(50).optional().describe("Number of redo steps (default 1, max 50)"),
-  }, async ({ count }: any) => {
-    try {
-      const steps = count || 1;
-      await sendCommandToFigma("redo", { count: steps });
-      return { content: [{ type: "text", text: `Redo triggered ${steps} time(s)` }] };
-    } catch (error) {
-      return { content: [{ type: "text", text: `Error triggering redo: ${error instanceof Error ? error.message : String(error)}` }] };
-    }
-  });
-
   server.tool("join_channel", "Connect to a Figma file through its plugin channel. Leave channel empty to join the only connected file automatically. Other tools also auto-join, so this is only needed when several files are connected.", {
     channel: z.string().describe("Channel name shown in the Figma plugin. Empty = auto-join the only connected file").default(""),
   }, async ({ channel }: any) => {

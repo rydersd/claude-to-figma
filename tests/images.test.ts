@@ -59,4 +59,31 @@ describe("resolveImageToBase64", () => {
   test("rejects missing files with a filesystem error", async () => {
     await expect(resolveImageToBase64({ filePath: "/nonexistent/image.png" })).rejects.toThrow();
   });
+
+  test("rejects oversized base64 payloads", async () => {
+    await expect(resolveImageToBase64({ base64: Buffer.alloc(6 * 1024 * 1024 + 1).toString("base64") })).rejects.toThrow(/6MB limit/);
+  });
+
+  test("rejects non-HTTP image URLs", async () => {
+    await expect(resolveImageToBase64({ url: "file:///tmp/image.png" })).rejects.toThrow(/HTTP/);
+  });
+
+  test("bounds streaming downloads before buffering the entire response", async () => {
+    const originalFetch = globalThis.fetch;
+    let cancelled = false;
+    globalThis.fetch = (async (_url: any, opts: any) => {
+      expect(opts.signal).toBeInstanceOf(AbortSignal);
+      return new Response(new ReadableStream({
+        pull(controller) { controller.enqueue(new Uint8Array(1024 * 1024)); },
+        cancel() { cancelled = true; },
+      }), { headers: { "content-type": "image/png" } });
+    }) as any;
+    try {
+      await expect(resolveImageToBase64({ url: "https://example.com/image.png" })).rejects.toThrow(/6MB limit/);
+      expect(cancelled).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
 });
