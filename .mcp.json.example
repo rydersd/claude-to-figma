@@ -5,7 +5,7 @@
       "type": "stdio",
       "command": "/ABSOLUTE/PATH/TO/bun",
       "args": [
-        "/ABSOLUTE/PATH/TO/claude-to-figma/src/claude_to_figma_mcp/server.ts"
+        "/ABSOLUTE/PATH/TO/llm2figma/src/llm2figma_mcp/server.ts"
       ],
       "env": {}
     }

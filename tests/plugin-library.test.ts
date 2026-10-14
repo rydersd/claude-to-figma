@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { bindVariableToColor, buildFigmaEffects, customBase64Decode, getVariableByName } from "../src/claude_figma_plugin/src/utils";
-import { createComponentInstance } from "../src/claude_figma_plugin/src/components";
-import { createNodeTree } from "../src/claude_figma_plugin/src/node-tree";
+import { bindVariableToColor, buildFigmaEffects, customBase64Decode, getVariableByName } from "../src/llm2figma_plugin/src/utils";
+import { createComponentInstance } from "../src/llm2figma_plugin/src/components";
+import { createNodeTree } from "../src/llm2figma_plugin/src/node-tree";
 
 // Contract mocks exercise plugin logic without pretending to replace live Figma QA.
 const originalFigma = (globalThis as any).figma;

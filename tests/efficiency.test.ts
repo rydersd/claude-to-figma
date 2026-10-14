@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { boundNodeTree } from "../src/shared/inspection";
 import { createFontLoader } from "../src/shared/font-cache";
-import { ReferenceCache } from "../src/claude_to_figma_mcp/tools/reference-cache";
-import { registerTools as registerDocumentTools } from "../src/claude_to_figma_mcp/tools/document";
-import { getNodesInfo } from "../src/claude_figma_plugin/src/document";
-import { scanNodeStyles } from "../src/claude_figma_plugin/src/analysis";
+import { ReferenceCache } from "../src/llm2figma_mcp/tools/reference-cache";
+import { registerTools as registerDocumentTools } from "../src/llm2figma_mcp/tools/document";
+import { getNodesInfo } from "../src/llm2figma_plugin/src/document";
+import { scanNodeStyles } from "../src/llm2figma_plugin/src/analysis";
 import { makeMcpConfig } from "../scripts/write-mcp-config";
 
 const leaf = (id: string): any => ({ id, name: id, type: "TEXT", characters: "hello" });
@@ -143,13 +143,13 @@ describe("llm2figma setup compatibility", () => {
   test("fresh config uses the new name and JSON preserves paths with spaces", () => {
     const config = makeMcpConfig({}, "/bun path/bun", "/repo path", {});
     expect(config.mcpServers.LLM2Figma.command).toBe("/bun path/bun");
-    expect(config.mcpServers.LLM2Figma.args[0]).toBe("/repo path/src/claude_to_figma_mcp/server.ts");
+    expect(config.mcpServers.LLM2Figma.args[0]).toBe("/repo path/src/llm2figma_mcp/server.ts");
   });
-  test("regeneration preserves legacy names, env and unrelated servers", () => {
+  test("regeneration migrates the legacy name and preserves env and unrelated servers", () => {
     const previous = { mcpServers: { ClaudeToFigma: { env: { FIGMA_API_TOKEN: "test-token" } }, Other: { command: "other" } } };
     const config = makeMcpConfig(previous, "/bun", "/repo", { hostname: "host" });
-    expect(config.mcpServers.ClaudeToFigma.env).toEqual(previous.mcpServers.ClaudeToFigma.env);
+    expect(config.mcpServers.LLM2Figma.env).toEqual(previous.mcpServers.ClaudeToFigma.env);
     expect(config.mcpServers.Other).toEqual(previous.mcpServers.Other);
-    expect(config.mcpServers.LLM2Figma).toBeUndefined();
+    expect(config.mcpServers.ClaudeToFigma).toBeUndefined();
   });
 });

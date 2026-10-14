@@ -19,8 +19,8 @@ MCP Client ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay ←(WebSoc
 ```bash
 bun install              # Install dependencies
 bun run typecheck        # tsc --noEmit — REQUIRED before claiming a change compiles
-bun run build            # Build MCP server (dist/) AND Figma plugin (src/claude_figma_plugin/code.js) via tsup
-bun run build:plugin     # Build Figma plugin only (src/claude_figma_plugin/code.js)
+bun run build            # Build MCP server (dist/) AND Figma plugin (src/llm2figma_plugin/code.js) via tsup
+bun run build:plugin     # Build Figma plugin only (src/llm2figma_plugin/code.js)
 bun run dev              # Build in watch mode
 bun socket               # Start WebSocket relay server (port 3055)
 bun run start            # Run built MCP server
@@ -33,16 +33,16 @@ Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test
 
 ## Architecture
 
-### MCP Server (`src/claude_to_figma_mcp/server.ts`)
-The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 90+ tools (create shapes, modify text, manage layouts, export images, component migration, design queries, etc.) and several AI prompts (design strategies). Communicates with Claude Code over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds. Tool definitions live in `src/claude_to_figma_mcp/tools/` (one file per category), including `tools/library.ts` — REST discovery of Figma team-library component sets (`get_library_components`, `search_library_components`) and `$lib:` reference resolution consumed by `create_node_tree`'s `instance` node type. Plugin-pushed events (no request ID) are routed to the event buffer in `events.ts`.
+### MCP Server (`src/llm2figma_mcp/server.ts`)
+The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 90+ tools (create shapes, modify text, manage layouts, export images, component migration, design queries, etc.) and several AI prompts (design strategies). Communicates with Claude Code over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds. Tool definitions live in `src/llm2figma_mcp/tools/` (one file per category), including `tools/library.ts` — REST discovery of Figma team-library component sets (`get_library_components`, `search_library_components`) and `$lib:` reference resolution consumed by `create_node_tree`'s `instance` node type. Plugin-pushed events (no request ID) are routed to the event buffer in `events.ts`.
 
 ### WebSocket Relay (`src/socket.ts`)
 Lightweight Bun WebSocket server on port 3055. Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
 
-### Figma Plugin (`src/claude_figma_plugin/`)
-Runs inside Figma. The plugin source lives in `src/claude_figma_plugin/src/` as 14 TypeScript modules. `bun run build` compiles them via tsup into `code.js` as an IIFE bundle. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares dynamic-page document access and localhost network access.
+### Figma Plugin (`src/llm2figma_plugin/`)
+Runs inside Figma. The plugin source lives in `src/llm2figma_plugin/src/` as 14 TypeScript modules. `bun run build` compiles them via tsup into `code.js` as an IIFE bundle. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares dynamic-page document access and localhost network access.
 
-**Plugin modules** (`src/claude_figma_plugin/src/`):
+**Plugin modules** (`src/llm2figma_plugin/src/`):
 - `main.ts` -- command dispatcher (100 commands), plugin lifecycle
 - `analysis.ts` -- node introspection, style scanning, batch operations, design queries
 - `components.ts` -- component creation, instances, styles, variables
@@ -79,7 +79,7 @@ The `create_node_tree` tool creates entire node hierarchies in one round-trip. K
 
 ## Event Streaming (`figma_events_subscribe` / `figma_events_poll`)
 
-Two MCP tools (defined in `src/claude_to_figma_mcp/tools/events.ts`) let Claude observe design changes the user makes inside Figma. Events flow plugin → relay → MCP server, where they accumulate in a 200-event ring buffer (`src/claude_to_figma_mcp/events.ts`) until polled.
+Two MCP tools (defined in `src/llm2figma_mcp/tools/events.ts`) let Claude observe design changes the user makes inside Figma. Events flow plugin → relay → MCP server, where they accumulate in a 200-event ring buffer (`src/llm2figma_mcp/events.ts`) until polled.
 
 - **`figma_events_subscribe`** — `{ enabled: boolean }`. Starts (or stops) event streaming. While subscribed, the plugin pushes `selectionchange`, `nodechange`, and `currentpagechange` events to the MCP server with no request ID.
 - **`figma_events_poll`** — drains buffered events. Filters: `peek` (read without clearing), `eventTypes` (`["selectionchange" | "nodechange" | "currentpagechange"]`), `since` (epoch ms), `limit` (most recent N), `excludePluginOperations` (filter out events caused by tool commands).
@@ -92,13 +92,13 @@ Full details and gotchas: [`wiki/concepts/event-streaming.md`](wiki/concepts/eve
 
 1. Run `bun setup` — installs dependencies and writes MCP config (machine-specific)
 2. `bun socket` in one terminal (WebSocket relay)
-3. In Figma: Plugins → Development → Link existing plugin → select `src/claude_figma_plugin/manifest.json`
+3. In Figma: Plugins → Development → Link existing plugin → select `src/llm2figma_plugin/manifest.json`
 4. Run plugin in Figma and click Connect, then use tools from Claude Code (they auto-join when one file is connected)
 
 Add the MCP server to Claude Code:
 
 ```bash
-claude mcp add ClaudeToFigma -- bun /path-to-repo/src/claude_to_figma_mcp/server.ts
+claude mcp add LLM2Figma -- bun /path-to-repo/src/llm2figma_mcp/server.ts
 ```
 
 ### Team library tools (optional)
@@ -108,7 +108,7 @@ claude mcp add ClaudeToFigma -- bun /path-to-repo/src/claude_to_figma_mcp/server
 - `FIGMA_API_TOKEN` — a Figma personal access token with the `File content: read` and `Library content: read` scopes
 - `FIGMA_LIBRARY_FILE_KEYS` — comma-separated file keys (from each library file's URL: `figma.com/design/<FILE_KEY>/...`) of the libraries to index
 
-Export both in your shell (e.g. `~/.zshrc`) and reference them from `.mcp.json` as `"${FIGMA_API_TOKEN}"` / `"${FIGMA_LIBRARY_FILE_KEYS}"` in the `ClaudeToFigma` server's `env` block, then restart the MCP server. Without them, the two library tools soft-fail with setup instructions instead of erroring.
+Export both in your shell (e.g. `~/.zshrc`) and reference them from `.mcp.json` as `"${FIGMA_API_TOKEN}"` / `"${FIGMA_LIBRARY_FILE_KEYS}"` in the `LLM2Figma` server's `env` block, then restart the MCP server. Without them, the two library tools soft-fail with setup instructions instead of erroring.
 ## Machine Portability
 
 `.mcp.json` is **gitignored** because it contains absolute paths to `bun` and the repo that differ per machine. The committed templates and scripts handle this:

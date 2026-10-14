@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { loadLibraryIndex, getLibraryConfig } from "../src/claude_to_figma_mcp/tools/library";
+import { loadLibraryIndex, getLibraryConfig } from "../src/llm2figma_mcp/tools/library";
 
 const configured = (() => {
   const { token, fileKeys } = getLibraryConfig();

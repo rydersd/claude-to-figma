@@ -227,7 +227,7 @@ export function autoJoinChannel(): Promise<string> {
     autoJoinInFlight = (async () => {
       const active = await listChannels();
       if (active.length === 0) {
-        throw new ChannelSelectionError("No Figma file is connected. In the Figma desktop app, run the Claude to Figma plugin and click Connect.");
+        throw new ChannelSelectionError("No Figma file is connected. In the Figma desktop app, run the llm2figma plugin and click Connect.");
       }
       if (active.length > 1) {
         const names = active.map((c) => c.name).join(", ");

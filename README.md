@@ -2,7 +2,7 @@
 
 A model-agnostic Model Context Protocol (MCP) bridge for reading and editing Figma designs from any compatible AI assistant. Claude Code setup is included as one client example.
 
-The package, MCP server, and plugin are named **llm2figma**. The existing repository URL, source directories, plugin ID, and `claude-to-figma` CLI alias remain compatible with earlier installations. Existing MCP entry names continue to work.
+The package, MCP server, and plugin are named **llm2figma**. The canonical repository and source paths use llm2figma. The plugin ID and `claude-to-figma` CLI alias remain compatible with earlier installations; legacy source paths are compatibility symlinks. Setup migrates the MCP entry to `LLM2Figma` while preserving its environment configuration.
 
 
 ## Efficient design workflow
@@ -26,8 +26,8 @@ Full documentation lives in the [project wiki](docs/Home.md) — setup, architec
 
 ## Project Structure
 
-- `src/claude_to_figma_mcp/` - TypeScript MCP server for Figma integration
-- `src/claude_figma_plugin/` - Figma plugin for communicating with MCP clients
+- `src/llm2figma_mcp/` - TypeScript MCP server for Figma integration
+- `src/llm2figma_plugin/` - Figma plugin for communicating with MCP clients
 - `src/socket.ts` - WebSocket server that facilitates communication between the MCP server and Figma plugin
 
 ## How to use
@@ -43,8 +43,8 @@ curl -fsSL https://bun.sh/install | bash
 2. Clone this repo and run setup. `--user` registers the MCP server for your user, so Claude Code sees the tools in every project. Without it, the tools only load when Claude Code starts inside this repo.
 
 ```bash
-git clone https://github.com/rydersd/claude-to-figma.git ~/claude-to-figma
-cd ~/claude-to-figma
+git clone https://github.com/rydersd/llm2figma.git ~/llm2figma
+cd ~/llm2figma
 bun setup --user
 ```
 
@@ -54,7 +54,7 @@ bun setup --user
 bun socket
 ```
 
-4. Add the plugin to Figma: in the desktop app, open a design file and choose **Plugins → Development → Import plugin from manifest…**, then pick `src/claude_figma_plugin/manifest.json` from this repo.
+4. Add the plugin to Figma: in the desktop app, open a design file and choose **Plugins → Development → Import plugin from manifest…**, then pick `src/llm2figma_plugin/manifest.json` from this repo.
 
 5. Run **Plugins → Development → llm2figma** in the file you want Claude to work in. It connects to the relay on launch (**Auto-connect** is on by default in its Settings tab); if it doesn't, click **Connect**.
 
@@ -71,7 +71,7 @@ This project is a fork of [cursor-talk-to-figma-mcp](https://github.com/sonnylaz
 `bun setup` writes a machine-specific `.mcp.json` in this repo (project scope), and `bun setup --user` also registers the server for your user. To do it by hand, use absolute paths so Claude Code can launch the server from any folder:
 
 ```bash
-claude mcp add --scope user LLM2Figma -- "$(command -v bun)" "$PWD/src/claude_to_figma_mcp/server.ts"
+claude mcp add --scope user LLM2Figma -- "$(command -v bun)" "$PWD/src/llm2figma_mcp/server.ts"
 ```
 
 Or add it to a project's `.mcp.json`:
@@ -81,7 +81,7 @@ Or add it to a project's `.mcp.json`:
   "mcpServers": {
     "LLM2Figma": {
       "command": "/absolute/path/to/bun",
-      "args": ["/path-to-repo/src/claude_to_figma_mcp/server.ts"]
+      "args": ["/path-to-repo/src/llm2figma_mcp/server.ts"]
     }
   }
 }
@@ -108,7 +108,7 @@ Then pass them through in `.mcp.json`'s `LLM2Figma` server entry:
   "mcpServers": {
     "LLM2Figma": {
       "command": "bun",
-      "args": ["src/claude_to_figma_mcp/server.ts"],
+      "args": ["src/llm2figma_mcp/server.ts"],
       "env": {
         "FIGMA_API_TOKEN": "${FIGMA_API_TOKEN}",
         "FIGMA_LIBRARY_FILE_KEYS": "${FIGMA_LIBRARY_FILE_KEYS}"
@@ -148,7 +148,7 @@ bun socket
 ### Figma Plugin
 
 1. In the Figma desktop app, go to **Plugins → Development → Import plugin from manifest…**
-2. Select the `src/claude_figma_plugin/manifest.json` file
+2. Select the `src/llm2figma_plugin/manifest.json` file
 3. The plugin now appears under **Plugins → Development** as **llm2figma**
 
 The plugin includes a **Settings tab** with:
@@ -188,7 +188,7 @@ bun socket
 
 ## Local Development Setup
 
-To develop against source instead of the built output, use the Bun-from-source config shown in [Manual Setup](#manual-setup-and-installation). After making changes, rebuild with `bun run build` to update both `dist/server.js` and `src/claude_figma_plugin/code.js`.
+To develop against source instead of the built output, use the Bun-from-source config shown in [Manual Setup](#manual-setup-and-installation). After making changes, rebuild with `bun run build` to update both `dist/server.js` and `src/llm2figma_plugin/code.js`.
 
 ## MCP Tools
 
@@ -350,13 +350,13 @@ The MCP server includes several helper prompts to guide you through complex desi
 
 ### Building the Figma Plugin
 
-The plugin source is in `src/claude_figma_plugin/src/` as TypeScript modules. Edit the `.ts` files there, then rebuild:
+The plugin source is in `src/llm2figma_plugin/src/` as TypeScript modules. Edit the `.ts` files there, then rebuild:
 
 ```bash
 bun run build
 ```
 
-This compiles the modules into `src/claude_figma_plugin/code.js` (IIFE bundle). The `ui.html` file can be edited directly.
+This compiles the modules into `src/llm2figma_plugin/code.js` (IIFE bundle). The `ui.html` file can be edited directly.
 
 ## Best Practices
 

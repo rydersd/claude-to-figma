@@ -19,7 +19,7 @@
     "setup": "./scripts/setup.sh",
     "typecheck": "tsc --noEmit",
     "build": "tsup",
-    "build:plugin": "tsup --config tsup.config.ts -- src/claude_figma_plugin/src/main.ts",
+    "build:plugin": "tsup --config tsup.config.ts -- src/llm2figma_plugin/src/main.ts",
     "build:watch": "tsup --watch",
     "dev": "bun run build:watch",
     "pub:release": "bun run build && npm publish"

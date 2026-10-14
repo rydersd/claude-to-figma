@@ -2,7 +2,7 @@
 
 ## Overview
 
-Add bidirectional communication to the claude-to-figma bridge. Currently the system is one-directional: Claude Code sends commands, Figma executes. The plugin never initiates. This plan adds event streaming where the Figma plugin pushes design changes (selection, node mutations, page switches) back to Claude Code through the existing WebSocket relay, enabling reactive design workflows.
+Add bidirectional communication to the llm2figma bridge. Currently the system is one-directional: Claude Code sends commands, Figma executes. The plugin never initiates. This plan adds event streaming where the Figma plugin pushes design changes (selection, node mutations, page switches) back to Claude Code through the existing WebSocket relay, enabling reactive design workflows.
 
 ## Current State Analysis
 
@@ -125,7 +125,7 @@ Register Figma event listeners in the plugin main thread with proper lifecycle m
 ### Changes Required:
 
 #### 1. New Event Module
-**File**: `src/claude_figma_plugin/src/events.ts` (new file)
+**File**: `src/llm2figma_plugin/src/events.ts` (new file)
 **Changes**: Event listeners with proper lifecycle, plugin operation guard, leading-edge throttle
 
 ```typescript
@@ -315,7 +315,7 @@ function emitEvent(eventType: string, data: any) {
 ```
 
 #### 2. Main Thread Integration
-**File**: `src/claude_figma_plugin/src/main.ts`
+**File**: `src/llm2figma_plugin/src/main.ts`
 **Changes**: Import events module, add plugin operation guard around handleCommand, add subscribe/unsubscribe commands
 
 ```typescript
@@ -344,7 +344,7 @@ case "unsubscribe_events":
 ```
 
 #### 3. UI Thread Forwarding
-**File**: `src/claude_figma_plugin/ui.html`
+**File**: `src/llm2figma_plugin/ui.html`
 **Changes**: Add handler in `window.onmessage` to forward events over WebSocket
 
 ```javascript
@@ -396,7 +396,7 @@ Add event reception, priority buffering with filters, and 2 MCP tools. Handle re
 ### Changes Required:
 
 #### 1. Event Buffer Module
-**File**: `src/claude_to_figma_mcp/events.ts` (new file)
+**File**: `src/llm2figma_mcp/events.ts` (new file)
 **Changes**: Priority buffer, subscription state, filtered poll/drain
 
 ```typescript
@@ -507,7 +507,7 @@ export function onDisconnect(): void {
 ```
 
 #### 2. Connection Event Handler
-**File**: `src/claude_to_figma_mcp/connection.ts`
+**File**: `src/llm2figma_mcp/connection.ts`
 **Changes**: Add event message handling + reset subscription on disconnect
 
 In the `ws.on("message", ...)` handler, after the progress_update check:
@@ -532,11 +532,11 @@ onDisconnect(); // Reset event subscription state
 ```
 
 #### 3. Type Updates
-**File**: `src/claude_to_figma_mcp/types.ts`
+**File**: `src/llm2figma_mcp/types.ts`
 **Changes**: Add `subscribe_events` and `unsubscribe_events` to the `FigmaCommand` type union
 
 #### 4. MCP Tools
-**File**: `src/claude_to_figma_mcp/server.ts`
+**File**: `src/llm2figma_mcp/server.ts`
 **Changes**: Register 2 new tools with proper error handling
 
 ```typescript
@@ -657,13 +657,13 @@ server.tool("figma_events_poll", {
 | File | Action | Phase |
 |------|--------|-------|
 | `src/socket.ts` | Modify (add event routing with membership check) | 1 |
-| `src/claude_figma_plugin/src/events.ts` | Create (event listeners, lifecycle, guard, throttle) | 2 |
-| `src/claude_figma_plugin/src/main.ts` | Modify (import events, add guard wrapper, add commands) | 2 |
-| `src/claude_figma_plugin/ui.html` | Modify (forward events, streaming indicator) | 2 |
-| `src/claude_to_figma_mcp/events.ts` | Create (priority buffer, filtered poll) | 3 |
-| `src/claude_to_figma_mcp/connection.ts` | Modify (handle inbound events, reset on disconnect) | 3 |
-| `src/claude_to_figma_mcp/types.ts` | Modify (add subscribe/unsubscribe to FigmaCommand union) | 3 |
-| `src/claude_to_figma_mcp/server.ts` | Modify (register 2 new tools with error handling) | 3 |
+| `src/llm2figma_plugin/src/events.ts` | Create (event listeners, lifecycle, guard, throttle) | 2 |
+| `src/llm2figma_plugin/src/main.ts` | Modify (import events, add guard wrapper, add commands) | 2 |
+| `src/llm2figma_plugin/ui.html` | Modify (forward events, streaming indicator) | 2 |
+| `src/llm2figma_mcp/events.ts` | Create (priority buffer, filtered poll) | 3 |
+| `src/llm2figma_mcp/connection.ts` | Modify (handle inbound events, reset on disconnect) | 3 |
+| `src/llm2figma_mcp/types.ts` | Modify (add subscribe/unsubscribe to FigmaCommand union) | 3 |
+| `src/llm2figma_mcp/server.ts` | Modify (register 2 new tools with error handling) | 3 |
 
 ## Event Message Format
 

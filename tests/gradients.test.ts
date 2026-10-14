@@ -5,7 +5,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { parseCssGradient, buildGradientPaint, isGradientValue } from "../src/claude_figma_plugin/src/utils";
+import { parseCssGradient, buildGradientPaint, isGradientValue } from "../src/llm2figma_plugin/src/utils";
 
 describe("isGradientValue", () => {
   test("detects CSS gradient strings", () => {

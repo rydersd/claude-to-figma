@@ -5,8 +5,8 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { customBase64Encode, customBase64Decode } from "../src/claude_figma_plugin/src/utils";
-import { resolveImageToBase64 } from "../src/claude_to_figma_mcp/tools/images";
+import { customBase64Encode, customBase64Decode } from "../src/llm2figma_plugin/src/utils";
+import { resolveImageToBase64 } from "../src/llm2figma_mcp/tools/images";
 
 describe("customBase64Decode", () => {
   test("roundtrips with customBase64Encode for all remainder lengths", () => {

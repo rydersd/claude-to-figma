@@ -54,7 +54,7 @@ echo "  bun:  $BUN_PATH"
 echo "  repo: $REPO_ROOT"
 echo "  host: $HOSTNAME_VAL ($USER_VAL)"
 
-SERVER_TS="$REPO_ROOT/src/claude_to_figma_mcp/server.ts"
+SERVER_TS="$REPO_ROOT/src/llm2figma_mcp/server.ts"
 
 if [ "$INSTALL_LAUNCHER" -eq 1 ]; then
   LAUNCHER_DIR="$HOME/.local/bin"

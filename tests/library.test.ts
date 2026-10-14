@@ -20,7 +20,7 @@ import {
   CONFIG_HELP,
   formatLibraryList,
   formatSearchResults,
-} from "../src/claude_to_figma_mcp/tools/library";
+} from "../src/llm2figma_mcp/tools/library";
 
 describe("parseVariantProperties", () => {
   test("parses State=Default, Size=MD variant names", () => {
@@ -114,7 +114,7 @@ describe("buildLibraryIndex", () => {
   });
 });
 
-function makeSet(setName: string, extra: Partial<import("../src/claude_to_figma_mcp/tools/library").LibraryComponentSet> = {}) {
+function makeSet(setName: string, extra: Partial<import("../src/llm2figma_mcp/tools/library").LibraryComponentSet> = {}) {
   return {
     setName,
     description: "",
@@ -324,7 +324,7 @@ describe("formatSearchResults", () => {
   });
 });
 
-import { treeHasLibraryRefs, resolveTreeLibraryRefs } from "../src/claude_to_figma_mcp/tools/node-tree";
+import { treeHasLibraryRefs, resolveTreeLibraryRefs } from "../src/llm2figma_mcp/tools/node-tree";
 
 describe("resolveTreeLibraryRefs", () => {
   const index = [

@@ -3,12 +3,14 @@ import { resolve } from "node:path";
 
 export function makeMcpConfig(previous: any, bunPath: string, repoRoot: string, stamp: any) {
   const servers = { ...(previous?.mcpServers || {}) };
-  // Preserve existing client entry names and library credentials on regeneration.
-  const key = servers.ClaudeToFigma && !servers.LLM2Figma ? "ClaudeToFigma" : "LLM2Figma";
-  servers[key] = {
-    ...servers[key], type: "stdio", command: bunPath,
-    args: [resolve(repoRoot, "src/claude_to_figma_mcp/server.ts")],
-    env: servers[key]?.env || {},
+  // Migrate the entry name while preserving credentials and unrelated servers.
+  const previousServer = { ...servers.ClaudeToFigma, ...servers.LLM2Figma };
+  const env = { ...servers.ClaudeToFigma?.env, ...servers.LLM2Figma?.env };
+  delete servers.ClaudeToFigma;
+  servers.LLM2Figma = {
+    ...previousServer, type: "stdio", command: bunPath,
+    args: [resolve(repoRoot, "src/llm2figma_mcp/server.ts")],
+    env,
   };
   return { ...previous, mcpServers: servers, _generatedFor: stamp };
 }

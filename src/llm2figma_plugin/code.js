@@ -56,7 +56,7 @@
     };
   }
 
-  // src/claude_figma_plugin/src/utils.ts
+  // src/llm2figma_plugin/src/utils.ts
   var loadFontCached = createFontLoader((font) => figma.loadFontAsync(font));
   async function sendProgressUpdate(commandId, commandType, status, progress, totalItems, processedItems, message, payload = null) {
     const update = {
@@ -682,7 +682,7 @@
     }
   }
 
-  // src/claude_figma_plugin/src/document.ts
+  // src/llm2figma_plugin/src/document.ts
   async function getDocumentInfo() {
     await figma.currentPage.loadAsync();
     const page = figma.currentPage;
@@ -1045,7 +1045,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     return summary;
   }
 
-  // src/claude_figma_plugin/src/text.ts
+  // src/llm2figma_plugin/src/text.ts
   async function setTextContent(params) {
     const { nodeId, text } = params || {};
     if (!nodeId) {
@@ -2070,7 +2070,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
-  // src/claude_figma_plugin/src/creation.ts
+  // src/llm2figma_plugin/src/creation.ts
   async function createRectangle(params) {
     const {
       x = 0,
@@ -2401,7 +2401,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
-  // src/claude_figma_plugin/src/styling.ts
+  // src/llm2figma_plugin/src/styling.ts
   async function setFillColor(params) {
     console.log("setFillColor", params);
     const nodeId = params && params.nodeId;
@@ -2828,7 +2828,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
-  // src/claude_figma_plugin/src/transforms.ts
+  // src/llm2figma_plugin/src/transforms.ts
   async function moveNode(params) {
     const { nodeId, x, y } = params || {};
     if (!nodeId) {
@@ -3528,7 +3528,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
-  // src/claude_figma_plugin/src/layout.ts
+  // src/llm2figma_plugin/src/layout.ts
   async function setLayoutMode(params, firstOnTop = true) {
     const { nodeId, layoutMode = "NONE", layoutWrap = "NO_WRAP" } = params || {};
     const node = await figma.getNodeByIdAsync(nodeId);
@@ -3723,7 +3723,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
-  // src/claude_figma_plugin/src/components.ts
+  // src/llm2figma_plugin/src/components.ts
   async function getStyles() {
     const styles = {
       colors: await figma.getLocalPaintStylesAsync(),
@@ -4419,7 +4419,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     return { collections: result };
   }
 
-  // src/claude_figma_plugin/src/vectors.ts
+  // src/llm2figma_plugin/src/vectors.ts
   function normalizeSvgPath(pathData) {
     var normalized = pathData.replace(/([a-zA-Z])(\d)/g, "$1 $2").replace(/([a-zA-Z])(-)/g, "$1 $2").replace(/(\d)([a-zA-Z])/g, "$1 $2");
     var tokens = normalized.match(/[a-zA-Z]|[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g);
@@ -4825,7 +4825,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
-  // src/claude_figma_plugin/src/prototyping.ts
+  // src/llm2figma_plugin/src/prototyping.ts
   async function getReactions(nodeIds) {
     try {
       let getNodePath = function(node) {
@@ -5533,7 +5533,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
-  // src/claude_figma_plugin/src/node-tree.ts
+  // src/llm2figma_plugin/src/node-tree.ts
   function expandRepeats(node) {
     if (!node || typeof node !== "object") return node;
     if (node.children && Array.isArray(node.children)) {
@@ -6234,7 +6234,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
-  // src/claude_figma_plugin/src/analysis.ts
+  // src/llm2figma_plugin/src/analysis.ts
   function hasBoundVariable(node, field) {
     try {
       var bindings = node.boundVariables;
@@ -7754,7 +7754,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
-  // src/claude_figma_plugin/src/events.ts
+  // src/llm2figma_plugin/src/events.ts
   function debounce(fn, ms) {
     let timer = null;
     return (...args) => {
@@ -7898,7 +7898,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     });
   }
 
-  // src/claude_figma_plugin/src/main.ts
+  // src/llm2figma_plugin/src/main.ts
   var state = {
     serverPort: 3055,
     // Default port

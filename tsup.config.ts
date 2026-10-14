@@ -3,7 +3,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig([
   // MCP Server build
   {
-    entry: ['src/claude_to_figma_mcp/server.ts'],
+    entry: ['src/llm2figma_mcp/server.ts'],
     format: ['cjs', 'esm'],
     dts: true,
     clean: true,
@@ -16,9 +16,9 @@ export default defineConfig([
   },
   // Figma Plugin build
   {
-    entry: { 'code': 'src/claude_figma_plugin/src/main.ts' },
+    entry: { 'code': 'src/llm2figma_plugin/src/main.ts' },
     format: ['iife'],
-    outDir: 'src/claude_figma_plugin',
+    outDir: 'src/llm2figma_plugin',
     target: 'es2020',
     bundle: true,
     splitting: false,

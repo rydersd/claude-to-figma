@@ -25,13 +25,13 @@ Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test
 
 ## Architecture
 
-### MCP Server (`src/claude_to_figma_mcp/server.ts`)
+### MCP Server (`src/llm2figma_mcp/server.ts`)
 The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 90+ tools (create shapes, modify text, manage layouts, export images, component migration, design queries, etc.) and several AI prompts (design strategies). Communicates with the AI agent over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds.
 
 ### WebSocket Relay (`src/socket.ts`)
 Lightweight Bun WebSocket server on port 3055 (configurable via `PORT` env). Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
 
-### Figma Plugin (`src/claude_figma_plugin/`)
+### Figma Plugin (`src/llm2figma_plugin/`)
 Runs inside Figma. `code.js` is the plugin main thread handling 80+ commands via a dispatcher. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares permissions (dynamic-page access, localhost network). The plugin is bundled from `src/` by `bun run build`; commit the generated `code.js` runtime artifact after source changes.
 
 ## Key Patterns
@@ -47,7 +47,7 @@ Runs inside Figma. `code.js` is the plugin main thread handling 80+ commands via
 
 1. Run `bun setup` — installs dependencies and writes MCP config
 2. `bun socket` in one terminal (WebSocket relay on port 3055)
-3. In Figma: Plugins → Development → Link existing plugin → select `src/claude_figma_plugin/manifest.json`
+3. In Figma: Plugins → Development → Link existing plugin → select `src/llm2figma_plugin/manifest.json`
 4. Run plugin in Figma, join a channel, then use tools from Claude Code
 
 The MCP config written by `bun setup` uses the published package:
@@ -55,9 +55,9 @@ The MCP config written by `bun setup` uses the published package:
 ```json
 {
   "mcpServers": {
-    "ClaudeToFigma": {
+    "LLM2Figma": {
       "command": "bun",
-      "args": ["/path-to-repo/src/claude_to_figma_mcp/server.ts"]
+      "args": ["/path-to-repo/src/llm2figma_mcp/server.ts"]
     }
   }
 }
@@ -66,7 +66,7 @@ The MCP config written by `bun setup` uses the published package:
 You can also add it manually for Claude Code via the CLI:
 
 ```bash
-claude mcp add ClaudeToFigma -- bun /path-to-repo/src/claude_to_figma_mcp/server.ts
+claude mcp add LLM2Figma -- bun /path-to-repo/src/llm2figma_mcp/server.ts
 ```
 
 ## Agent Notes
