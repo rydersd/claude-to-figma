@@ -14,25 +14,33 @@ Full documentation lives in the [project wiki](docs/Home.md) — setup, architec
 
 ## How to use
 
+You need the **Figma desktop app** (development plugins don't run in the browser) and [Claude Code](https://claude.com/claude-code).
+
 1. Install Bun if you haven't already:
 
 ```bash
 curl -fsSL https://bun.sh/install | bash
 ```
 
-2. Run setup, this will also install MCP in your project
+2. Clone this repo and run setup. `--user` registers the MCP server for your user, so Claude Code sees the tools in every project. Without it, the tools only load when Claude Code starts inside this repo.
 
 ```bash
-bun setup
+git clone https://github.com/rydersd/claude-to-figma.git ~/claude-to-figma
+cd ~/claude-to-figma
+bun setup --user
 ```
 
-3. Start the Websocket server
+3. Start the WebSocket relay and leave it running while you work:
 
 ```bash
 bun socket
 ```
 
-4. Install Figma plugin from the Figma community page or [install locally](#figma-plugin)
+4. Add the plugin to Figma: in the desktop app, open a design file and choose **Plugins → Development → Import plugin from manifest…**, then pick `src/claude_figma_plugin/manifest.json` from this repo.
+
+5. Run **Plugins → Development → Claude to Figma Plugin** in the file you want Claude to work in. It connects to the relay on launch (**Auto-connect** is on by default in its Settings tab); if it doesn't, click **Connect**.
+
+6. Start a new Claude Code session and ask for something, for example "describe what's on the current Figma page". Tools join the connected file's channel automatically. If several files have the plugin open, Claude asks you to pick one with `join_channel`.
 
 ## Attribution
 
@@ -42,36 +50,19 @@ This project is a fork of [cursor-talk-to-figma-mcp](https://github.com/sonnylaz
 
 ### MCP Server: Integration with Claude Code
 
-Add the server to your project's `.mcp.json` (or `~/.claude/.mcp.json` for global access):
-
-```json
-{
-  "mcpServers": {
-    "claude-to-figma": {
-      "command": "/opt/homebrew/bin/node",
-      "args": ["/path-to-repo/dist/server.js"]
-    }
-  }
-}
-```
-
-Replace `/path-to-repo` with the absolute path to your clone of this repository.
-
-> **Note:** Use the absolute path to `node` (e.g. `/opt/homebrew/bin/node` on macOS with Homebrew, or the output of `which node`) to avoid PATH resolution issues when Claude Code launches the server.
-
-Or add via CLI:
+`bun setup` writes a machine-specific `.mcp.json` in this repo (project scope), and `bun setup --user` also registers the server for your user. To do it by hand, use absolute paths so Claude Code can launch the server from any folder:
 
 ```bash
-claude mcp add claude-to-figma -- /opt/homebrew/bin/node /path-to-repo/dist/server.js
+claude mcp add --scope user ClaudeToFigma -- "$(command -v bun)" "$PWD/src/claude_to_figma_mcp/server.ts"
 ```
 
-If you prefer running from source with Bun instead of the built output:
+Or add it to a project's `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "claude-to-figma": {
-      "command": "bun",
+    "ClaudeToFigma": {
+      "command": "/absolute/path/to/bun",
       "args": ["/path-to-repo/src/claude_to_figma_mcp/server.ts"]
     }
   }
@@ -125,6 +116,7 @@ Figma's plugin API exposes no way to enumerate library *components* — verified
 In practice: `$var:Collection/Name` resolves against local variables first, then falls through to any team library **enabled on the current file** — no token, no file keys, just the library turned on in Figma. Use `get_library_variables` to list what's reachable.
 
 A `$var:` ref that resolves to nothing is now a hard error naming the ref and listing available tokens. It previously logged to the console and carried on, which silently shipped a hardcoded colour wherever a token was requested.
+To run the built output with Node instead, run `bun run build` and point the command at `node` with `/path-to-repo/dist/server.js`.
 
 ### WebSocket Server
 
@@ -136,10 +128,9 @@ bun socket
 
 ### Figma Plugin
 
-1. In Figma, go to Plugins > Development > New Plugin
-2. Choose "Link existing plugin"
-3. Select the `src/claude_figma_plugin/manifest.json` file
-4. The plugin should now be available in your Figma development plugins
+1. In the Figma desktop app, go to **Plugins → Development → Import plugin from manifest…**
+2. Select the `src/claude_figma_plugin/manifest.json` file
+3. The plugin now appears under **Plugins → Development** as **Claude to Figma Plugin**
 
 The plugin includes a **Settings tab** with:
 - **First on top**: When enabled, new auto-layout frames default to first-child-on-top stacking (`itemReverseZIndex`)
@@ -170,11 +161,11 @@ bun socket
 
 ## Usage
 
-1. Start the WebSocket server
-2. Install the MCP server in Claude Code
-3. Open Figma and run the Claude to Figma Plugin
-4. Connect the plugin to the WebSocket server by joining a channel using `join_channel`
-5. Use Claude Code to communicate with Figma using the MCP tools
+1. Start the WebSocket relay (`bun socket`)
+2. Install the MCP server in Claude Code (`bun setup --user`)
+3. Open Figma and run the Claude to Figma Plugin (it auto-connects on launch)
+4. Use Claude Code with the MCP tools. The first tool call joins the plugin's channel automatically when one file is connected; call `join_channel` with the channel name shown in the plugin when several are
+5. If you change relay code, restart `bun socket`
 
 ## Local Development Setup
 

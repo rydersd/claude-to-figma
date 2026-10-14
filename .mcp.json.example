@@ -1,0 +1,18 @@
+{
+  "_comment": "This is a template. The real .mcp.json is gitignored and generated per machine by scripts/setup.sh — run `bun setup` (or `./scripts/preflight.sh`) on a fresh checkout. The _generatedFor block is stamped at generation time so preflight.sh can detect when the config no longer matches the current machine.",
+  "mcpServers": {
+    "ClaudeToFigma": {
+      "type": "stdio",
+      "command": "/ABSOLUTE/PATH/TO/bun",
+      "args": [
+        "/ABSOLUTE/PATH/TO/claude-to-figma/src/claude_to_figma_mcp/server.ts"
+      ],
+      "env": {}
+    }
+  },
+  "_generatedFor": {
+    "hostname": "<your-machine-hostname>",
+    "user": "<your-username>",
+    "generatedAt": "<ISO8601 timestamp>"
+  }
+}

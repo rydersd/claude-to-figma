@@ -155,7 +155,9 @@ export type FigmaCommand =
   | "get_interactions"
   | "batch_set_reactions"
   | "undo"
-  | "redo";
+  | "redo"
+  | "subscribe_events"
+  | "unsubscribe_events";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
