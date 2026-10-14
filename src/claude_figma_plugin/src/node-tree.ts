@@ -1,7 +1,8 @@
-import { sendProgressUpdate, generateCommandId, resolveColorValue, hexToFigmaColor, getVariableByName, bindVariableToColor, appendOrInsertChild, loadAllFonts, fontWeightToStyle, applyColorPaint } from './utils';
+import { sendProgressUpdate, generateCommandId, resolveColorValue, hexToFigmaColor, getVariableByName, bindVariableToColor, appendOrInsertChild, loadAllFonts, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyImageFill } from './utils';
 import { setCharacters } from './text';
 import { createFrame, createText, createRectangle } from './creation';
 import { createVector, normalizeSvgPath } from './vectors';
+import { createComponentInstance, applyTextOverrides } from './components';
 
 function expandRepeats(node: any): any {
   if (!node || typeof node !== "object") return node;
@@ -158,6 +159,18 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
     if (spec.opacity !== undefined && existingNode.opacity !== spec.opacity) {
       existingNode.opacity = spec.opacity;
       changedProps.push("opacity");
+    }
+    if (spec.effects !== undefined && "effects" in existingNode) {
+      existingNode.effects = buildFigmaEffects(spec.effects);
+      changedProps.push("effects");
+    }
+    if (spec.strokeAlign !== undefined && "strokeAlign" in existingNode && existingNode.strokeAlign !== spec.strokeAlign) {
+      existingNode.strokeAlign = spec.strokeAlign;
+      changedProps.push("strokeAlign");
+    }
+    if (spec.layoutPositioning !== undefined && "layoutPositioning" in existingNode && existingNode.layoutPositioning !== spec.layoutPositioning) {
+      applyLayoutPositioning(existingNode, spec);
+      changedProps.push("layoutPositioning");
     }
 
     // --- Frame properties ---
@@ -371,6 +384,54 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
       }
     }
 
+    // --- Instance properties ---
+    if (type === "instance") {
+      if (spec.componentKey) {
+        const mainComponent = await existingNode.getMainComponentAsync();
+        if (!mainComponent || mainComponent.key !== spec.componentKey) {
+          const component = await figma.importComponentByKeyAsync(spec.componentKey);
+          existingNode.swapComponent(component);
+          changedProps.push("componentKey");
+        }
+      }
+      if (spec.properties !== undefined) {
+        existingNode.setProperties(spec.properties);
+        changedProps.push("properties");
+      }
+      if (spec.textOverrides !== undefined) {
+        await applyTextOverrides(existingNode, spec.textOverrides);
+        changedProps.push("textOverrides");
+      }
+      if (spec.layoutSizingHorizontal !== undefined && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
+        try {
+          existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
+          changedProps.push("layoutSizingHorizontal");
+        } catch (e) {
+          console.error("Error setting layoutSizingHorizontal during sync:", e);
+        }
+      }
+      if (spec.layoutSizingVertical !== undefined && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
+        try {
+          existingNode.layoutSizingVertical = spec.layoutSizingVertical;
+          changedProps.push("layoutSizingVertical");
+        } catch (e) {
+          console.error("Error setting layoutSizingVertical during sync:", e);
+        }
+      }
+    }
+
+    var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
+    for (var ci = 0; ci < cornerProps.length; ci++) {
+      var cp = cornerProps[ci];
+      if (spec[cp] !== undefined && cp in existingNode && existingNode[cp] !== spec[cp]) {
+        existingNode[cp] = spec[cp];
+        changedProps.push(cp);
+      }
+    }
+    if (spec.fillImage && spec.fillImage.base64 && "fills" in existingNode) {
+      applyImageFill(existingNode, spec.fillImage);
+      changedProps.push("fillImage");
+    }
     return { changed: changedProps.length > 0, changedProps };
   }
 
@@ -387,6 +448,7 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
 
     // 1. Type check
     if (existingNode.type.toLowerCase() !== type) {
+      errorCount++;
       errors.push({
         type,
         name: spec.name || "(unnamed)",
@@ -401,36 +463,36 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
     delete resolvedSpec.children;
     var pendingVarBindings: any[] = [];
 
-    for (var _ref of Object.entries(COLOR_FIELDS)) {
-      var colorProp = _ref[0], figmaField = _ref[1];
-      if (resolvedSpec[colorProp] != null) {
-        var resolved = resolveColorValue(resolvedSpec[colorProp]);
-        if (resolved.varRef) {
-          var variable = await getVariableByName(resolved.varRef);
-          if (variable && variable.resolvedType === "COLOR") {
-            var modeIds = Object.keys(variable.valuesByMode);
-            if (modeIds.length > 0) {
-              var val = variable.valuesByMode[modeIds[0]];
-              if (val && typeof val === "object" && "r" in val) {
-                resolvedSpec[colorProp] = val;
+    try {
+      for (var _ref of Object.entries(COLOR_FIELDS)) {
+        var colorProp = _ref[0], figmaField = _ref[1];
+        if (resolvedSpec[colorProp] != null) {
+          var resolved = resolveColorValue(resolvedSpec[colorProp]);
+          if (resolved.varRef) {
+            var variable = await getVariableByName(resolved.varRef);
+            if (variable && variable.resolvedType === "COLOR") {
+              var modeIds = Object.keys(variable.valuesByMode);
+              if (modeIds.length > 0) {
+                var val = variable.valuesByMode[modeIds[0]];
+                if (val && typeof val === "object" && "r" in val) {
+                  resolvedSpec[colorProp] = val;
+                } else {
+                  delete resolvedSpec[colorProp];
+                }
               } else {
                 delete resolvedSpec[colorProp];
               }
             } else {
               delete resolvedSpec[colorProp];
             }
-          } else {
-            delete resolvedSpec[colorProp];
+            pendingVarBindings.push({ colorProp: colorProp, figmaField: figmaField, varRef: resolved.varRef });
+          } else if (resolved.color) {
+            resolvedSpec[colorProp] = resolved.color;
           }
-          pendingVarBindings.push({ colorProp: colorProp, figmaField: figmaField, varRef: resolved.varRef });
-        } else if (resolved.color) {
-          resolvedSpec[colorProp] = resolved.color;
         }
       }
-    }
 
-    // 3. Update properties
-    try {
+      // 3. Update properties
       var result = await updateNodeProperties(existingNode, resolvedSpec);
       if (result.changed) {
         updatedCount++;
@@ -447,10 +509,23 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
       return;
     }
 
-    // 4. Bind $var: references
+    // 4. Bind $var: references. An unresolvable token now throws, so keep it
+    // inside this function's error contract: unwinding here would abandon the
+    // run mid-write with nodes already mutated and no ids reported back.
     if (pendingVarBindings.length > 0) {
-      for (var binding of pendingVarBindings) {
-        await bindVariableToColor(existingNode, binding.figmaField, binding.varRef);
+      try {
+        for (var binding of pendingVarBindings) {
+          await bindVariableToColor(existingNode, binding.figmaField, binding.varRef);
+        }
+      } catch (err: any) {
+        errorCount++;
+        errors.push({
+          type,
+          name: spec.name || "(unnamed)",
+          nodeId: existingNode.id,
+          error: "Variable binding failed: " + (err.message || String(err)),
+        });
+        return;
       }
     }
 
@@ -547,42 +622,42 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
     const pendingVarBindings: any[] = [];
     const createParams: any = Object.assign({}, props, { parentId: parentNodeId });
 
-    for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
-      if (createParams[colorProp] != null) {
-        const resolved = resolveColorValue(createParams[colorProp]);
-        if (resolved.varRef) {
-          // For $var: refs, try to get the resolved value to pass to create,
-          // and also queue the binding for after creation
-          const variable = await getVariableByName(resolved.varRef);
-          if (variable && variable.resolvedType === "COLOR") {
-            // Get the value from the first mode as fallback color
-            const modeIds = Object.keys(variable.valuesByMode);
-            if (modeIds.length > 0) {
-              const val = variable.valuesByMode[modeIds[0]];
-              if (val && typeof val === "object" && "r" in val) {
-                createParams[colorProp] = val;
+    let result: any;
+    try {
+      for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
+        if (createParams[colorProp] != null) {
+          const resolved = resolveColorValue(createParams[colorProp]);
+          if (resolved.varRef) {
+            // For $var: refs, try to get the resolved value to pass to create,
+            // and also queue the binding for after creation
+            const variable = await getVariableByName(resolved.varRef);
+            if (variable && variable.resolvedType === "COLOR") {
+              // Get the value from the first mode as fallback color
+              const modeIds = Object.keys(variable.valuesByMode);
+              if (modeIds.length > 0) {
+                const val = variable.valuesByMode[modeIds[0]];
+                if (val && typeof val === "object" && "r" in val) {
+                  createParams[colorProp] = val;
+                } else {
+                  delete createParams[colorProp];
+                }
               } else {
                 delete createParams[colorProp];
               }
             } else {
               delete createParams[colorProp];
             }
-          } else {
-            delete createParams[colorProp];
+            pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
+          } else if (resolved.color) {
+            createParams[colorProp] = resolved.color;
           }
-          pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
-        } else if (resolved.color) {
-          createParams[colorProp] = resolved.color;
         }
       }
-    }
 
-    // Default x/y to 0 if not provided
-    if (createParams.x === undefined) createParams.x = 0;
-    if (createParams.y === undefined) createParams.y = 0;
+      // Default x/y to 0 if not provided
+      if (createParams.x === undefined) createParams.x = 0;
+      if (createParams.y === undefined) createParams.y = 0;
 
-    let result: any;
-    try {
       switch (type) {
         case "frame":
           result = await createFrame(createParams, firstOnTop);
@@ -595,6 +670,9 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
           break;
         case "vector":
           result = await createVector(createParams);
+          break;
+        case "instance":
+          result = await createComponentInstance(createParams);
           break;
         default:
           throw new Error(`Unknown node type: ${type}`);
@@ -610,13 +688,29 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
       return;
     }
 
-    // Bind any $var: references as real Figma variables on the created node
+    // Bind any $var: references as real Figma variables on the created node.
+    // An unresolvable token now throws; keep it inside the error contract so a
+    // bad ref costs one node rather than abandoning the tree with the nodes
+    // already created and no ids returned to clean them up.
     if (pendingVarBindings.length > 0) {
-      const node = await figma.getNodeByIdAsync(result.id);
-      if (node) {
-        for (const binding of pendingVarBindings) {
-          await bindVariableToColor(node, binding.figmaField, binding.varRef);
+      try {
+        const node = await figma.getNodeByIdAsync(result.id);
+        if (node) {
+          for (const binding of pendingVarBindings) {
+            await bindVariableToColor(node, binding.figmaField, binding.varRef);
+          }
         }
+      } catch (err: any) {
+        errorCount++;
+        errors.push({
+          type,
+          name: props.name || "(unnamed)",
+          nodeId: result.id,
+          error: "Variable binding failed: " + (err.message || String(err)),
+        });
+        const failedNode = await figma.getNodeByIdAsync(result.id);
+        if (failedNode) failedNode.remove();
+        return;
       }
     }
 

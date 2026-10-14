@@ -64,6 +64,7 @@ export type FigmaCommand =
   | "create_frame"
   | "create_text"
   | "set_fill_color"
+  | "set_image_fill"
   | "set_stroke_color"
   | "move_node"
   | "resize_node"
@@ -110,6 +111,7 @@ export type FigmaCommand =
   | "set_text_decoration"
   | "create_node_tree"
   | "get_local_variables"
+  | "get_library_variables"
   | "rename_node"
   | "batch_rename"
   | "create_line"
@@ -153,7 +155,6 @@ export type FigmaCommand =
   | "get_interactions"
   | "batch_set_reactions"
   | "undo"
-  | "redo"
   | "subscribe_events"
   | "unsubscribe_events";
 
@@ -198,6 +199,14 @@ export type CommandParams = {
     g: number;
     b: number;
     a?: number;
+  };
+  set_image_fill: {
+    nodeId: string;
+    image: {
+      base64: string;
+      scaleMode?: "FILL" | "FIT" | "CROP" | "TILE";
+      opacity?: number;
+    };
   };
   set_stroke_color: {
     nodeId: string;
@@ -426,6 +435,7 @@ export type CommandParams = {
     }>;
   };
   get_local_variables: Record<string, never>;
+  get_library_variables: Record<string, never>;
   rename_node: {
     nodeId: string;
     name: string;

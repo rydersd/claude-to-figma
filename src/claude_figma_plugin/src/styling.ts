@@ -1,11 +1,8 @@
-import { sendProgressUpdate, generateCommandId, safeMixed, hexToFigmaColor } from './utils';
+import { sendProgressUpdate, generateCommandId, safeMixed, hexToFigmaColor, buildFigmaEffects, buildGradientPaint, applyImageFill } from './utils';
 
 export async function setFillColor(params: any) {
   console.log("setFillColor", params);
-  const {
-    nodeId,
-    color: { r, g, b, a },
-  } = params || {};
+  const nodeId = params && params.nodeId;
 
   if (!nodeId) {
     throw new Error("Missing nodeId parameter");
@@ -19,6 +16,22 @@ export async function setFillColor(params: any) {
   if (!("fills" in node)) {
     throw new Error(`Node does not support fills: ${nodeId}`);
   }
+
+  // Gradient fill — CSS gradient string or {type, angle, stops} spec
+  if (params.gradient) {
+    const paint = buildGradientPaint(params.gradient);
+    if (!paint) {
+      throw new Error("Could not parse gradient value");
+    }
+    (node as any).fills = [paint];
+    return {
+      id: node.id,
+      name: node.name,
+      fills: [paint],
+    };
+  }
+
+  const { r, g, b, a } = (params.color || {}) as any;
 
   // Alpha 0 means "no fill" — clear the fills array
   if (a !== undefined && parseFloat(a) === 0) {
@@ -351,6 +364,26 @@ export async function setClipsContent(params: any) {
   };
 }
 
+// --- set_image_fill: Fill a node with an image from base64 bytes ---
+export async function setImageFill(params: any) {
+  const { nodeId, image } = params || {};
+  if (!nodeId) throw new Error("Missing nodeId parameter");
+  if (!image || !image.base64) throw new Error("Missing image data");
+
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+  if (!("fills" in node)) throw new Error(`Node does not support fills: ${nodeId}`);
+
+  const result = applyImageFill(node, image);
+
+  return {
+    id: node.id,
+    name: node.name,
+    imageHash: result.imageHash,
+    scaleMode: result.scaleMode,
+  };
+}
+
 // --- set_effects: Set effects (shadows, blurs) on a node ---
 export async function setEffects(params: any) {
   var nodeId = params.nodeId;
@@ -361,32 +394,7 @@ export async function setEffects(params: any) {
   var effects = params.effects;
   if (!effects || !Array.isArray(effects)) throw new Error("Missing or invalid effects array");
 
-  var figmaEffects: any[] = [];
-  for (var i = 0; i < effects.length; i++) {
-    var e = effects[i];
-    var effect: any = {
-      type: e.type,
-      visible: e.visible !== false,
-    };
-
-    if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
-      var color = e.color || { r: 0, g: 0, b: 0, a: 0.25 };
-      if (typeof color === "string") {
-        var parsed = hexToFigmaColor(color);
-        if (parsed) color = parsed;
-        else color = { r: 0, g: 0, b: 0, a: 0.25 };
-      }
-      effect.color = { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== undefined ? color.a : 0.25 };
-      effect.offset = { x: (e.offset && e.offset.x) || 0, y: (e.offset && e.offset.y) || 4 };
-      effect.radius = e.radius !== undefined ? e.radius : 4;
-      effect.spread = e.spread !== undefined ? e.spread : 0;
-      if (e.blendMode) effect.blendMode = e.blendMode;
-    } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
-      effect.radius = e.radius !== undefined ? e.radius : 4;
-    }
-
-    figmaEffects.push(effect);
-  }
+  var figmaEffects = buildFigmaEffects(effects);
 
   node.effects = figmaEffects;
 

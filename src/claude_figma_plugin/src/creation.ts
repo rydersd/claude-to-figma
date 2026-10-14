@@ -1,7 +1,7 @@
 // Node creation functions for the Figma plugin.
 // Extracted from code.js — pure structural refactor.
 
-import { appendOrInsertChild, hexToFigmaColor, fontWeightToStyle, applyColorPaint } from './utils';
+import { appendOrInsertChild, hexToFigmaColor, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyImageFill } from './utils';
 import { setCharacters } from './text';
 
 export async function createRectangle(params: any) {
@@ -21,14 +21,15 @@ export async function createRectangle(params: any) {
   rect.resize(width, height);
   rect.name = name;
 
-  // Set corner radius if provided
-  if (params.cornerRadius !== undefined) {
-    rect.cornerRadius = params.cornerRadius;
-  }
+  // Set uniform and/or per-corner radii if provided
+  applyCornerRadii(rect, params);
 
-  // Set fill color if provided
+  // Set fill color if provided (fillImage wins over fillColor)
   if (fillColor) {
     applyColorPaint(rect, "fills", fillColor);
+  }
+  if (params.fillImage && params.fillImage.base64) {
+    applyImageFill(rect, params.fillImage);
   }
 
   // Set stroke color and weight if provided
@@ -38,6 +39,14 @@ export async function createRectangle(params: any) {
   if (params.strokeWeight !== undefined) {
     rect.strokeWeight = params.strokeWeight;
   }
+  if (params.strokeAlign !== undefined) {
+    rect.strokeAlign = params.strokeAlign;
+  }
+
+  // Set effects (shadows, blurs) if provided
+  if (params.effects && Array.isArray(params.effects)) {
+    rect.effects = buildFigmaEffects(params.effects);
+  }
 
   // Set opacity if provided
   if (params.opacity !== undefined) {
@@ -45,6 +54,9 @@ export async function createRectangle(params: any) {
   }
 
   await appendOrInsertChild(rect, parentId, params.insertAt);
+
+  // ABSOLUTE positioning requires the node to be parented first
+  applyLayoutPositioning(rect, params);
 
   return {
     id: rect.id,
@@ -92,10 +104,8 @@ export async function createFrame(params: any, firstOnTop: boolean = true) {
     frame.clipsContent = !!params.clipsContent;
   }
 
-  // Set corner radius if provided
-  if (params.cornerRadius !== undefined) {
-    frame.cornerRadius = params.cornerRadius;
-  }
+  // Set uniform and/or per-corner radii if provided
+  applyCornerRadii(frame, params);
 
   // Set opacity if provided
   if (params.opacity !== undefined) {
@@ -139,9 +149,12 @@ export async function createFrame(params: any, firstOnTop: boolean = true) {
     }
   }
 
-  // Set fill color if provided
+  // Set fill color if provided (fillImage wins over fillColor)
   if (fillColor) {
     applyColorPaint(frame, "fills", fillColor);
+  }
+  if (params.fillImage && params.fillImage.base64) {
+    applyImageFill(frame, params.fillImage);
   }
 
   // Set stroke color and weight if provided
@@ -153,8 +166,19 @@ export async function createFrame(params: any, firstOnTop: boolean = true) {
   if (strokeWeight !== undefined) {
     frame.strokeWeight = strokeWeight;
   }
+  if (params.strokeAlign !== undefined) {
+    frame.strokeAlign = params.strokeAlign;
+  }
+
+  // Set effects (shadows, blurs) if provided
+  if (params.effects && Array.isArray(params.effects)) {
+    frame.effects = buildFigmaEffects(params.effects);
+  }
 
   await appendOrInsertChild(frame, parentId, params.insertAt);
+
+  // ABSOLUTE positioning requires the node to be parented first
+  applyLayoutPositioning(frame, params);
 
   // Now set FILL sizing after the frame has been parented (FILL requires auto-layout parent)
   if (layoutMode !== "NONE") {
@@ -267,6 +291,9 @@ export async function createText(params: any) {
   }
 
   await appendOrInsertChild(textNode, parentId, params.insertAt);
+
+  // ABSOLUTE positioning requires the node to be parented first
+  applyLayoutPositioning(textNode, params);
 
   return {
     id: textNode.id,

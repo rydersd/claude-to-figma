@@ -2,6 +2,10 @@
 
 This project implements a Model Context Protocol (MCP) integration between Claude Code and Figma, allowing Claude Code to communicate with Figma for reading designs and modifying them programmatically.
 
+## Documentation
+
+Full documentation lives in the [project wiki](docs/Home.md) — setup, architecture, the complete tool reference, the HTML→Figma pipeline, animation workflows, and the feature roadmap.
+
 ## Project Structure
 
 - `src/claude_to_figma_mcp/` - TypeScript MCP server for Figma integration
@@ -64,6 +68,54 @@ Or add it to a project's `.mcp.json`:
   }
 }
 ```
+
+### Environment Variables (team library tools, optional)
+
+`get_library_components`, `search_library_components`, and `$lib:` component references in `create_node_tree` read published team-library components straight from the Figma REST API. Two environment variables enable them:
+
+- `FIGMA_API_TOKEN` — a Figma personal access token (Figma → Settings → Security → Personal access tokens) with the **File content: read** and **Library content: read** scopes
+- `FIGMA_LIBRARY_FILE_KEYS` — comma-separated file keys of the libraries to index, taken from each library file's URL: `figma.com/design/<FILE_KEY>/...`
+
+Export both in your shell profile (e.g. `~/.zshrc`):
+
+```bash
+export FIGMA_API_TOKEN="figd_..."
+export FIGMA_LIBRARY_FILE_KEYS="abc123,def456"
+```
+
+Then pass them through in `.mcp.json`'s `ClaudeToFigma` server entry:
+
+```json
+{
+  "mcpServers": {
+    "ClaudeToFigma": {
+      "command": "bun",
+      "args": ["src/claude_to_figma_mcp/server.ts"],
+      "env": {
+        "FIGMA_API_TOKEN": "${FIGMA_API_TOKEN}",
+        "FIGMA_LIBRARY_FILE_KEYS": "${FIGMA_LIBRARY_FILE_KEYS}"
+      }
+    }
+  }
+}
+```
+
+Restart the MCP server after setting these. Without them, the two library tools return setup instructions instead of a component list.
+
+#### Library components vs. library variables
+
+These two are **not** symmetrical, and only one of them needs the token above:
+
+| | Discovery route | Needs `FIGMA_API_TOKEN` |
+|---|---|---|
+| Library **components** (`$lib:`) | Figma REST API | Yes |
+| Library **variables** (`$var:`) | Plugin API (`figma.teamLibrary`) | No |
+
+Figma's plugin API exposes no way to enumerate library *components* — verified against typings 1.133.0, where `figma.teamLibrary` still offers only `getAvailableLibraryVariableCollectionsAsync` and `getVariablesInLibraryCollectionAsync`. That asymmetry is why component discovery goes over REST while variables resolve natively.
+
+In practice: `$var:Collection/Name` resolves against local variables first, then falls through to any team library **enabled on the current file** — no token, no file keys, just the library turned on in Figma. Use `get_library_variables` to list what's reachable.
+
+A `$var:` ref that resolves to nothing is now a hard error naming the ref and listing available tokens. It previously logged to the console and carried on, which silently shipped a hardcoded colour wherever a token was requested.
 
 To run the built output with Node instead, run `bun run build` and point the command at `node` with `/path-to-repo/dist/server.js`.
 
@@ -156,17 +208,16 @@ The MCP server provides the following tools for interacting with Figma:
 - `create_section` - Places a labeled section container at (x, y) with given size, optionally adopting existing nodes as children
 - `create_vector` - Places a vector node from an SVG path string at (x, y) with given size and optional fill color
 - `create_ellipse` - Places an ellipse (circle or oval) at (x, y) with given size, optional fill color, and arc data for arcs/donuts
-- `create_node_tree` - Builds an entire node hierarchy from a JSON spec in one round-trip — supports nested frames, `$repeat` for data-driven repetition, `$var:` for Figma variable binding, and hex color shorthand
+- `create_node_tree` - Builds an entire node hierarchy from a JSON spec in one round-trip — supports nested frames, `$repeat` for data-driven repetition, `$var:` for Figma variable binding, hex color shorthand, gradients, image fills, effects (shadows/blurs), per-corner radii, and `layoutPositioning: ABSOLUTE` for floating children. Returns a compact summary by default (`verbose: true` for the full node map); call the `node_tree_guide` prompt for the complete spec reference
 - `create_svg` - Creates Figma nodes from a complete SVG markup string (logos, icons, illustrations) in one call — handles multi-path SVGs without splitting, returns a frame containing the parsed elements
 
 ### Text
 
-- `scan_text_nodes` - Returns all text nodes under a root, with chunked responses for large trees to avoid timeouts
+- `scan_text_nodes` - Returns all text nodes under a root, with chunked responses for large trees to avoid timeouts; accepts a `fields` whitelist to project only the keys you need
 - `set_text_content` - Replaces the text content of a single text node, loading the required font automatically
 - `set_multiple_text_contents` - Replaces text on many nodes in one call, each identified by node ID
 - `set_font_family` - Changes the font family and style (e.g. "Inter", "Bold") on a text node
 - `set_text_auto_resize` - Controls how a text node resizes to fit content: NONE, WIDTH_AND_HEIGHT, HEIGHT, or TRUNCATE
-- `set_text_decoration` - Applies underline, strikethrough, or removes decoration from a text node
 - `set_text_align` - Sets horizontal (LEFT, CENTER, RIGHT, JUSTIFIED) and/or vertical (TOP, CENTER, BOTTOM) text alignment
 - `set_text_format` - Sets node-level text formatting: line height, paragraph indent/spacing, letter spacing, text case (including SMALL_CAPS), leading trim, hanging punctuation/list, list spacing, truncation, and max lines
 - `set_text_list` - Applies native Figma ordered/unordered list formatting to a text node, with per-line type and indentation control for nested lists
@@ -175,24 +226,20 @@ The MCP server provides the following tools for interacting with Figma:
 ### Auto Layout & Spacing
 
 - `set_layout_mode` - Switches a frame to HORIZONTAL, VERTICAL, or NONE auto-layout, with optional wrap behavior
-- `set_padding` - Sets top, right, bottom, left padding on an auto-layout frame
 - `set_axis_align` - Sets primary axis (e.g. space-between) and counter axis (e.g. center) alignment on an auto-layout frame
 - `set_layout_sizing` - Sets horizontal and vertical sizing modes (FIXED, HUG, FILL) on an auto-layout frame
-- `set_item_spacing` - Sets the gap between children in an auto-layout frame
+- `set_padding`, `set_item_spacing` - Consolidated into `batch_mutate` ops (see Batch Operations)
 
 ### Styling
 
-- `set_fill_color` - Sets a solid fill color on a node using RGBA values (0–1 range)
+- `set_fill_color` - Sets a solid fill color on a node using RGBA values (0–1 range), or a gradient fill via a CSS gradient string or `{type, angle, stops}` object
+- `set_image_fill` - Fills a node with an image from a URL, local file path, or base64 data — the server fetches the bytes and the plugin creates a real Figma image fill with FILL/FIT/CROP/TILE scale modes
 - `set_stroke_color` - Sets a solid stroke color and optional weight on a node
-- `set_corner_radius` - Sets corner radius on a node, with optional per-corner control (top-left, top-right, bottom-right, bottom-left)
 - `set_stroke_dash` - Sets the dash pattern (array of dash/gap lengths) on a node's stroke
 - `set_stroke_properties` - Sets stroke weight, end cap, join style, alignment, and dash pattern in one call
 - `remove_fill` - Clears all fills from a node
-- `set_effects` - Sets effects on a node: drop shadow, inner shadow, layer blur, background blur — replaces all existing effects
-- `set_opacity` - Sets node opacity (0 = transparent, 1 = opaque)
-- `set_blend_mode` - Sets the blend mode of a node (NORMAL, MULTIPLY, SCREEN, OVERLAY, etc.)
-- `set_rotation` - Sets the rotation of a node in degrees (-180 to 180)
 - `set_mask` - Sets a node as a mask layer that clips subsequent siblings to its shape, with optional grouping to contain the effect
+- `set_corner_radius`, `set_effects`, `set_opacity`, `set_blend_mode`, `set_rotation` - Consolidated into `batch_mutate` ops (see Batch Operations); at creation time, `create_node_tree` also takes `effects` and per-corner radii directly
 
 ### Layout & Organization
 
@@ -212,6 +259,7 @@ The MCP server provides the following tools for interacting with Figma:
 
 - `get_styles` - Returns all local paint, text, effect, and grid styles in the document
 - `get_local_variables` - Returns all local variables (design tokens) organized by collection — use names with `$var:Collection/Name` in color fields to bind real Figma variables
+- `get_library_variables` - Returns design tokens published by the team libraries **enabled on this file**, each with a ready-to-use `$var:` ref. Needs no `FIGMA_API_TOKEN` — unlike library *components*, variables are readable straight from the plugin API
 - `get_local_components` - Returns all local components with their IDs, names, descriptions, and published keys
 - `create_component` - Converts an existing frame into a reusable Figma component, returning its new component ID and key
 - `create_component_instance` - Places an instance of a component by local ID or published key at (x, y), with optional parent
@@ -248,11 +296,11 @@ The MCP server provides the following tools for interacting with Figma:
 - `batch_reparent` - Moves multiple nodes under a new parent node at an optional child index
 - `batch_set_fill_color` - Applies the same fill color to multiple nodes at once
 - `batch_clone` - Duplicates one source node to multiple (x, y) positions with optional names per clone
-- `batch_mutate` - Executes a mixed array of operations (rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path) in a single round-trip — each operation runs independently
+- `batch_mutate` - Executes a mixed array of operations (rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path, set_opacity, set_rotation, set_blend_mode, set_corner_radius, set_effects, set_padding, set_item_spacing, set_text_decoration) in a single round-trip — each operation runs independently. The last eight were previously standalone tools, consolidated here to keep the tool surface lean.
 
 ### Inspection & Linting
 
-- `scan_node_styles` - Walks a frame tree and returns fill, stroke, font, layout, corner-radius, and component data for every descendant — includes a `boundVariable` flag on each color for detecting hardcoded vs token-bound values
+- `scan_node_styles` - Walks a frame tree and returns fill, stroke, font, layout, corner-radius, and component data for every descendant — includes a `boundVariable` flag on each color for detecting hardcoded vs token-bound values; accepts a `fields` whitelist to project only the keys you need
 - `screenshot_region` - Captures a PNG screenshot of a rectangular canvas region at optional scale
 
 ### Query & Eval

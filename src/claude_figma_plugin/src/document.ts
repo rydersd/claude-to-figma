@@ -39,7 +39,7 @@ export async function getSelection(): Promise<any> {
   };
 }
 
-export async function getNodeInfo(nodeId: string): Promise<any> {
+export async function getNodeInfo(nodeId: string, fields?: string[]): Promise<any> {
   const node = await figma.getNodeByIdAsync(nodeId);
 
   if (!node) {
@@ -50,10 +50,10 @@ export async function getNodeInfo(nodeId: string): Promise<any> {
     format: "JSON_REST_V1",
   });
 
-  return filterFigmaNode(response.document);
+  return filterFigmaNode(response.document, fields);
 }
 
-export async function getNodesInfo(nodeIds: string[]): Promise<any> {
+export async function getNodesInfo(nodeIds: string[], fields?: string[]): Promise<any> {
   try {
     // Load all nodes in parallel
     const nodes = await Promise.all(
@@ -71,7 +71,7 @@ export async function getNodesInfo(nodeIds: string[]): Promise<any> {
         });
         return {
           nodeId: node.id,
-          document: filterFigmaNode(response.document),
+          document: filterFigmaNode(response.document, fields),
         };
       })
     );

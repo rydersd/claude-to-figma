@@ -47,6 +47,25 @@ export async function sendProgressUpdate(
   return update;
 }
 
+// Render a thrown value as a string that keeps the stack. Figma's error toast
+// shows only the message, so the throwing frame is lost exactly when it matters
+// — "in get_mainComponent: Cannot call with documentAccess: dynamic-page" names
+// the API but not the call site. Everything that reports an error back over the
+// WebSocket should go through this.
+export function formatError(error: any): string {
+  if (error === null || error === undefined) return String(error);
+
+  var message =
+    typeof error.message === "string" && error.message
+      ? error.message
+      : String(error);
+  var stack = typeof error.stack === "string" ? error.stack : "";
+
+  if (!stack) return message;
+  // V8-style stacks already lead with "Error: <message>" — don't repeat it.
+  return stack.indexOf(message) !== -1 ? stack : message + "\n" + stack;
+}
+
 export function rgbaToHex(color: any) {
   var r = Math.round(color.r * 255);
   var g = Math.round(color.g * 255);
@@ -74,7 +93,21 @@ export function rgbaToHex(color: any) {
   );
 }
 
-export function filterFigmaNode(node: any): any {
+function projectNode(node: any, fields: string[]): any {
+  var out: any = {};
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    if (node[f] !== undefined) out[f] = node[f];
+  }
+  if (node.children && fields.indexOf("children") !== -1) {
+    out.children = node.children.map(function (c: any) {
+      return projectNode(c, fields);
+    });
+  }
+  return out;
+}
+
+export function filterFigmaNode(node: any, fields?: string[]): any {
   if (node.type === "VECTOR") {
     return null;
   }
@@ -150,11 +183,15 @@ export function filterFigmaNode(node: any): any {
   if (node.children) {
     filtered.children = node.children
       .map((child: any) => {
-        return filterFigmaNode(child);
+        return filterFigmaNode(child, fields);
       })
       .filter((child: any) => {
         return child !== null;
       });
+  }
+
+  if (fields && fields.length > 0) {
+    return projectNode(filtered, fields);
   }
 
   return filtered;
@@ -212,6 +249,56 @@ export function customBase64Encode(bytes: any) {
   return base64;
 }
 
+// Decode base64 to bytes — the plugin sandbox has no atob (counterpart to customBase64Encode)
+export function customBase64Decode(base64: string): Uint8Array {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const lookup: Record<string, number> = {};
+  for (let i = 0; i < chars.length; i++) lookup[chars[i]] = i;
+
+  const clean = base64.replace(/[\r\n\s]/g, "");
+  if (clean.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(clean)) {
+    throw new Error("Invalid base64 input");
+  }
+  let padding = 0;
+  if (clean.endsWith("==")) padding = 2;
+  else if (clean.endsWith("=")) padding = 1;
+
+  const byteLength = (clean.length / 4) * 3 - padding;
+  const bytes = new Uint8Array(byteLength);
+
+  let byteIndex = 0;
+  for (let i = 0; i < clean.length; i += 4) {
+    const a = lookup[clean[i]];
+    const b = lookup[clean[i + 1]];
+    const c = clean[i + 2] === "=" ? 0 : lookup[clean[i + 2]];
+    const d = clean[i + 3] === "=" ? 0 : lookup[clean[i + 3]];
+    if (a === undefined || b === undefined) throw new Error("Invalid base64 input");
+
+    const chunk = (a << 18) | (b << 12) | (c << 6) | d;
+    if (byteIndex < byteLength) bytes[byteIndex++] = (chunk >> 16) & 255;
+    if (byteIndex < byteLength) bytes[byteIndex++] = (chunk >> 8) & 255;
+    if (byteIndex < byteLength) bytes[byteIndex++] = chunk & 255;
+  }
+  return bytes;
+}
+
+// Apply an image fill from a spec { base64, scaleMode?, opacity? }.
+// Creates the Figma image from bytes and replaces the node's fills.
+export function applyImageFill(node: any, imageSpec: any) {
+  if (!imageSpec || !imageSpec.base64) throw new Error("Missing image base64 data");
+  const bytes = customBase64Decode(imageSpec.base64);
+  const image = figma.createImage(bytes); // throws on invalid/oversized (>4096px) images
+  const paint: any = {
+    type: "IMAGE",
+    imageHash: image.hash,
+    scaleMode: imageSpec.scaleMode || "FILL",
+  };
+  if (imageSpec.opacity !== undefined) paint.opacity = imageSpec.opacity;
+  node.fills = [paint];
+  return { imageHash: image.hash, scaleMode: paint.scaleMode };
+}
+
 export function delay(ms: any) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -265,41 +352,151 @@ export function resolveColorValue(colorInput: any) {
 }
 
 // Cache for variable lookups by name path (e.g. "Colors/Primary")
-var _variableCache: any = null;
+var _variableCache: any = Object.create(null);
+var _localVariableIndexPromise: Promise<void> | null = null;
+
+function indexVariable(index: any, name: string, value: any, identity: string) {
+  if (!Object.prototype.hasOwnProperty.call(index, name)) index[name] = value;
+  else if (index[name] !== null && (typeof index[name] === "string" ? index[name] : index[name].id) !== identity) index[name] = null;
+}
+
 export async function getVariableByName(namePath: any) {
-  if (!_variableCache) {
-    _variableCache = {};
-    var collections = await figma.variables.getLocalVariableCollectionsAsync();
-    for (var c = 0; c < collections.length; c++) {
-      var collection = collections[c];
-      for (var v = 0; v < collection.variableIds.length; v++) {
-        var variable = await figma.variables.getVariableByIdAsync(collection.variableIds[v]);
-        if (!variable) continue;
-        // Index by "Collection/VariableName" and by just "VariableName"
-        _variableCache[collection.name + "/" + variable.name] = variable;
-        // Also index by variable name alone (for convenience when unambiguous)
-        if (!_variableCache[variable.name]) {
-          _variableCache[variable.name] = variable;
+  if (!_localVariableIndexPromise) {
+    _localVariableIndexPromise = (async function () {
+      const index: any = Object.create(null);
+      const collections = await figma.variables.getLocalVariableCollectionsAsync();
+      for (const collection of collections) {
+        for (const id of collection.variableIds) {
+          const variable = await figma.variables.getVariableByIdAsync(id);
+          if (!variable) continue;
+          indexVariable(index, collection.name + "/" + variable.name, variable, variable.id);
+          indexVariable(index, variable.name, variable, variable.id);
         }
       }
-    }
+      _variableCache = index;
+    })().catch(function (err: any) {
+      _localVariableIndexPromise = null;
+      throw err;
+    });
   }
-  return _variableCache[namePath] || null;
+  await _localVariableIndexPromise;
+  if (Object.prototype.hasOwnProperty.call(_variableCache, namePath)) {
+    if (_variableCache[namePath] === null) throw new Error("Ambiguous local variable: " + namePath + ". Use a unique Collection/Name reference.");
+    return _variableCache[namePath];
+  }
+
+  // Local variables win. Only fall through to a team library on a local miss.
+  const imported = await importLibraryVariableByName(namePath);
+  if (imported) _variableCache[namePath] = imported;
+  return imported || null;
+}
+
+// figma.teamLibrary enumerates *variables* only — there is no plugin API to
+// enumerate library components, which is why component discovery goes through
+// the REST API in tools/library.ts. Variables we can resolve natively: no
+// FIGMA_API_TOKEN, no file keys, just the libraries enabled on this file.
+// Memoize the in-flight promise rather than the object. Publishing a partial
+// index up front let a concurrent caller read an empty map and report a
+// spurious miss; and retaining a *failed* enumeration meant one transient error
+// — permission not yet granted, a dropped request — poisoned every later $var:
+// for the rest of the session with "no variables resolved at all".
+var _libraryVariableIndexPromise: Promise<any> | null = null;
+
+function buildLibraryVariableIndex(): Promise<any> {
+  if (_libraryVariableIndexPromise) return _libraryVariableIndexPromise;
+
+  _libraryVariableIndexPromise = (async function () {
+    var index: any = Object.create(null);
+    var collections =
+      await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    for (var c = 0; c < collections.length; c++) {
+      var collection = collections[c];
+      var variables =
+        await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
+      for (var v = 0; v < variables.length; v++) {
+        var variable = variables[v];
+        indexVariable(index, collection.name + "/" + variable.name, variable.key, variable.key);
+        indexVariable(index, variable.name, variable.key, variable.key);
+      }
+    }
+    return index;
+  })().catch(function (err: any) {
+    // Drop the memo so the next call retries instead of inheriting the failure.
+    _libraryVariableIndexPromise = null;
+    console.log("Could not enumerate library variables: " + formatError(err));
+    return {};
+  });
+
+  return _libraryVariableIndexPromise;
+}
+
+async function importLibraryVariableByName(namePath: any) {
+  var index = await buildLibraryVariableIndex();
+  var key = index[namePath];
+  if (key === null) throw new Error("Ambiguous library variable: " + namePath + ". Use a unique Collection/Name reference or a local variable.");
+  if (!key) return null;
+  try {
+    return await figma.variables.importVariableByKeyAsync(key);
+  } catch (err: any) {
+    // Stale key — unpublished, deleted, or access lost since the index was
+    // built. Treat it as a miss so the caller's "not found, here's what is
+    // available" error wins over a raw Figma message.
+    console.log(
+      "Could not import library variable " + namePath + ": " + formatError(err)
+    );
+    return null;
+  }
+}
+
+// Every variable name resolvable right now, local and library, for error
+// messages and for the get_library_variables tool.
+export async function listResolvableVariableNames(): Promise<string[]> {
+  await getVariableByName("");
+  var index = await buildLibraryVariableIndex();
+  var names: any = {};
+  for (var localName in _variableCache) {
+    if (localName && _variableCache[localName]) names[localName] = true;
+  }
+  for (var libName in index) {
+    if (libName && index[libName]) names[libName] = true;
+  }
+  return Object.keys(names).sort();
 }
 
 // Bind a Figma variable to a node's color property
 export async function bindVariableToColor(node: any, field: any, varRef: any) {
   var variable = await getVariableByName(varRef);
   if (!variable) {
-    console.log("Variable not found: " + varRef + " — skipping binding for " + field);
-    return false;
+    // Previously a console.log + silent skip, which shipped a hardcoded colour
+    // where a token was asked for and told nobody. A missing token is a broken
+    // build, so say so.
+    var available = await listResolvableVariableNames();
+    throw new Error(
+      "Variable not found: " + varRef + " (binding " + field + "). " +
+        "Searched local variables and enabled team libraries. " +
+        (available.length
+          ? "Available: " +
+            available.slice(0, 40).join(", ") +
+            (available.length > 40
+              ? ", …and " + (available.length - 40) + " more"
+              : "")
+          : "No variables resolved at all — is the library enabled on this file?")
+    );
+  }
+  if (variable.resolvedType !== "COLOR") {
+    throw new Error("Variable " + varRef + " is not a COLOR variable (got " + variable.resolvedType + ")");
   }
   try {
-    node.setBoundVariable(field, variable);
+    // Fills/strokes are immutable paint arrays, not node bindable fields.
+    if (field !== "fills" && field !== "strokes") throw new Error("Unsupported color field: " + field);
+    const paints = node[field];
+    const basePaint = Array.isArray(paints) && paints[0]?.type === "SOLID"
+      ? paints[0]
+      : { type: "SOLID", color: { r: 0, g: 0, b: 0 } };
+    node[field] = [figma.variables.setBoundVariableForPaint(basePaint, "color", variable)];
     return true;
   } catch (err: any) {
-    console.log("Failed to bind variable " + varRef + " to " + field + ": " + err.message);
-    return false;
+    throw new Error("Failed to bind variable " + varRef + " to " + field + ": " + formatError(err));
   }
 }
 
@@ -343,8 +540,170 @@ export function fontWeightToStyle(weight: number): string {
   }
 }
 
-// Apply a solid color paint to a node property (fills or strokes)
+// Detect a gradient value: object with a stops array, or a CSS gradient string
+export function isGradientValue(value: any): boolean {
+  if (value && typeof value === "object" && Array.isArray(value.stops)) return true;
+  if (typeof value === "string" && /^(linear|radial)-gradient\(/.test(value.trim())) return true;
+  return false;
+}
+
+// CSS angle convention: 0deg = to top, 90deg = to right, clockwise.
+// Rotates the gradient axis around the node center (no corner-to-corner scaling).
+function gradientTransformFromAngle(deg: number): number[][] {
+  var rad = ((deg - 90) * Math.PI) / 180;
+  var cos = Math.cos(rad);
+  var sin = Math.sin(rad);
+  return [
+    [cos, sin, 0.5 - 0.5 * cos - 0.5 * sin],
+    [-sin, cos, 0.5 + 0.5 * sin - 0.5 * cos],
+  ];
+}
+
+// Split a CSS argument list on top-level commas (ignores commas inside parens)
+function splitTopLevel(str: string): string[] {
+  var parts: string[] = [];
+  var depth = 0;
+  var current = "";
+  for (var i = 0; i < str.length; i++) {
+    var ch = str[i];
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (ch === "," && depth === 0) {
+      parts.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+// Parse a CSS color token: #hex, rgb(...), or rgba(...)
+function parseCssColor(token: string): any {
+  token = token.trim();
+  if (token.startsWith("#")) return hexToFigmaColor(token);
+  var m = token.match(/^rgba?\(([^)]*)\)$/);
+  if (m) {
+    var nums = m[1].split(",").map(function (s) { return parseFloat(s.trim()); });
+    if (nums.length >= 3) {
+      return {
+        r: (nums[0] || 0) / 255,
+        g: (nums[1] || 0) / 255,
+        b: (nums[2] || 0) / 255,
+        a: nums.length > 3 && !isNaN(nums[3]) ? nums[3] : 1,
+      };
+    }
+  }
+  return null;
+}
+
+var SIDE_ANGLES: Record<string, number> = {
+  "to top": 0, "to top right": 45, "to right top": 45,
+  "to right": 90, "to bottom right": 135, "to right bottom": 135,
+  "to bottom": 180, "to bottom left": 225, "to left bottom": 225,
+  "to left": 270, "to top left": 315, "to left top": 315,
+};
+
+// Parse "linear-gradient(135deg, #667eea 0%, #764ba2)" or "radial-gradient(...)"
+// into a gradient spec { type, angle, stops: [{position, color}] }. Returns null on failure.
+export function parseCssGradient(css: string): any {
+  var m = css.trim().match(/^(linear|radial)-gradient\((.*)\)$/s);
+  if (!m) return null;
+  var kind = m[1];
+  var parts = splitTopLevel(m[2]);
+  if (parts.length === 0) return null;
+
+  var angle = 180; // CSS default: to bottom
+  var first = parts[0].toLowerCase();
+  if (kind === "linear") {
+    var angleMatch = first.match(/^(-?[\d.]+)deg$/);
+    if (angleMatch) {
+      angle = parseFloat(angleMatch[1]);
+      parts.shift();
+    } else if (SIDE_ANGLES[first] !== undefined) {
+      angle = SIDE_ANGLES[first];
+      parts.shift();
+    }
+  } else {
+    // radial: drop a shape/position prelude ("circle", "ellipse at center", ...) if present
+    if (/^(circle|ellipse|closest-|farthest-|at )/.test(first)) parts.shift();
+  }
+
+  var stops: any[] = [];
+  for (var i = 0; i < parts.length; i++) {
+    var stopMatch = parts[i].match(/^(.*?)(?:\s+([\d.]+)%)?$/s);
+    if (!stopMatch) return null;
+    var color = parseCssColor(stopMatch[1]);
+    if (!color) return null;
+    stops.push({
+      color: color,
+      position: stopMatch[2] !== undefined ? parseFloat(stopMatch[2]) / 100 : undefined,
+    });
+  }
+  if (stops.length < 2) return null;
+
+  // Fill in missing positions: first=0, last=1, interpolate interior runs
+  if (stops[0].position === undefined) stops[0].position = 0;
+  if (stops[stops.length - 1].position === undefined) stops[stops.length - 1].position = 1;
+  for (var j = 1; j < stops.length - 1; j++) {
+    if (stops[j].position === undefined) {
+      var prev = j - 1;
+      var next = j + 1;
+      while (stops[next].position === undefined) next++;
+      var span = next - prev;
+      for (var k = prev + 1; k < next; k++) {
+        stops[k].position = stops[prev].position + ((stops[next].position - stops[prev].position) * (k - prev)) / span;
+      }
+    }
+  }
+
+  return {
+    type: kind === "radial" ? "GRADIENT_RADIAL" : "GRADIENT_LINEAR",
+    angle: angle,
+    stops: stops,
+  };
+}
+
+// Build a Figma GradientPaint from a gradient spec (object form or CSS string)
+export function buildGradientPaint(gradient: any): any {
+  var spec = typeof gradient === "string" ? parseCssGradient(gradient) : gradient;
+  if (!spec || !Array.isArray(spec.stops) || spec.stops.length < 2) return null;
+
+  var gradientStops: any[] = [];
+  for (var i = 0; i < spec.stops.length; i++) {
+    var stop = spec.stops[i];
+    var color = typeof stop.color === "string" ? hexToFigmaColor(stop.color) : stop.color;
+    if (!color) return null;
+    gradientStops.push({
+      position: stop.position !== undefined ? stop.position : i / (spec.stops.length - 1),
+      color: { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== undefined ? color.a : 1 },
+    });
+  }
+
+  var type = spec.type || "GRADIENT_LINEAR";
+  var transform = type === "GRADIENT_LINEAR"
+    ? gradientTransformFromAngle(spec.angle !== undefined ? spec.angle : 180)
+    : [[1, 0, 0], [0, 1, 0]];
+
+  return {
+    type: type,
+    gradientStops: gradientStops,
+    gradientTransform: transform,
+  };
+}
+
+// Apply a solid or gradient paint to a node property (fills or strokes)
 export function applyColorPaint(node: any, field: string, colorObj: any) {
+  if (isGradientValue(colorObj)) {
+    var paint = buildGradientPaint(colorObj);
+    if (paint) {
+      node[field] = [paint];
+    } else {
+      console.warn("[applyColorPaint] Could not parse gradient value; leaving " + field + " unchanged");
+    }
+    return;
+  }
   if (colorObj.a !== undefined && parseFloat(colorObj.a) === 0) {
     node[field] = [];
   } else {
@@ -357,6 +716,68 @@ export function applyColorPaint(node: any, field: string, colorObj: any) {
       },
       opacity: colorObj.a !== undefined ? parseFloat(colorObj.a) : 1,
     }];
+  }
+}
+
+// Convert a spec effects array (colors as hex or RGBA) into Figma Effect objects.
+// Shared by set_effects and create_node_tree.
+export function buildFigmaEffects(effects: any[]): any[] {
+  var figmaEffects: any[] = [];
+  for (var i = 0; i < effects.length; i++) {
+    var e = effects[i];
+    var effect: any = {
+      type: e.type,
+      visible: e.visible !== false,
+    };
+
+    if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
+      var color = e.color || { r: 0, g: 0, b: 0, a: 0.25 };
+      if (typeof color === "string") {
+        var parsed = hexToFigmaColor(color);
+        if (parsed) color = parsed;
+        else color = { r: 0, g: 0, b: 0, a: 0.25 };
+      }
+      effect.color = { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== undefined ? color.a : 0.25 };
+      effect.offset = { x: e.offset?.x ?? 0, y: e.offset?.y ?? 4 };
+      effect.radius = e.radius !== undefined ? e.radius : 4;
+      effect.spread = e.spread !== undefined ? e.spread : 0;
+      effect.blendMode = e.blendMode || "NORMAL";
+    } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+      effect.radius = e.radius !== undefined ? e.radius : 4;
+    }
+
+    figmaEffects.push(effect);
+  }
+  return figmaEffects;
+}
+
+// Apply uniform and/or per-corner radii from a spec. Per-corner values win over cornerRadius.
+export function applyCornerRadii(node: any, spec: any) {
+  if (spec.cornerRadius !== undefined && "cornerRadius" in node) {
+    node.cornerRadius = spec.cornerRadius;
+  }
+  var corners = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
+  for (var i = 0; i < corners.length; i++) {
+    var prop = corners[i];
+    if (spec[prop] !== undefined && prop in node) {
+      node[prop] = spec[prop];
+    }
+  }
+}
+
+// Set layoutPositioning ABSOLUTE on a node already parented into an auto-layout frame,
+// restoring the spec's x/y (auto-layout overrides them on append).
+export function applyLayoutPositioning(node: any, spec: any) {
+  if (spec.layoutPositioning === undefined) return;
+  if (!("layoutPositioning" in node)) return;
+  try {
+    node.layoutPositioning = spec.layoutPositioning;
+    if (spec.layoutPositioning === "ABSOLUTE") {
+      if (spec.x !== undefined) node.x = spec.x;
+      if (spec.y !== undefined) node.y = spec.y;
+    }
+  } catch (e) {
+    // ABSOLUTE requires an auto-layout parent — leave the node in flow if it fails
   }
 }
 

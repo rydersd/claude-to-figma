@@ -27,6 +27,13 @@
     await new Promise((resolve) => setTimeout(resolve, 0));
     return update;
   }
+  function formatError(error) {
+    if (error === null || error === void 0) return String(error);
+    var message = typeof error.message === "string" && error.message ? error.message : String(error);
+    var stack = typeof error.stack === "string" ? error.stack : "";
+    if (!stack) return message;
+    return stack.indexOf(message) !== -1 ? stack : message + "\n" + stack;
+  }
   function rgbaToHex(color) {
     var r = Math.round(color.r * 255);
     var g = Math.round(color.g * 255);
@@ -41,7 +48,20 @@
       return x.toString(16).padStart(2, "0");
     }).join("");
   }
-  function filterFigmaNode(node) {
+  function projectNode(node, fields) {
+    var out = {};
+    for (var i = 0; i < fields.length; i++) {
+      var f = fields[i];
+      if (node[f] !== void 0) out[f] = node[f];
+    }
+    if (node.children && fields.indexOf("children") !== -1) {
+      out.children = node.children.map(function(c) {
+        return projectNode(c, fields);
+      });
+    }
+    return out;
+  }
+  function filterFigmaNode(node, fields) {
     if (node.type === "VECTOR") {
       return null;
     }
@@ -105,10 +125,13 @@
     }
     if (node.children) {
       filtered.children = node.children.map((child) => {
-        return filterFigmaNode(child);
+        return filterFigmaNode(child, fields);
       }).filter((child) => {
         return child !== null;
       });
+    }
+    if (fields && fields.length > 0) {
+      return projectNode(filtered, fields);
     }
     return filtered;
   }
@@ -141,6 +164,46 @@
       base64 += chars[a] + chars[b] + chars[c] + "=";
     }
     return base64;
+  }
+  function customBase64Decode(base64) {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const lookup = {};
+    for (let i = 0; i < chars.length; i++) lookup[chars[i]] = i;
+    const clean = base64.replace(/[\r\n\s]/g, "");
+    if (clean.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(clean)) {
+      throw new Error("Invalid base64 input");
+    }
+    let padding = 0;
+    if (clean.endsWith("==")) padding = 2;
+    else if (clean.endsWith("=")) padding = 1;
+    const byteLength = clean.length / 4 * 3 - padding;
+    const bytes = new Uint8Array(byteLength);
+    let byteIndex = 0;
+    for (let i = 0; i < clean.length; i += 4) {
+      const a = lookup[clean[i]];
+      const b = lookup[clean[i + 1]];
+      const c = clean[i + 2] === "=" ? 0 : lookup[clean[i + 2]];
+      const d = clean[i + 3] === "=" ? 0 : lookup[clean[i + 3]];
+      if (a === void 0 || b === void 0) throw new Error("Invalid base64 input");
+      const chunk = a << 18 | b << 12 | c << 6 | d;
+      if (byteIndex < byteLength) bytes[byteIndex++] = chunk >> 16 & 255;
+      if (byteIndex < byteLength) bytes[byteIndex++] = chunk >> 8 & 255;
+      if (byteIndex < byteLength) bytes[byteIndex++] = chunk & 255;
+    }
+    return bytes;
+  }
+  function applyImageFill(node, imageSpec) {
+    if (!imageSpec || !imageSpec.base64) throw new Error("Missing image base64 data");
+    const bytes = customBase64Decode(imageSpec.base64);
+    const image = figma.createImage(bytes);
+    const paint = {
+      type: "IMAGE",
+      imageHash: image.hash,
+      scaleMode: imageSpec.scaleMode || "FILL"
+    };
+    if (imageSpec.opacity !== void 0) paint.opacity = imageSpec.opacity;
+    node.fills = [paint];
+    return { imageHash: image.hash, scaleMode: paint.scaleMode };
   }
   function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -185,37 +248,108 @@
     }
     return { color: null, varRef: null };
   }
-  var _variableCache = null;
+  var _variableCache = /* @__PURE__ */ Object.create(null);
+  var _localVariableIndexPromise = null;
+  function indexVariable(index, name, value, identity) {
+    if (!Object.prototype.hasOwnProperty.call(index, name)) index[name] = value;
+    else if (index[name] !== null && (typeof index[name] === "string" ? index[name] : index[name].id) !== identity) index[name] = null;
+  }
   async function getVariableByName(namePath) {
-    if (!_variableCache) {
-      _variableCache = {};
-      var collections = await figma.variables.getLocalVariableCollectionsAsync();
-      for (var c = 0; c < collections.length; c++) {
-        var collection = collections[c];
-        for (var v = 0; v < collection.variableIds.length; v++) {
-          var variable = await figma.variables.getVariableByIdAsync(collection.variableIds[v]);
-          if (!variable) continue;
-          _variableCache[collection.name + "/" + variable.name] = variable;
-          if (!_variableCache[variable.name]) {
-            _variableCache[variable.name] = variable;
+    if (!_localVariableIndexPromise) {
+      _localVariableIndexPromise = async function() {
+        const index = /* @__PURE__ */ Object.create(null);
+        const collections = await figma.variables.getLocalVariableCollectionsAsync();
+        for (const collection of collections) {
+          for (const id of collection.variableIds) {
+            const variable = await figma.variables.getVariableByIdAsync(id);
+            if (!variable) continue;
+            indexVariable(index, collection.name + "/" + variable.name, variable, variable.id);
+            indexVariable(index, variable.name, variable, variable.id);
           }
         }
-      }
+        _variableCache = index;
+      }().catch(function(err) {
+        _localVariableIndexPromise = null;
+        throw err;
+      });
     }
-    return _variableCache[namePath] || null;
+    await _localVariableIndexPromise;
+    if (Object.prototype.hasOwnProperty.call(_variableCache, namePath)) {
+      if (_variableCache[namePath] === null) throw new Error("Ambiguous local variable: " + namePath + ". Use a unique Collection/Name reference.");
+      return _variableCache[namePath];
+    }
+    const imported = await importLibraryVariableByName(namePath);
+    if (imported) _variableCache[namePath] = imported;
+    return imported || null;
+  }
+  var _libraryVariableIndexPromise = null;
+  function buildLibraryVariableIndex() {
+    if (_libraryVariableIndexPromise) return _libraryVariableIndexPromise;
+    _libraryVariableIndexPromise = async function() {
+      var index = /* @__PURE__ */ Object.create(null);
+      var collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+      for (var c = 0; c < collections.length; c++) {
+        var collection = collections[c];
+        var variables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
+        for (var v = 0; v < variables.length; v++) {
+          var variable = variables[v];
+          indexVariable(index, collection.name + "/" + variable.name, variable.key, variable.key);
+          indexVariable(index, variable.name, variable.key, variable.key);
+        }
+      }
+      return index;
+    }().catch(function(err) {
+      _libraryVariableIndexPromise = null;
+      console.log("Could not enumerate library variables: " + formatError(err));
+      return {};
+    });
+    return _libraryVariableIndexPromise;
+  }
+  async function importLibraryVariableByName(namePath) {
+    var index = await buildLibraryVariableIndex();
+    var key = index[namePath];
+    if (key === null) throw new Error("Ambiguous library variable: " + namePath + ". Use a unique Collection/Name reference or a local variable.");
+    if (!key) return null;
+    try {
+      return await figma.variables.importVariableByKeyAsync(key);
+    } catch (err) {
+      console.log(
+        "Could not import library variable " + namePath + ": " + formatError(err)
+      );
+      return null;
+    }
+  }
+  async function listResolvableVariableNames() {
+    await getVariableByName("");
+    var index = await buildLibraryVariableIndex();
+    var names = {};
+    for (var localName in _variableCache) {
+      if (localName && _variableCache[localName]) names[localName] = true;
+    }
+    for (var libName in index) {
+      if (libName && index[libName]) names[libName] = true;
+    }
+    return Object.keys(names).sort();
   }
   async function bindVariableToColor(node, field, varRef) {
     var variable = await getVariableByName(varRef);
     if (!variable) {
-      console.log("Variable not found: " + varRef + " \u2014 skipping binding for " + field);
-      return false;
+      var available = await listResolvableVariableNames();
+      throw new Error(
+        "Variable not found: " + varRef + " (binding " + field + "). Searched local variables and enabled team libraries. " + (available.length ? "Available: " + available.slice(0, 40).join(", ") + (available.length > 40 ? ", \u2026and " + (available.length - 40) + " more" : "") : "No variables resolved at all \u2014 is the library enabled on this file?")
+      );
+    }
+    if (variable.resolvedType !== "COLOR") {
+      throw new Error("Variable " + varRef + " is not a COLOR variable (got " + variable.resolvedType + ")");
     }
     try {
-      node.setBoundVariable(field, variable);
+      if (field !== "fills" && field !== "strokes") throw new Error("Unsupported color field: " + field);
+      const paints = node[field];
+      const basePaint = Array.isArray(paints) && paints[0]?.type === "SOLID" ? paints[0] : { type: "SOLID", color: { r: 0, g: 0, b: 0 } };
+      node[field] = [figma.variables.setBoundVariableForPaint(basePaint, "color", variable)];
       return true;
     } catch (err) {
-      console.log("Failed to bind variable " + varRef + " to " + field + ": " + err.message);
-      return false;
+      throw new Error("Failed to bind variable " + varRef + " to " + field + ": " + formatError(err));
     }
   }
   async function appendOrInsertChild(child, parentId, insertAt) {
@@ -263,7 +397,153 @@
         return "Regular";
     }
   }
+  function isGradientValue(value) {
+    if (value && typeof value === "object" && Array.isArray(value.stops)) return true;
+    if (typeof value === "string" && /^(linear|radial)-gradient\(/.test(value.trim())) return true;
+    return false;
+  }
+  function gradientTransformFromAngle(deg) {
+    var rad = (deg - 90) * Math.PI / 180;
+    var cos = Math.cos(rad);
+    var sin = Math.sin(rad);
+    return [
+      [cos, sin, 0.5 - 0.5 * cos - 0.5 * sin],
+      [-sin, cos, 0.5 + 0.5 * sin - 0.5 * cos]
+    ];
+  }
+  function splitTopLevel(str) {
+    var parts = [];
+    var depth = 0;
+    var current = "";
+    for (var i = 0; i < str.length; i++) {
+      var ch = str[i];
+      if (ch === "(") depth++;
+      if (ch === ")") depth--;
+      if (ch === "," && depth === 0) {
+        parts.push(current.trim());
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    if (current.trim()) parts.push(current.trim());
+    return parts;
+  }
+  function parseCssColor(token) {
+    token = token.trim();
+    if (token.startsWith("#")) return hexToFigmaColor(token);
+    var m = token.match(/^rgba?\(([^)]*)\)$/);
+    if (m) {
+      var nums = m[1].split(",").map(function(s) {
+        return parseFloat(s.trim());
+      });
+      if (nums.length >= 3) {
+        return {
+          r: (nums[0] || 0) / 255,
+          g: (nums[1] || 0) / 255,
+          b: (nums[2] || 0) / 255,
+          a: nums.length > 3 && !isNaN(nums[3]) ? nums[3] : 1
+        };
+      }
+    }
+    return null;
+  }
+  var SIDE_ANGLES = {
+    "to top": 0,
+    "to top right": 45,
+    "to right top": 45,
+    "to right": 90,
+    "to bottom right": 135,
+    "to right bottom": 135,
+    "to bottom": 180,
+    "to bottom left": 225,
+    "to left bottom": 225,
+    "to left": 270,
+    "to top left": 315,
+    "to left top": 315
+  };
+  function parseCssGradient(css) {
+    var m = css.trim().match(/^(linear|radial)-gradient\((.*)\)$/s);
+    if (!m) return null;
+    var kind = m[1];
+    var parts = splitTopLevel(m[2]);
+    if (parts.length === 0) return null;
+    var angle = 180;
+    var first = parts[0].toLowerCase();
+    if (kind === "linear") {
+      var angleMatch = first.match(/^(-?[\d.]+)deg$/);
+      if (angleMatch) {
+        angle = parseFloat(angleMatch[1]);
+        parts.shift();
+      } else if (SIDE_ANGLES[first] !== void 0) {
+        angle = SIDE_ANGLES[first];
+        parts.shift();
+      }
+    } else {
+      if (/^(circle|ellipse|closest-|farthest-|at )/.test(first)) parts.shift();
+    }
+    var stops = [];
+    for (var i = 0; i < parts.length; i++) {
+      var stopMatch = parts[i].match(/^(.*?)(?:\s+([\d.]+)%)?$/s);
+      if (!stopMatch) return null;
+      var color = parseCssColor(stopMatch[1]);
+      if (!color) return null;
+      stops.push({
+        color,
+        position: stopMatch[2] !== void 0 ? parseFloat(stopMatch[2]) / 100 : void 0
+      });
+    }
+    if (stops.length < 2) return null;
+    if (stops[0].position === void 0) stops[0].position = 0;
+    if (stops[stops.length - 1].position === void 0) stops[stops.length - 1].position = 1;
+    for (var j = 1; j < stops.length - 1; j++) {
+      if (stops[j].position === void 0) {
+        var prev = j - 1;
+        var next = j + 1;
+        while (stops[next].position === void 0) next++;
+        var span = next - prev;
+        for (var k = prev + 1; k < next; k++) {
+          stops[k].position = stops[prev].position + (stops[next].position - stops[prev].position) * (k - prev) / span;
+        }
+      }
+    }
+    return {
+      type: kind === "radial" ? "GRADIENT_RADIAL" : "GRADIENT_LINEAR",
+      angle,
+      stops
+    };
+  }
+  function buildGradientPaint(gradient) {
+    var spec = typeof gradient === "string" ? parseCssGradient(gradient) : gradient;
+    if (!spec || !Array.isArray(spec.stops) || spec.stops.length < 2) return null;
+    var gradientStops = [];
+    for (var i = 0; i < spec.stops.length; i++) {
+      var stop = spec.stops[i];
+      var color = typeof stop.color === "string" ? hexToFigmaColor(stop.color) : stop.color;
+      if (!color) return null;
+      gradientStops.push({
+        position: stop.position !== void 0 ? stop.position : i / (spec.stops.length - 1),
+        color: { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== void 0 ? color.a : 1 }
+      });
+    }
+    var type = spec.type || "GRADIENT_LINEAR";
+    var transform = type === "GRADIENT_LINEAR" ? gradientTransformFromAngle(spec.angle !== void 0 ? spec.angle : 180) : [[1, 0, 0], [0, 1, 0]];
+    return {
+      type,
+      gradientStops,
+      gradientTransform: transform
+    };
+  }
   function applyColorPaint(node, field, colorObj) {
+    if (isGradientValue(colorObj)) {
+      var paint = buildGradientPaint(colorObj);
+      if (paint) {
+        node[field] = [paint];
+      } else {
+        console.warn("[applyColorPaint] Could not parse gradient value; leaving " + field + " unchanged");
+      }
+      return;
+    }
     if (colorObj.a !== void 0 && parseFloat(colorObj.a) === 0) {
       node[field] = [];
     } else {
@@ -276,6 +556,57 @@
         },
         opacity: colorObj.a !== void 0 ? parseFloat(colorObj.a) : 1
       }];
+    }
+  }
+  function buildFigmaEffects(effects) {
+    var figmaEffects = [];
+    for (var i = 0; i < effects.length; i++) {
+      var e = effects[i];
+      var effect = {
+        type: e.type,
+        visible: e.visible !== false
+      };
+      if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
+        var color = e.color || { r: 0, g: 0, b: 0, a: 0.25 };
+        if (typeof color === "string") {
+          var parsed = hexToFigmaColor(color);
+          if (parsed) color = parsed;
+          else color = { r: 0, g: 0, b: 0, a: 0.25 };
+        }
+        effect.color = { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== void 0 ? color.a : 0.25 };
+        effect.offset = { x: e.offset?.x ?? 0, y: e.offset?.y ?? 4 };
+        effect.radius = e.radius !== void 0 ? e.radius : 4;
+        effect.spread = e.spread !== void 0 ? e.spread : 0;
+        effect.blendMode = e.blendMode || "NORMAL";
+      } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+        effect.radius = e.radius !== void 0 ? e.radius : 4;
+      }
+      figmaEffects.push(effect);
+    }
+    return figmaEffects;
+  }
+  function applyCornerRadii(node, spec) {
+    if (spec.cornerRadius !== void 0 && "cornerRadius" in node) {
+      node.cornerRadius = spec.cornerRadius;
+    }
+    var corners = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
+    for (var i = 0; i < corners.length; i++) {
+      var prop = corners[i];
+      if (spec[prop] !== void 0 && prop in node) {
+        node[prop] = spec[prop];
+      }
+    }
+  }
+  function applyLayoutPositioning(node, spec) {
+    if (spec.layoutPositioning === void 0) return;
+    if (!("layoutPositioning" in node)) return;
+    try {
+      node.layoutPositioning = spec.layoutPositioning;
+      if (spec.layoutPositioning === "ABSOLUTE") {
+        if (spec.x !== void 0) node.x = spec.x;
+        if (spec.y !== void 0) node.y = spec.y;
+      }
+    } catch (e) {
     }
   }
   async function loadAllFonts(textNode) {
@@ -333,7 +664,7 @@
       }))
     };
   }
-  async function getNodeInfo(nodeId) {
+  async function getNodeInfo(nodeId, fields) {
     const node = await figma.getNodeByIdAsync(nodeId);
     if (!node) {
       throw new Error(`Node not found with ID: ${nodeId}`);
@@ -341,9 +672,9 @@
     const response = await node.exportAsync({
       format: "JSON_REST_V1"
     });
-    return filterFigmaNode(response.document);
+    return filterFigmaNode(response.document, fields);
   }
-  async function getNodesInfo(nodeIds) {
+  async function getNodesInfo(nodeIds, fields) {
     try {
       const nodes = await Promise.all(
         nodeIds.map((id) => figma.getNodeByIdAsync(id))
@@ -356,7 +687,7 @@
           });
           return {
             nodeId: node.id,
-            document: filterFigmaNode(response.document)
+            document: filterFigmaNode(response.document, fields)
           };
         })
       );
@@ -1720,11 +2051,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     rect.y = y;
     rect.resize(width, height);
     rect.name = name;
-    if (params.cornerRadius !== void 0) {
-      rect.cornerRadius = params.cornerRadius;
-    }
+    applyCornerRadii(rect, params);
     if (fillColor) {
       applyColorPaint(rect, "fills", fillColor);
+    }
+    if (params.fillImage && params.fillImage.base64) {
+      applyImageFill(rect, params.fillImage);
     }
     if (params.strokeColor) {
       applyColorPaint(rect, "strokes", params.strokeColor);
@@ -1732,10 +2064,17 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (params.strokeWeight !== void 0) {
       rect.strokeWeight = params.strokeWeight;
     }
+    if (params.strokeAlign !== void 0) {
+      rect.strokeAlign = params.strokeAlign;
+    }
+    if (params.effects && Array.isArray(params.effects)) {
+      rect.effects = buildFigmaEffects(params.effects);
+    }
     if (params.opacity !== void 0) {
       rect.opacity = params.opacity;
     }
     await appendOrInsertChild(rect, parentId, params.insertAt);
+    applyLayoutPositioning(rect, params);
     return {
       id: rect.id,
       name: rect.name,
@@ -1777,9 +2116,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (params.clipsContent !== void 0) {
       frame.clipsContent = !!params.clipsContent;
     }
-    if (params.cornerRadius !== void 0) {
-      frame.cornerRadius = params.cornerRadius;
-    }
+    applyCornerRadii(frame, params);
     if (params.opacity !== void 0) {
       frame.opacity = params.opacity;
     }
@@ -1809,13 +2146,23 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (fillColor) {
       applyColorPaint(frame, "fills", fillColor);
     }
+    if (params.fillImage && params.fillImage.base64) {
+      applyImageFill(frame, params.fillImage);
+    }
     if (strokeColor) {
       applyColorPaint(frame, "strokes", strokeColor);
     }
     if (strokeWeight !== void 0) {
       frame.strokeWeight = strokeWeight;
     }
+    if (params.strokeAlign !== void 0) {
+      frame.strokeAlign = params.strokeAlign;
+    }
+    if (params.effects && Array.isArray(params.effects)) {
+      frame.effects = buildFigmaEffects(params.effects);
+    }
     await appendOrInsertChild(frame, parentId, params.insertAt);
+    applyLayoutPositioning(frame, params);
     if (layoutMode !== "NONE") {
       if (layoutSizingHorizontal === "FILL" || layoutSizingVertical === "FILL") {
         try {
@@ -1913,6 +2260,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       textNode.textAutoResize = "HEIGHT";
     }
     await appendOrInsertChild(textNode, parentId, params.insertAt);
+    applyLayoutPositioning(textNode, params);
     return {
       id: textNode.id,
       name: textNode.name,
@@ -2021,10 +2369,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   // src/claude_figma_plugin/src/styling.ts
   async function setFillColor(params) {
     console.log("setFillColor", params);
-    const {
-      nodeId,
-      color: { r, g, b, a }
-    } = params || {};
+    const nodeId = params && params.nodeId;
     if (!nodeId) {
       throw new Error("Missing nodeId parameter");
     }
@@ -2035,6 +2380,19 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!("fills" in node)) {
       throw new Error(`Node does not support fills: ${nodeId}`);
     }
+    if (params.gradient) {
+      const paint = buildGradientPaint(params.gradient);
+      if (!paint) {
+        throw new Error("Could not parse gradient value");
+      }
+      node.fills = [paint];
+      return {
+        id: node.id,
+        name: node.name,
+        fills: [paint]
+      };
+    }
+    const { r, g, b, a } = params.color || {};
     if (a !== void 0 && parseFloat(a) === 0) {
       node.fills = [];
       return {
@@ -2299,6 +2657,21 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       clipsContent: node.clipsContent
     };
   }
+  async function setImageFill(params) {
+    const { nodeId, image } = params || {};
+    if (!nodeId) throw new Error("Missing nodeId parameter");
+    if (!image || !image.base64) throw new Error("Missing image data");
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+    if (!("fills" in node)) throw new Error(`Node does not support fills: ${nodeId}`);
+    const result = applyImageFill(node, image);
+    return {
+      id: node.id,
+      name: node.name,
+      imageHash: result.imageHash,
+      scaleMode: result.scaleMode
+    };
+  }
   async function setEffects(params) {
     var nodeId = params.nodeId;
     var node = await figma.getNodeByIdAsync(nodeId);
@@ -2306,30 +2679,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!("effects" in node)) throw new Error("Node does not support effects (type: " + node.type + ")");
     var effects = params.effects;
     if (!effects || !Array.isArray(effects)) throw new Error("Missing or invalid effects array");
-    var figmaEffects = [];
-    for (var i = 0; i < effects.length; i++) {
-      var e = effects[i];
-      var effect = {
-        type: e.type,
-        visible: e.visible !== false
-      };
-      if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
-        var color = e.color || { r: 0, g: 0, b: 0, a: 0.25 };
-        if (typeof color === "string") {
-          var parsed = hexToFigmaColor(color);
-          if (parsed) color = parsed;
-          else color = { r: 0, g: 0, b: 0, a: 0.25 };
-        }
-        effect.color = { r: color.r || 0, g: color.g || 0, b: color.b || 0, a: color.a !== void 0 ? color.a : 0.25 };
-        effect.offset = { x: e.offset && e.offset.x || 0, y: e.offset && e.offset.y || 4 };
-        effect.radius = e.radius !== void 0 ? e.radius : 4;
-        effect.spread = e.spread !== void 0 ? e.spread : 0;
-        if (e.blendMode) effect.blendMode = e.blendMode;
-      } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
-        effect.radius = e.radius !== void 0 ? e.radius : 4;
-      }
-      figmaEffects.push(effect);
-    }
+    var figmaEffects = buildFigmaEffects(effects);
     node.effects = figmaEffects;
     return {
       id: node.id,
@@ -3426,11 +3776,25 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       components: allComponents
     };
   }
+  async function applyTextOverrides(node, overrides) {
+    if (node.type === "TEXT" && overrides[node.name] !== void 0) {
+      await loadAllFonts(node);
+      if (!await setCharacters(node, String(overrides[node.name]))) {
+        throw new Error(`Failed to override text on "${node.name}"`);
+      }
+    }
+    if ("children" in node && node.children) {
+      for (var i = 0; i < node.children.length; i++) {
+        await applyTextOverrides(node.children[i], overrides);
+      }
+    }
+  }
   async function createComponentInstance(params) {
     const { componentKey, componentId, x = 0, y = 0, parentId } = params || {};
     if (!componentKey && !componentId) {
       throw new Error("Missing componentKey or componentId parameter. Use componentId for local components (from get_local_components), or componentKey for published library components.");
     }
+    let instance;
     try {
       let component;
       if (componentId) {
@@ -3445,29 +3809,35 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       } else {
         component = await figma.importComponentByKeyAsync(componentKey);
       }
-      const instance = component.createInstance();
+      instance = component.createInstance();
       instance.x = x;
       instance.y = y;
+      if (params.name) {
+        instance.name = params.name;
+      }
       await appendOrInsertChild(instance, parentId, params.insertAt);
-      if (params.properties && typeof params.properties === "object") {
+      if (params.opacity !== void 0) {
+        instance.opacity = params.opacity;
+      }
+      applyLayoutPositioning(instance, params);
+      if (params.layoutSizingHorizontal !== void 0) {
         try {
-          instance.setProperties(params.properties);
+          instance.layoutSizingHorizontal = params.layoutSizingHorizontal;
         } catch (e) {
-          console.error("Error setting component properties:", e);
+          console.error("Error setting layoutSizingHorizontal on instance:", e);
         }
       }
-      if (params.textOverrides && typeof params.textOverrides === "object") {
-        async function applyTextOverrides(node, overrides) {
-          if (node.type === "TEXT" && overrides[node.name] !== void 0) {
-            await loadAllFonts(node);
-            await setCharacters(node, String(overrides[node.name]));
-          }
-          if ("children" in node && node.children) {
-            for (var i = 0; i < node.children.length; i++) {
-              await applyTextOverrides(node.children[i], overrides);
-            }
-          }
+      if (params.layoutSizingVertical !== void 0) {
+        try {
+          instance.layoutSizingVertical = params.layoutSizingVertical;
+        } catch (e) {
+          console.error("Error setting layoutSizingVertical on instance:", e);
         }
+      }
+      if (params.properties && typeof params.properties === "object") {
+        instance.setProperties(params.properties);
+      }
+      if (params.textOverrides && typeof params.textOverrides === "object") {
         await applyTextOverrides(instance, params.textOverrides);
       }
       const mainComponent = await instance.getMainComponentAsync();
@@ -3481,7 +3851,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         mainComponentId: mainComponent ? mainComponent.id : void 0
       };
     } catch (error) {
-      throw new Error(`Error creating component instance: ${error.message}`);
+      if (instance && !instance.removed) instance.remove();
+      throw new Error(`Error creating component instance: ${error.message || String(error)}`);
     }
   }
   async function swapInstanceVariant(params) {
@@ -3924,6 +4295,59 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       variants,
       width: componentSet.width,
       height: componentSet.height
+    };
+  }
+  async function getLibraryVariables() {
+    var commandId = generateCommandId();
+    var result = [];
+    var collections = [];
+    try {
+      collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    } catch (err) {
+      return { collections: [], collectionCount: 0, libraryCount: 0, unavailable: String(err && err.message ? err.message : err) };
+    }
+    for (var c = 0; c < collections.length; c++) {
+      var collection = collections[c];
+      await sendProgressUpdate(
+        commandId,
+        "get_library_variables",
+        "in_progress",
+        Math.round(c / Math.max(collections.length, 1) * 100),
+        collections.length,
+        c,
+        `Reading collection ${c + 1}/${collections.length}: ${collection.name}`
+      );
+      var variables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
+      result.push({
+        key: collection.key,
+        name: collection.name,
+        libraryName: collection.libraryName,
+        variables: variables.map(function(v) {
+          return {
+            key: v.key,
+            name: v.name,
+            resolvedType: v.resolvedType,
+            // Exactly what you pass to $var: in create_node_tree.
+            ref: collection.name + "/" + v.name
+          };
+        })
+      });
+    }
+    await sendProgressUpdate(
+      commandId,
+      "get_library_variables",
+      "completed",
+      100,
+      collections.length,
+      collections.length,
+      `Read ${result.length} collections`
+    );
+    var libraryNames = {};
+    for (var i = 0; i < result.length; i++) libraryNames[result[i].libraryName] = true;
+    return {
+      collections: result,
+      collectionCount: result.length,
+      libraryCount: Object.keys(libraryNames).length
     };
   }
   async function getLocalVariables() {
@@ -5203,6 +5627,18 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         existingNode.opacity = spec.opacity;
         changedProps.push("opacity");
       }
+      if (spec.effects !== void 0 && "effects" in existingNode) {
+        existingNode.effects = buildFigmaEffects(spec.effects);
+        changedProps.push("effects");
+      }
+      if (spec.strokeAlign !== void 0 && "strokeAlign" in existingNode && existingNode.strokeAlign !== spec.strokeAlign) {
+        existingNode.strokeAlign = spec.strokeAlign;
+        changedProps.push("strokeAlign");
+      }
+      if (spec.layoutPositioning !== void 0 && "layoutPositioning" in existingNode && existingNode.layoutPositioning !== spec.layoutPositioning) {
+        applyLayoutPositioning(existingNode, spec);
+        changedProps.push("layoutPositioning");
+      }
       if (type === "frame") {
         if (spec.width !== void 0 && spec.height !== void 0) {
           if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
@@ -5402,6 +5838,52 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           }
         }
       }
+      if (type === "instance") {
+        if (spec.componentKey) {
+          const mainComponent = await existingNode.getMainComponentAsync();
+          if (!mainComponent || mainComponent.key !== spec.componentKey) {
+            const component = await figma.importComponentByKeyAsync(spec.componentKey);
+            existingNode.swapComponent(component);
+            changedProps.push("componentKey");
+          }
+        }
+        if (spec.properties !== void 0) {
+          existingNode.setProperties(spec.properties);
+          changedProps.push("properties");
+        }
+        if (spec.textOverrides !== void 0) {
+          await applyTextOverrides(existingNode, spec.textOverrides);
+          changedProps.push("textOverrides");
+        }
+        if (spec.layoutSizingHorizontal !== void 0 && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
+          try {
+            existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
+            changedProps.push("layoutSizingHorizontal");
+          } catch (e) {
+            console.error("Error setting layoutSizingHorizontal during sync:", e);
+          }
+        }
+        if (spec.layoutSizingVertical !== void 0 && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
+          try {
+            existingNode.layoutSizingVertical = spec.layoutSizingVertical;
+            changedProps.push("layoutSizingVertical");
+          } catch (e) {
+            console.error("Error setting layoutSizingVertical during sync:", e);
+          }
+        }
+      }
+      var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
+      for (var ci = 0; ci < cornerProps.length; ci++) {
+        var cp = cornerProps[ci];
+        if (spec[cp] !== void 0 && cp in existingNode && existingNode[cp] !== spec[cp]) {
+          existingNode[cp] = spec[cp];
+          changedProps.push(cp);
+        }
+      }
+      if (spec.fillImage && spec.fillImage.base64 && "fills" in existingNode) {
+        applyImageFill(existingNode, spec.fillImage);
+        changedProps.push("fillImage");
+      }
       return { changed: changedProps.length > 0, changedProps };
     }
     let updatedCount = 0;
@@ -5413,6 +5895,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       var type = spec.type;
       nodeTypeCounts[type] = (nodeTypeCounts[type] || 0) + 1;
       if (existingNode.type.toLowerCase() !== type) {
+        errorCount++;
         errors.push({
           type,
           name: spec.name || "(unnamed)",
@@ -5424,34 +5907,34 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       delete resolvedSpec.type;
       delete resolvedSpec.children;
       var pendingVarBindings = [];
-      for (var _ref of Object.entries(COLOR_FIELDS)) {
-        var colorProp = _ref[0], figmaField = _ref[1];
-        if (resolvedSpec[colorProp] != null) {
-          var resolved = resolveColorValue(resolvedSpec[colorProp]);
-          if (resolved.varRef) {
-            var variable = await getVariableByName(resolved.varRef);
-            if (variable && variable.resolvedType === "COLOR") {
-              var modeIds = Object.keys(variable.valuesByMode);
-              if (modeIds.length > 0) {
-                var val = variable.valuesByMode[modeIds[0]];
-                if (val && typeof val === "object" && "r" in val) {
-                  resolvedSpec[colorProp] = val;
+      try {
+        for (var _ref of Object.entries(COLOR_FIELDS)) {
+          var colorProp = _ref[0], figmaField = _ref[1];
+          if (resolvedSpec[colorProp] != null) {
+            var resolved = resolveColorValue(resolvedSpec[colorProp]);
+            if (resolved.varRef) {
+              var variable = await getVariableByName(resolved.varRef);
+              if (variable && variable.resolvedType === "COLOR") {
+                var modeIds = Object.keys(variable.valuesByMode);
+                if (modeIds.length > 0) {
+                  var val = variable.valuesByMode[modeIds[0]];
+                  if (val && typeof val === "object" && "r" in val) {
+                    resolvedSpec[colorProp] = val;
+                  } else {
+                    delete resolvedSpec[colorProp];
+                  }
                 } else {
                   delete resolvedSpec[colorProp];
                 }
               } else {
                 delete resolvedSpec[colorProp];
               }
-            } else {
-              delete resolvedSpec[colorProp];
+              pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
+            } else if (resolved.color) {
+              resolvedSpec[colorProp] = resolved.color;
             }
-            pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
-          } else if (resolved.color) {
-            resolvedSpec[colorProp] = resolved.color;
           }
         }
-      }
-      try {
         var result = await updateNodeProperties(existingNode, resolvedSpec);
         if (result.changed) {
           updatedCount++;
@@ -5468,8 +5951,19 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         return;
       }
       if (pendingVarBindings.length > 0) {
-        for (var binding of pendingVarBindings) {
-          await bindVariableToColor(existingNode, binding.figmaField, binding.varRef);
+        try {
+          for (var binding of pendingVarBindings) {
+            await bindVariableToColor(existingNode, binding.figmaField, binding.varRef);
+          }
+        } catch (err) {
+          errorCount++;
+          errors.push({
+            type,
+            name: spec.name || "(unnamed)",
+            nodeId: existingNode.id,
+            error: "Variable binding failed: " + (err.message || String(err))
+          });
+          return;
         }
       }
       nodes.push({
@@ -5551,36 +6045,36 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       delete props.children;
       const pendingVarBindings = [];
       const createParams = Object.assign({}, props, { parentId: parentNodeId });
-      for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
-        if (createParams[colorProp] != null) {
-          const resolved = resolveColorValue(createParams[colorProp]);
-          if (resolved.varRef) {
-            const variable = await getVariableByName(resolved.varRef);
-            if (variable && variable.resolvedType === "COLOR") {
-              const modeIds = Object.keys(variable.valuesByMode);
-              if (modeIds.length > 0) {
-                const val = variable.valuesByMode[modeIds[0]];
-                if (val && typeof val === "object" && "r" in val) {
-                  createParams[colorProp] = val;
+      let result;
+      try {
+        for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
+          if (createParams[colorProp] != null) {
+            const resolved = resolveColorValue(createParams[colorProp]);
+            if (resolved.varRef) {
+              const variable = await getVariableByName(resolved.varRef);
+              if (variable && variable.resolvedType === "COLOR") {
+                const modeIds = Object.keys(variable.valuesByMode);
+                if (modeIds.length > 0) {
+                  const val = variable.valuesByMode[modeIds[0]];
+                  if (val && typeof val === "object" && "r" in val) {
+                    createParams[colorProp] = val;
+                  } else {
+                    delete createParams[colorProp];
+                  }
                 } else {
                   delete createParams[colorProp];
                 }
               } else {
                 delete createParams[colorProp];
               }
-            } else {
-              delete createParams[colorProp];
+              pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
+            } else if (resolved.color) {
+              createParams[colorProp] = resolved.color;
             }
-            pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
-          } else if (resolved.color) {
-            createParams[colorProp] = resolved.color;
           }
         }
-      }
-      if (createParams.x === void 0) createParams.x = 0;
-      if (createParams.y === void 0) createParams.y = 0;
-      let result;
-      try {
+        if (createParams.x === void 0) createParams.x = 0;
+        if (createParams.y === void 0) createParams.y = 0;
         switch (type) {
           case "frame":
             result = await createFrame(createParams, firstOnTop);
@@ -5593,6 +6087,9 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             break;
           case "vector":
             result = await createVector(createParams);
+            break;
+          case "instance":
+            result = await createComponentInstance(createParams);
             break;
           default:
             throw new Error(`Unknown node type: ${type}`);
@@ -5607,11 +6104,24 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         return;
       }
       if (pendingVarBindings.length > 0) {
-        const node = await figma.getNodeByIdAsync(result.id);
-        if (node) {
-          for (const binding of pendingVarBindings) {
-            await bindVariableToColor(node, binding.figmaField, binding.varRef);
+        try {
+          const node = await figma.getNodeByIdAsync(result.id);
+          if (node) {
+            for (const binding of pendingVarBindings) {
+              await bindVariableToColor(node, binding.figmaField, binding.varRef);
+            }
           }
+        } catch (err) {
+          errorCount++;
+          errors.push({
+            type,
+            name: props.name || "(unnamed)",
+            nodeId: result.id,
+            error: "Variable binding failed: " + (err.message || String(err))
+          });
+          const failedNode = await figma.getNodeByIdAsync(result.id);
+          if (failedNode) failedNode.remove();
+          return;
         }
       }
       createdCount++;
@@ -5882,6 +6392,40 @@ Processing annotation ${i + 1}/${annotations.length}:`,
               vpNode.resize(op.width, op.height);
             }
             result = { op: "set_vector_path", nodeId: op.nodeId, name: vpNode.name, width: vpNode.width, height: vpNode.height };
+            break;
+          // Consolidated single-property setters — delegate to the canonical handlers
+          // so behavior matches the (now internal) standalone commands exactly.
+          case "set_opacity":
+            await setOpacity({ nodeId: op.nodeId, opacity: op.opacity });
+            result = { op: "set_opacity", nodeId: op.nodeId };
+            break;
+          case "set_rotation":
+            await setRotation({ nodeId: op.nodeId, rotation: op.rotation });
+            result = { op: "set_rotation", nodeId: op.nodeId };
+            break;
+          case "set_blend_mode":
+            await setBlendMode({ nodeId: op.nodeId, blendMode: op.blendMode });
+            result = { op: "set_blend_mode", nodeId: op.nodeId };
+            break;
+          case "set_corner_radius":
+            await setCornerRadius({ nodeId: op.nodeId, radius: op.radius, corners: op.corners });
+            result = { op: "set_corner_radius", nodeId: op.nodeId };
+            break;
+          case "set_effects":
+            await setEffects({ nodeId: op.nodeId, effects: op.effects });
+            result = { op: "set_effects", nodeId: op.nodeId };
+            break;
+          case "set_padding":
+            await setPadding({ nodeId: op.nodeId, paddingTop: op.paddingTop, paddingRight: op.paddingRight, paddingBottom: op.paddingBottom, paddingLeft: op.paddingLeft });
+            result = { op: "set_padding", nodeId: op.nodeId };
+            break;
+          case "set_item_spacing":
+            await setItemSpacing({ nodeId: op.nodeId, itemSpacing: op.itemSpacing, counterAxisSpacing: op.counterAxisSpacing });
+            result = { op: "set_item_spacing", nodeId: op.nodeId };
+            break;
+          case "set_text_decoration":
+            await setTextDecoration({ nodeId: op.nodeId, decoration: op.decoration });
+            result = { op: "set_text_decoration", nodeId: op.nodeId };
             break;
           default:
             throw new Error("Unknown operation: " + op.op);
@@ -6718,7 +7262,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       );
       return { success: true, result: safeSerialize(rawResult) };
     } catch (error) {
-      return { success: false, error: error.message || String(error) };
+      return { success: false, error: formatError(error) };
     }
   }
   function autoMapProperties(sourceProps, targetProps, strategy) {
@@ -7308,6 +7852,29 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     // Auto-connect on plugin launch
   };
   figma.showUI(__html__, { width: 350, height: 600 });
+  function reportUncaught(source, error) {
+    const detail = formatError(error);
+    console.error(`[claude-to-figma] uncaught ${source}:
+${detail}`);
+    try {
+      figma.ui.postMessage({ type: "uncaught-error", source, error: detail });
+    } catch (e) {
+    }
+  }
+  var globalScope = globalThis;
+  if (typeof globalScope.addEventListener === "function") {
+    globalScope.addEventListener(
+      "unhandledrejection",
+      (event) => reportUncaught("promise rejection", event && "reason" in event ? event.reason : event)
+    );
+    globalScope.addEventListener(
+      "error",
+      (event) => reportUncaught("error", event && "error" in event ? event.error : event)
+    );
+  } else {
+    globalScope.onunhandledrejection = (event) => reportUncaught("promise rejection", event && "reason" in event ? event.reason : event);
+    globalScope.onerror = (message, _source, _line, _col, error) => reportUncaught("error", error !== void 0 ? error : message);
+  }
   figma.ui.onmessage = async (msg) => {
     switch (msg.type) {
       case "update-settings":
@@ -7332,7 +7899,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           figma.ui.postMessage({
             type: "command-error",
             id: msg.id,
-            error: error.message || "Error executing command"
+            // formatError stringifies null/undefined to "null"/"undefined", both
+            // truthy, so `||` could never reach the fallback — a bare `throw`
+            // reported the literal string "undefined" to the caller.
+            error: error === null || error === void 0 ? "Error executing command" : formatError(error)
           });
         } finally {
           setTimeout(() => setPluginOperationGuard(false), 500);
@@ -7371,12 +7941,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         if (!params || !params.nodeId) {
           throw new Error("Missing nodeId parameter");
         }
-        return await getNodeInfo(params.nodeId);
+        return await getNodeInfo(params.nodeId, params.fields);
       case "get_nodes_info":
         if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
           throw new Error("Missing or invalid nodeIds parameter");
         }
-        return await getNodesInfo(params.nodeIds);
+        return await getNodesInfo(params.nodeIds, params.fields);
       case "read_my_design":
         return await readMyDesign();
       case "create_rectangle":
@@ -7387,6 +7957,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         return await createText(params);
       case "set_fill_color":
         return await setFillColor(params);
+      case "set_image_fill":
+        return await setImageFill(params);
       case "set_stroke_color":
         return await setStrokeColor(params);
       case "move_node":
@@ -7483,6 +8055,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         return await setFocus(params);
       case "set_selections":
         return await setSelections(params);
+      case "undo": {
+        const undoSteps = Math.min(Math.max(params && params.count || 1, 1), 50);
+        for (let i = 0; i < undoSteps; i++) figma.triggerUndo();
+        return { success: true, steps: undoSteps };
+      }
       case "set_font_family":
         return await setFontFamily(params);
       case "set_text_auto_resize":
@@ -7514,6 +8091,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         return await createNodeTree(params, state.firstOnTop);
       case "get_local_variables":
         return await getLocalVariables();
+      case "get_library_variables":
+        return await getLibraryVariables();
       case "create_line":
         return await createLine(params);
       case "rename_node":

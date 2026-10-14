@@ -64,6 +64,11 @@ export function registerPrompts(server: McpServer) {
    - Group related elements together in frames
    - Keep consistent spacing and alignment
 
+9. Use the design system first:
+   - Call search_library_components before drawing any standard UI element from scratch
+   - Place real library instances (create_component_instance, or instance nodes in create_node_tree)
+   - If no library component or pattern fits, follow component_proposal_guide — never fake one with raw shapes
+
 Example Login Screen Structure:
 - Login Screen (main frame)
   - Logo Container (frame)
@@ -636,6 +641,111 @@ This detailed process ensures you correctly interpret the reaction data, prepare
           },
         ],
         description: "Strategy for converting Figma prototype reactions to connector lines using the output of 'get_reactions'",
+      };
+    }
+  );
+
+  // Full reference for create_node_tree — kept here (not in the tool description)
+  // so the ~500-token manual only loads when explicitly requested.
+  server.prompt(
+    "node_tree_guide",
+    "Full reference for building hierarchies with create_node_tree: spec format, $repeat, $var: binding, colors, gradients, images, effects, and sync mode",
+    (extra) => {
+      return {
+        messages: [
+          {
+            role: "assistant",
+            content: {
+              type: "text",
+              text: `# create_node_tree reference
+
+Create an entire node hierarchy in one call. Pass a nested JSON tree; only frames may have children.
+
+## Node types
+- **frame** — container; the only type with a \`children\` array. Supports layout, fill, stroke, cornerRadius, effects, and the appearance fields below.
+- **text** — \`text\`, \`fontSize\`, \`fontWeight\`, \`fontColor\`, \`fontFamily\`, \`textAlignHorizontal\`, \`lineHeight\`, etc.
+- **rectangle** — \`width\`/\`height\`, fill, stroke, cornerRadius, effects.
+- **vector** — \`pathData\` (SVG path), fill, stroke.
+- **instance** (library component): \`{ "type": "instance", "component": "$lib:Badge", "properties": { "State": "Success" }, "textOverrides": { "Label": "Active" }, "name": "status-badge" }\`
+  - \`component\`: \`"$lib:<Name>"\` resolves against the configured team libraries (see search_library_components), or pass a raw componentKey directly.
+  - \`properties\` picks the variant and sets component properties; \`textOverrides\` replaces text by child node name.
+  - \`component\` must be a static string — never build it from $repeat placeholders ($[N]/$key).
+  - Sync mode matches children by name+type; a placed instance carries the component's name unless \`name\` is set, so a re-sync without an explicit \`name\` duplicates the instance instead of updating it — name instances you intend to re-sync.
+
+LIBRARY-FIRST RULE: before drawing any standard UI element (buttons, badges, inputs, banners, breadcrumbs, tables...) with raw frames/rectangles, call search_library_components. If a library component exists, place it as an instance node. If nothing adequate exists, follow the component_proposal_guide prompt — never imitate a library component with raw shapes.
+
+## Colors (every color field)
+- RGBA object \`{"r":0.2,"g":0.4,"b":0.7,"a":1}\`
+- Hex string \`"#3d6daa"\` / \`"#RGB"\` / \`"#RRGGBBAA"\`
+- Figma variable ref \`"$var:Colors/Primary"\` — binds as a real variable (call get_local_variables first to discover tokens)
+- Gradient object \`{"angle":135,"stops":[{"position":0,"color":"#667eea"},{"position":1,"color":"#764ba2"}]}\`
+- CSS gradient string \`"linear-gradient(135deg, #667eea, #764ba2)"\` or \`"radial-gradient(...)"\` (0deg = to top, 90deg = to right)
+
+## Appearance fields (frames + rectangles)
+- **effects** — array of DROP_SHADOW / INNER_SHADOW / LAYER_BLUR / BACKGROUND_BLUR (CSS box-shadow in one pass)
+- **topLeftRadius / topRightRadius / bottomRightRadius / bottomLeftRadius** — per-corner radii override cornerRadius
+- **strokeAlign** — INSIDE / OUTSIDE / CENTER
+- **fillImage** — \`{"url":"https://…","scaleMode":"FILL"}\` (or filePath / base64). URLs are fetched server-side before the tree is sent; failed fetches become \`imageWarnings\` without failing the tree. scaleMode: FILL=cover, FIT=contain, TILE=repeat.
+
+## Positioning
+- **layoutPositioning: "ABSOLUTE"** on any child of an auto-layout frame floats it at its x/y (CSS position:absolute).
+
+## $repeat — data-driven repetition
+\`\`\`json
+{"$repeat": {"data": [["Alice","Design"],["Bob","Eng"]],
+  "template": {"type":"text","text":"$[0] — $[1]"}}}
+\`\`\`
+Array rows use \`$[0]\`,\`$[1]\`; object rows use \`$key\`. Put $repeat inside an auto-layout frame or children stack at (0,0).
+
+## Response size
+Returns a compact summary (counts, rootId, errors) by default. Pass \`verbose: true\` to also get the full per-node id/name map.
+
+## Sync mode
+Pass \`rootId\` (instead of \`parentId\`) to reconcile an existing tree: matches children by name+type, updates changed props in place, creates new nodes, preserves unmatched (or removes them with \`prune: true\`). Node IDs are preserved, so prototype wiring survives. Child ordering is not reconciled; duplicate name+type siblings match FIFO.`
+            },
+          },
+        ],
+        description: "Full reference for building hierarchies with create_node_tree",
+      };
+    }
+  );
+
+  server.prompt(
+    "component_proposal_guide",
+    "Workflow for proposing a new design-system component or pattern when no library match exists",
+    (extra) => {
+      return {
+        messages: [
+          {
+            role: "assistant",
+            content: {
+              type: "text",
+              text: `When a design needs a component or pattern the team library does not provide, the gap becomes a deliverable — a rationalized proposal — never a silent imitation built from raw shapes.
+
+1. Confirm the gap:
+   - Run search_library_components with several phrasings of the need
+   - A "component" is a single control (badge, input); a "pattern" is a reusable composition of existing components (filter bar, empty state)
+   - If a near-match can be stretched to fit (via properties, overrides, or composition), USE IT — new components must earn their existence
+
+2. Rationalize:
+   - Name the nearest existing components/patterns considered
+   - State specifically why each fails the need (wrong anatomy, missing state, cannot hold the content, wrong interaction model)
+
+3. Build the proposal in Figma using the component_proposal section template (build_page_section), then fill it in:
+   - Name, type (Component | Pattern), and the rationale from step 2
+   - Anatomy: labeled diagram of the parts
+   - Properties/variants following the library's conventions (e.g. State=, Size=)
+   - State grid: every interactive state
+   - 2-3 visual explorations (genuinely different directions, not color swaps)
+   - Use cases: the proposal in context of the current design, plus other anticipated placements
+   - Pattern proposals additionally document their composition from existing library components; if a pattern needs a missing component, spawn a nested component proposal
+
+4. Mark it proposed:
+   - The leading exploration placed in the working design keeps the layer name prefix "⚠️ PROPOSED / " so it can never be mistaken for a published component
+   - Tell the user a proposal exists and needs design-system review before it ships`,
+            },
+          },
+        ],
       };
     }
   );

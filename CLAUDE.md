@@ -18,6 +18,7 @@ Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay ←(WebSo
 
 ```bash
 bun install              # Install dependencies
+bun run typecheck        # tsc --noEmit — REQUIRED before claiming a change compiles
 bun run build            # Build MCP server (dist/) AND Figma plugin (src/claude_figma_plugin/code.js) via tsup
 bun run build:plugin     # Build Figma plugin only (src/claude_figma_plugin/code.js)
 bun run dev              # Build in watch mode
@@ -26,12 +27,14 @@ bun run start            # Run built MCP server
 bun setup                # Full setup (install + write .mcp.json)
 ```
 
-There is no test suite or linter configured.
+`bun run build` uses tsup/esbuild, which **strips types without checking them** — a build can succeed on code that does not typecheck. Run `bun run typecheck` separately; "build succeeded" is not evidence the code compiles.
+
+Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts` runs unit and plugin-contract tests (no Figma needed). `tests/library-live.test.ts` hits the real Figma REST API and only runs when `FIGMA_API_TOKEN`/`FIGMA_LIBRARY_FILE_KEYS` are set (skipped otherwise). The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel and time out otherwise. No linter is configured.
 
 ## Architecture
 
 ### MCP Server (`src/claude_to_figma_mcp/server.ts`)
-The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 90+ tools (create shapes, modify text, manage layouts, export images, component migration, design queries, event streaming, etc.) and several AI prompts (design strategies). Communicates with Claude Code over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds. Plugin-pushed events (no request ID) are routed to the event buffer in `events.ts`.
+The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 90+ tools (create shapes, modify text, manage layouts, export images, component migration, design queries, etc.) and several AI prompts (design strategies). Communicates with Claude Code over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds. Tool definitions live in `src/claude_to_figma_mcp/tools/` (one file per category), including `tools/library.ts` — REST discovery of Figma team-library component sets (`get_library_components`, `search_library_components`) and `$lib:` reference resolution consumed by `create_node_tree`'s `instance` node type. Plugin-pushed events (no request ID) are routed to the event buffer in `events.ts`.
 
 ### WebSocket Relay (`src/socket.ts`)
 Lightweight Bun WebSocket server on port 3055. Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
@@ -68,7 +71,7 @@ Runs inside Figma. The plugin source lives in `src/claude_figma_plugin/src/` as 
 
 The `create_node_tree` tool creates entire node hierarchies in one round-trip. Key features:
 
-- **Nested tree spec**: frames, text, rectangles, vectors — only frames have children
+- **Nested tree spec**: frames, text, rectangles, vectors, and library component instances (`$lib:` refs, see `tools/library.ts`) — only frames have children
 - **`$repeat` directives**: data-driven repetition for tables/lists — `{"$repeat": {"data": [...], "template": {...}}}`
 - **`$var:` color binding**: reference Figma variables by name — creates real variable bindings, not just resolved values
 - **Hex color shorthand**: `"#3d6daa"` instead of `{"r": 0.24, "g": 0.43, "b": 0.67, "a": 1}`
@@ -98,6 +101,14 @@ Add the MCP server to Claude Code:
 claude mcp add ClaudeToFigma -- bun /path-to-repo/src/claude_to_figma_mcp/server.ts
 ```
 
+### Team library tools (optional)
+
+`get_library_components` / `search_library_components` and `$lib:` refs in `create_node_tree` need two environment variables set before the MCP server starts:
+
+- `FIGMA_API_TOKEN` — a Figma personal access token with the `File content: read` and `Library content: read` scopes
+- `FIGMA_LIBRARY_FILE_KEYS` — comma-separated file keys (from each library file's URL: `figma.com/design/<FILE_KEY>/...`) of the libraries to index
+
+Export both in your shell (e.g. `~/.zshrc`) and reference them from `.mcp.json` as `"${FIGMA_API_TOKEN}"` / `"${FIGMA_LIBRARY_FILE_KEYS}"` in the `ClaudeToFigma` server's `env` block, then restart the MCP server. Without them, the two library tools soft-fail with setup instructions instead of erroring.
 ## Machine Portability
 
 `.mcp.json` is **gitignored** because it contains absolute paths to `bun` and the repo that differ per machine. The committed templates and scripts handle this:

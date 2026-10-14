@@ -5,14 +5,15 @@
 import { getDocumentInfo, getSelection, getNodeInfo, getNodesInfo, readMyDesign, getAnnotations, setAnnotation, scanNodesByTypes, setMultipleAnnotations } from './document';
 import { setTextContent, scanTextNodes, setMultipleTextContents, setFontFamily, setTextAutoResize, setTextDecoration, setTextAlign, setTextFormat, setTextList, setRangeFormat } from './text';
 import { createRectangle, createFrame, createText, createEllipse, createSection, createSvg } from './creation';
-import { setFillColor, batchSetFillColor, setStrokeColor, setCornerRadius, removeFill, setStrokeDash, setStrokeProperties, setClipsContent, setEffects, setOpacity, setBlendMode, setRotation, setConstraints, setMinMaxSize, setMask } from './styling';
+import { setFillColor, batchSetFillColor, setStrokeColor, setCornerRadius, removeFill, setStrokeDash, setStrokeProperties, setClipsContent, setEffects, setOpacity, setBlendMode, setRotation, setConstraints, setMinMaxSize, setMask, setImageFill } from './styling';
 import { moveNode, resizeNode, deleteNode, deleteMultipleNodes, cloneNode, batchClone, renameNode, batchRename, groupNodes, batchReparent, insertChildAt, reorderChild, setLayoutPositioning } from './transforms';
 import { setLayoutMode, setPadding, setAxisAlign, setLayoutSizing, setItemSpacing } from './layout';
-import { getStyles, getLocalComponents, createComponentInstance, swapInstanceVariant, setComponentProperties, exportNodeAsImage, createComponent, getInstanceOverrides, getValidTargetInstances, getSourceInstanceData, setInstanceOverrides, createComponentSet, getLocalVariables } from './components';
+import { getStyles, getLocalComponents, createComponentInstance, swapInstanceVariant, setComponentProperties, exportNodeAsImage, createComponent, getInstanceOverrides, getValidTargetInstances, getSourceInstanceData, setInstanceOverrides, createComponentSet, getLocalVariables, getLibraryVariables } from './components';
 import { normalizeSvgPath, createVector, createLine, setVectorPath, getVectorNetwork, setVectorNetwork } from './vectors';
 import { getReactions, setReactions, addReaction, removeReactions, getInteractions, batchSetReactions, setDefaultConnector, createConnections, setFocus, setSelections } from './prototyping';
 import { createNodeTree } from './node-tree';
 import { screenshotRegion, batchMutate, scanNodeStyles, introspectNode, setProperties, optimizeStructure, designQuery, figmaEval, diffComponents, migrateInstance, batchMigrate } from './analysis';
+import { formatError } from './utils';
 import { startEventStreaming, stopEventStreaming, setPluginOperationGuard } from './events';
 
 // Plugin state
@@ -24,6 +25,38 @@ const state = {
 
 // Show UI
 figma.showUI(__html__, { width: 350, height: 600 });
+
+// --- Uncaught error reporting ---
+// Every command goes through handleCommand's try/catch below, so a red "Plugin
+// error" toast in Figma means the throw escaped the dispatcher entirely —
+// typically a floating promise (`forEach(async ...)`, an un-awaited .then()).
+// Those never reach the WebSocket, so without this the stack dies in the toast.
+// Figma's sandbox does not document a global error hook, so each listener is
+// feature-detected; console.error is the one channel that always works.
+function reportUncaught(source: string, error: any) {
+  const detail = formatError(error);
+  console.error(`[claude-to-figma] uncaught ${source}:\n${detail}`);
+  try {
+    figma.ui.postMessage({ type: "uncaught-error", source, error: detail });
+  } catch (e) {
+    // UI may be closed — the console.error above is still on the record.
+  }
+}
+
+const globalScope: any = globalThis as any;
+if (typeof globalScope.addEventListener === "function") {
+  globalScope.addEventListener("unhandledrejection", (event: any) =>
+    reportUncaught("promise rejection", event && "reason" in event ? event.reason : event)
+  );
+  globalScope.addEventListener("error", (event: any) =>
+    reportUncaught("error", event && "error" in event ? event.error : event)
+  );
+} else {
+  globalScope.onunhandledrejection = (event: any) =>
+    reportUncaught("promise rejection", event && "reason" in event ? event.reason : event);
+  globalScope.onerror = (message: any, _source: any, _line: any, _col: any, error: any) =>
+    reportUncaught("error", error !== undefined ? error : message);
+}
 
 // Plugin commands from UI
 figma.ui.onmessage = async (msg: any) => {
@@ -53,7 +86,13 @@ figma.ui.onmessage = async (msg: any) => {
         figma.ui.postMessage({
           type: "command-error",
           id: msg.id,
-          error: error.message || "Error executing command",
+          // formatError stringifies null/undefined to "null"/"undefined", both
+          // truthy, so `||` could never reach the fallback — a bare `throw`
+          // reported the literal string "undefined" to the caller.
+          error:
+            error === null || error === undefined
+              ? "Error executing command"
+              : formatError(error),
         });
       } finally {
         // 500ms cooldown before clearing guard — catches debounced/throttled
@@ -102,12 +141,12 @@ async function handleCommand(command: string, params: any) {
       if (!params || !params.nodeId) {
         throw new Error("Missing nodeId parameter");
       }
-      return await getNodeInfo(params.nodeId);
+      return await getNodeInfo(params.nodeId, params.fields);
     case "get_nodes_info":
       if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
         throw new Error("Missing or invalid nodeIds parameter");
       }
-      return await getNodesInfo(params.nodeIds);
+      return await getNodesInfo(params.nodeIds, params.fields);
     case "read_my_design":
       return await readMyDesign();
     case "create_rectangle":
@@ -118,6 +157,8 @@ async function handleCommand(command: string, params: any) {
       return await createText(params);
     case "set_fill_color":
       return await setFillColor(params);
+    case "set_image_fill":
+      return await setImageFill(params);
     case "set_stroke_color":
       return await setStrokeColor(params);
     case "move_node":
@@ -228,6 +269,11 @@ async function handleCommand(command: string, params: any) {
       return await setFocus(params);
     case "set_selections":
       return await setSelections(params);
+    case "undo": {
+      const undoSteps = Math.min(Math.max((params && params.count) || 1, 1), 50);
+      for (let i = 0; i < undoSteps; i++) figma.triggerUndo();
+      return { success: true, steps: undoSteps };
+    }
     case "set_font_family":
       return await setFontFamily(params);
     case "set_text_auto_resize":
@@ -259,6 +305,8 @@ async function handleCommand(command: string, params: any) {
       return await createNodeTree(params, state.firstOnTop);
     case "get_local_variables":
       return await getLocalVariables();
+    case "get_library_variables":
+      return await getLibraryVariables();
     case "create_line":
       return await createLine(params);
     case "rename_node":

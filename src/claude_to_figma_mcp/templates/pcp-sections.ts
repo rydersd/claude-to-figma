@@ -1730,6 +1730,181 @@ export const SECTION_TEMPLATES: Record<string, SectionTemplate> = {
       };
     },
   },
+
+  component_proposal: {
+    zone: "no_brand",
+    description:
+      "Design-system proposal frame for a new component or pattern: rationale, anatomy, properties, state grid, exploration slots, and use cases. Fill the placeholder areas with real content after generating.",
+    defaultWidth: 1440,
+    buildTree(props: Record<string, any>, width?: number): any {
+      const w = width ?? this.defaultWidth;
+      const proposalType = props.proposalType === "Pattern" ? "Pattern" : "Component";
+      const rationale: Array<{ candidate: string; reason: string }> = props.rationale || [];
+      const properties: Array<{ property: string; values: string[] }> = props.properties || [];
+      const useCases: string[] = props.useCases || [];
+      const composition: string[] = props.composition || [];
+
+      const sectionTitle = (text: string) =>
+        textNode({ text, fontSize: 20, fontWeight: 700, fontColor: "#1a1a1a", name: "Section Title" });
+
+      const placeholderArea = (name: string, height: number) => ({
+        type: "frame",
+        name,
+        width: w - 128,
+        height,
+        fillColor: "#fafafa",
+        strokeColor: "#d9d9d9",
+        strokeWeight: 1,
+        cornerRadius: 8,
+        layoutMode: "VERTICAL",
+        primaryAxisAlignItems: "CENTER",
+        counterAxisAlignItems: "CENTER",
+        children: [
+          textNode({ text: "Fill in: " + name, fontSize: 13, fontWeight: 400, fontColor: "#8c8c8c" }),
+        ],
+      });
+
+      const section = (title: string, children: any[]) => ({
+        type: "frame",
+        name: title,
+        width: w - 128,
+        height: 100,
+        layoutMode: "VERTICAL",
+        itemSpacing: 16,
+        layoutSizingVertical: "HUG",
+        children: [sectionTitle(title), ...children],
+      });
+
+      const children: any[] = [
+        // Header
+        {
+          type: "frame",
+          name: "Header",
+          width: w - 128,
+          height: 100,
+          layoutMode: "VERTICAL",
+          itemSpacing: 8,
+          layoutSizingVertical: "HUG",
+          children: [
+            textNode({
+              text: "⚠️ PROPOSED " + proposalType.toUpperCase() + " — NOT IN LIBRARY",
+              fontSize: 13,
+              fontWeight: 700,
+              fontColor: "#b45309",
+              name: "Status",
+            }),
+            textNode({ text: props.name, fontSize: 40, fontWeight: 700, fontColor: "#1a1a1a", name: "Proposal Name" }),
+          ],
+        },
+        // Rationale
+        section(
+          "Rationale — rejected near-matches",
+          rationale.length > 0
+            ? rationale.map((r) =>
+                textNode({
+                  text: r.candidate + " — " + r.reason,
+                  fontSize: 15,
+                  fontWeight: 400,
+                  fontColor: "#404040",
+                  name: "Rationale: " + r.candidate,
+                  width: w - 128,
+                })
+              )
+            : [placeholderArea("Nearest existing components and why each fails the need", 120)]
+        ),
+        // Anatomy
+        section("Anatomy", [placeholderArea("Labeled anatomy diagram", 320)]),
+        // Properties
+        section(
+          "Properties & Variants",
+          properties.length > 0
+            ? properties.map((p) =>
+                textNode({
+                  text: p.property + " = " + p.values.join(" | "),
+                  fontSize: 15,
+                  fontWeight: 500,
+                  fontColor: "#404040",
+                  name: "Property: " + p.property,
+                })
+              )
+            : [placeholderArea("Property list following library conventions (State=, Size=...)", 120)]
+        ),
+        // State grid
+        section("State Grid", [placeholderArea("Every interactive state", 280)]),
+        // Explorations
+        section("Explorations", [
+          {
+            type: "frame",
+            name: "Exploration Row",
+            width: w - 128,
+            height: 360,
+            layoutMode: "HORIZONTAL",
+            itemSpacing: 24,
+            children: ["A", "B", "C"].map((label) => ({
+              type: "frame",
+              name: "Exploration " + label,
+              width: Math.floor((w - 128 - 48) / 3),
+              height: 360,
+              fillColor: "#fafafa",
+              strokeColor: "#d9d9d9",
+              strokeWeight: 1,
+              cornerRadius: 8,
+              layoutMode: "VERTICAL",
+              primaryAxisAlignItems: "CENTER",
+              counterAxisAlignItems: "CENTER",
+              children: [
+                textNode({ text: "Exploration " + label, fontSize: 13, fontWeight: 600, fontColor: "#8c8c8c" }),
+              ],
+            })),
+          },
+        ]),
+        // Use cases
+        section(
+          "Use Cases",
+          useCases.length > 0
+            ? useCases.map((uc, i) =>
+                textNode({
+                  text: (i + 1) + ". " + uc,
+                  fontSize: 15,
+                  fontWeight: 400,
+                  fontColor: "#404040",
+                  name: "Use Case " + (i + 1),
+                  width: w - 128,
+                })
+              )
+            : [placeholderArea("Proposal in context of the current design + other anticipated placements", 240)]
+        ),
+      ];
+
+      // Pattern proposals document their composition from existing components
+      if (proposalType === "Pattern") {
+        children.splice(2, 0, section(
+          "Composition",
+          composition.length > 0
+            ? composition.map((c) =>
+                textNode({ text: "• " + c, fontSize: 15, fontWeight: 400, fontColor: "#404040", name: "Uses: " + c })
+              )
+            : [placeholderArea("Existing library components this pattern is composed from", 120)]
+        ));
+      }
+
+      return {
+        type: "frame",
+        name: "⚠️ PROPOSED / " + props.name,
+        width: w,
+        height: 1200,
+        fillColor: "#ffffff",
+        layoutMode: "VERTICAL",
+        paddingTop: 64,
+        paddingBottom: 64,
+        paddingLeft: 64,
+        paddingRight: 64,
+        itemSpacing: 48,
+        layoutSizingVertical: "HUG",
+        children,
+      };
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -1834,6 +2009,16 @@ const TEMPLATE_PROPS: Record<string, { required: string[]; optional: string[] }>
   notification_banner: {
     required: ["heading"],
     optional: ["bannerType: 'mfa_nag'|'countersign_success'|'default'", "cta: {text, href?}"],
+  },
+  component_proposal: {
+    required: ["name"],
+    optional: [
+      "proposalType: 'Component' | 'Pattern' (default Component)",
+      "rationale: Array<{candidate, reason}>",
+      "properties: Array<{property, values: string[]}>",
+      "composition: string[] (Pattern only)",
+      "useCases: string[]",
+    ],
   },
 };
 

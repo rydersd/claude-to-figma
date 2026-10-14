@@ -1,4 +1,4 @@
-import { sendProgressUpdate, generateCommandId, customBase64Encode, appendOrInsertChild, loadAllFonts } from './utils';
+import { sendProgressUpdate, generateCommandId, customBase64Encode, appendOrInsertChild, loadAllFonts, applyLayoutPositioning } from './utils';
 import { setCharacters } from './text';
 
 export async function getStyles() {
@@ -99,6 +99,20 @@ export async function getLocalComponents(params: any) {
   };
 }
 
+export async function applyTextOverrides(node: any, overrides: Record<string, string>): Promise<void> {
+  if (node.type === "TEXT" && overrides[node.name] !== undefined) {
+    await loadAllFonts(node);
+    if (!await setCharacters(node, String(overrides[node.name]))) {
+      throw new Error(`Failed to override text on "${node.name}"`);
+    }
+  }
+  if ("children" in node && node.children) {
+    for (var i = 0; i < node.children.length; i++) {
+      await applyTextOverrides(node.children[i], overrides);
+    }
+  }
+}
+
 export async function createComponentInstance(params: any) {
   const { componentKey, componentId, x = 0, y = 0, parentId } = params || {};
 
@@ -106,6 +120,7 @@ export async function createComponentInstance(params: any) {
     throw new Error("Missing componentKey or componentId parameter. Use componentId for local components (from get_local_components), or componentKey for published library components.");
   }
 
+  let instance: any;
   try {
     let component: any;
 
@@ -124,35 +139,47 @@ export async function createComponentInstance(params: any) {
       component = await figma.importComponentByKeyAsync(componentKey);
     }
 
-    const instance = component.createInstance();
+    instance = component.createInstance();
     instance.x = x;
     instance.y = y;
 
+    if (params.name) {
+      instance.name = params.name;
+    }
+
     await appendOrInsertChild(instance, parentId, params.insertAt);
+
+    // Set opacity if provided
+    if (params.opacity !== undefined) {
+      instance.opacity = params.opacity;
+    }
+
+    // ABSOLUTE positioning requires the instance to already be parented into an auto-layout frame
+    applyLayoutPositioning(instance, params);
+
+    // FILL/HUG sizing requires an auto-layout parent — non-fatal if it fails
+    if (params.layoutSizingHorizontal !== undefined) {
+      try {
+        instance.layoutSizingHorizontal = params.layoutSizingHorizontal;
+      } catch (e) {
+        console.error("Error setting layoutSizingHorizontal on instance:", e);
+      }
+    }
+    if (params.layoutSizingVertical !== undefined) {
+      try {
+        instance.layoutSizingVertical = params.layoutSizingVertical;
+      } catch (e) {
+        console.error("Error setting layoutSizingVertical on instance:", e);
+      }
+    }
 
     // Apply component property overrides if provided
     if (params.properties && typeof params.properties === "object") {
-      try {
-        instance.setProperties(params.properties);
-      } catch (e) {
-        // Non-fatal — instance is created, overrides just failed
-        console.error("Error setting component properties:", e);
-      }
+      instance.setProperties(params.properties);
     }
 
     // Apply text overrides by child name if provided
     if (params.textOverrides && typeof params.textOverrides === "object") {
-      async function applyTextOverrides(node: any, overrides: any) {
-        if (node.type === "TEXT" && overrides[node.name] !== undefined) {
-          await loadAllFonts(node);
-          await setCharacters(node, String(overrides[node.name]));
-        }
-        if ("children" in node && node.children) {
-          for (var i = 0; i < node.children.length; i++) {
-            await applyTextOverrides(node.children[i], overrides);
-          }
-        }
-      }
       await applyTextOverrides(instance, params.textOverrides);
     }
 
@@ -168,7 +195,9 @@ export async function createComponentInstance(params: any) {
       mainComponentId: mainComponent ? mainComponent.id : undefined,
     };
   } catch (error: any) {
-    throw new Error(`Error creating component instance: ${error.message}`);
+    // A rejected override must not leave an unreported, incorrectly configured instance.
+    if (instance && !instance.removed) instance.remove();
+    throw new Error(`Error creating component instance: ${error.message || String(error)}`);
   }
 }
 
@@ -755,6 +784,80 @@ export async function createComponentSet(params: any) {
     variants: variants,
     width: componentSet.width,
     height: componentSet.height,
+  };
+}
+
+// Enumerate variables published by the team libraries enabled on this file.
+// figma.teamLibrary has no component equivalent — library *components* are
+// discovered over REST in tools/library.ts — but variables resolve natively,
+// with no FIGMA_API_TOKEN and no file keys.
+export async function getLibraryVariables() {
+  var commandId = generateCommandId();
+  var result: any[] = [];
+  var collections: any[] = [];
+
+  try {
+    collections =
+      await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+  } catch (err: any) {
+    // The tool documents an empty list when nothing is enabled, so honour that
+    // rather than surfacing a raw Figma error for the ordinary "no libraries"
+    // case. The reason still travels back for diagnosis.
+    return { collections: [], collectionCount: 0, libraryCount: 0, unavailable: String(err && err.message ? err.message : err) };
+  }
+
+  // One round-trip per collection: a large design system can otherwise blow
+  // the 30s command timeout with no sign of life.
+  for (var c = 0; c < collections.length; c++) {
+    var collection = collections[c];
+
+    await sendProgressUpdate(
+      commandId,
+      "get_library_variables",
+      "in_progress",
+      Math.round((c / Math.max(collections.length, 1)) * 100),
+      collections.length,
+      c,
+      `Reading collection ${c + 1}/${collections.length}: ${collection.name}`
+    );
+
+    var variables =
+      await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key);
+
+    result.push({
+      key: collection.key,
+      name: collection.name,
+      libraryName: collection.libraryName,
+      variables: variables.map(function (v: any) {
+        return {
+          key: v.key,
+          name: v.name,
+          resolvedType: v.resolvedType,
+          // Exactly what you pass to $var: in create_node_tree.
+          ref: collection.name + "/" + v.name,
+        };
+      }),
+    });
+  }
+
+  await sendProgressUpdate(
+    commandId,
+    "get_library_variables",
+    "completed",
+    100,
+    collections.length,
+    collections.length,
+    `Read ${result.length} collections`
+  );
+
+  // One library commonly publishes several collections, so these differ.
+  var libraryNames: any = {};
+  for (var i = 0; i < result.length; i++) libraryNames[result[i].libraryName] = true;
+
+  return {
+    collections: result,
+    collectionCount: result.length,
+    libraryCount: Object.keys(libraryNames).length,
   };
 }
 

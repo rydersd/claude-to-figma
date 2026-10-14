@@ -70,12 +70,64 @@ const OperationSchema = z.discriminatedUnion("op", [
     width: z.number().positive().optional().describe("New width (must pair with height)"),
     height: z.number().positive().optional().describe("New height (must pair with width)"),
   }),
+  z.object({
+    op: z.literal("set_opacity"),
+    nodeId: z.string().describe("Node ID"),
+    opacity: z.number().min(0).max(1).describe("Opacity 0-1"),
+  }),
+  z.object({
+    op: z.literal("set_rotation"),
+    nodeId: z.string().describe("Node ID"),
+    rotation: z.number().describe("Rotation in degrees (-180 to 180)"),
+  }),
+  z.object({
+    op: z.literal("set_blend_mode"),
+    nodeId: z.string().describe("Node ID"),
+    blendMode: z.string().describe("Blend mode (NORMAL, MULTIPLY, SCREEN, OVERLAY, etc.)"),
+  }),
+  z.object({
+    op: z.literal("set_corner_radius"),
+    nodeId: z.string().describe("Node ID"),
+    radius: z.number().describe("Corner radius"),
+    corners: z.array(z.boolean()).length(4).optional().describe("Per-corner mask [TL, TR, BR, BL]"),
+  }),
+  z.object({
+    op: z.literal("set_effects"),
+    nodeId: z.string().describe("Node ID"),
+    effects: z.array(z.object({
+      type: z.enum(["DROP_SHADOW", "INNER_SHADOW", "LAYER_BLUR", "BACKGROUND_BLUR"]),
+      color: z.union([z.object({ r: z.number(), g: z.number(), b: z.number(), a: z.number().optional() }), z.string()]).optional(),
+      offset: z.object({ x: z.number(), y: z.number() }).optional(),
+      radius: z.number().optional(),
+      spread: z.number().optional(),
+      visible: z.boolean().optional(),
+    })).describe("Effects array (replaces all existing effects)"),
+  }),
+  z.object({
+    op: z.literal("set_padding"),
+    nodeId: z.string().describe("Node ID of an auto-layout frame"),
+    paddingTop: z.number().optional(),
+    paddingRight: z.number().optional(),
+    paddingBottom: z.number().optional(),
+    paddingLeft: z.number().optional(),
+  }),
+  z.object({
+    op: z.literal("set_item_spacing"),
+    nodeId: z.string().describe("Node ID of an auto-layout frame"),
+    itemSpacing: z.number().optional().describe("Gap between children"),
+    counterAxisSpacing: z.number().optional().describe("Gap between wrapped rows/columns"),
+  }),
+  z.object({
+    op: z.literal("set_text_decoration"),
+    nodeId: z.string().describe("Node ID of a TEXT node"),
+    decoration: z.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).describe("Text decoration"),
+  }),
 ]);
 
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
   server.tool(
     "batch_mutate",
-    "Execute multiple mixed operations in a single round-trip. Supports: rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path. Operations run sequentially — later operations can depend on earlier ones. Dramatically reduces MCP call count for bulk updates.",
+    "Execute multiple mixed operations in a single round-trip — the primary tool for tweaking existing nodes. Supports: rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path, set_opacity, set_rotation, set_blend_mode, set_corner_radius, set_effects, set_padding, set_item_spacing, set_text_decoration. Operations run sequentially — later operations can depend on earlier ones. Dramatically reduces MCP call count for bulk updates.",
     {
       operations: z.array(OperationSchema).min(1).max(100).describe("Array of operations to execute. Each must have an 'op' field plus operation-specific params."),
     },
