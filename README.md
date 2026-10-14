@@ -1,6 +1,24 @@
-# Claude to Figma MCP
+# llm2figma
 
-This project implements a Model Context Protocol (MCP) integration between Claude Code and Figma, allowing Claude Code to communicate with Figma for reading designs and modifying them programmatically.
+A model-agnostic Model Context Protocol (MCP) bridge for reading and editing Figma designs from any compatible AI assistant. Claude Code setup is included as one client example.
+
+The package, MCP server, and plugin are named **llm2figma**. The existing repository URL, source directories, plugin ID, and `claude-to-figma` CLI alias remain compatible with earlier installations. Existing MCP entry names continue to work.
+
+
+## Efficient design workflow
+
+- Establish the file/page and selection once, then inspect only the properties needed for the next decision. Use `fields`, `maxNodes`, `maxDepth`, and `maxTextLength` with node inspection; include `children` only when necessary. Defaults cap inspection at 100 nodes, depth 2, and 2,000 characters per text node. Follow explicit `inspection.truncated` metadata with targeted child/root reads.
+- Keep a small reference snapshot of palettes/variable refs, font choices, component/root IDs, layout helper snippets, and already-read skill guidance. `reference_cache` scopes entries to a file/page or task; defaults to 30-minute expiry with a 64-entry, 64KB-per-entry bound. Refresh references after library changes, deletions, or changes to the source design. Cache misses require a fresh read.
+- Reuse auto-layout helpers, section templates, real library instances, and `$repeat` templates. Use one `figma_eval` helper definition per composition when custom layout logic is needed. Successful and in-flight font loads are shared for the plugin session; failed loads can retry.
+- Batch related mutations and validate the composition after the batch. `scan_node_styles` with `summary:true` returns counts, font families, up to ten unbound-color example IDs, and coverage metadata. Its default budget is 100 nodes at depth 10. `truncated:true` means validation covered only part of the tree; increase the budget or validate separate subtrees before reporting completion.
+- After repairs and compact validation, take one screenshot per completed composition. Repeat screenshots after meaningful visual changes or when a visual defect remains unresolved.
+- Load relevant skill guidance once per task. The `efficient_workflow` MCP prompt carries these rules for any compatible client.
+
+### Local launcher
+
+`bun setup --launcher` installs `l2f` in `~/.local/bin` for macOS/iTerm. `c2f` forwards to the same launcher for compatibility. Add that directory to your PATH. The launcher resolves Bun by absolute path and reuses an existing relay on port 3055, preventing duplicate-start errors. Re-run setup after moving the repo.
+
+After updating, restart your MCP client and reload the Figma development plugin to load the rebuilt tools and bundle. Use `reference_cache` to store a file/page-scoped snapshot, then reuse its palette, variable refs, font choices, IDs and layout helpers. Refresh the snapshot when its sources change.
 
 ## Documentation
 
@@ -9,12 +27,12 @@ Full documentation lives in the [project wiki](docs/Home.md) — setup, architec
 ## Project Structure
 
 - `src/claude_to_figma_mcp/` - TypeScript MCP server for Figma integration
-- `src/claude_figma_plugin/` - Figma plugin for communicating with Claude Code
+- `src/claude_figma_plugin/` - Figma plugin for communicating with MCP clients
 - `src/socket.ts` - WebSocket server that facilitates communication between the MCP server and Figma plugin
 
 ## How to use
 
-You need the **Figma desktop app** (development plugins don't run in the browser) and [Claude Code](https://claude.com/claude-code).
+You need the **Figma desktop app** (development plugins don't run in the browser) and an MCP client. The walkthrough below uses [Claude Code](https://claude.com/claude-code).
 
 1. Install Bun if you haven't already:
 
@@ -38,7 +56,7 @@ bun socket
 
 4. Add the plugin to Figma: in the desktop app, open a design file and choose **Plugins → Development → Import plugin from manifest…**, then pick `src/claude_figma_plugin/manifest.json` from this repo.
 
-5. Run **Plugins → Development → Claude to Figma Plugin** in the file you want Claude to work in. It connects to the relay on launch (**Auto-connect** is on by default in its Settings tab); if it doesn't, click **Connect**.
+5. Run **Plugins → Development → llm2figma** in the file you want Claude to work in. It connects to the relay on launch (**Auto-connect** is on by default in its Settings tab); if it doesn't, click **Connect**.
 
 6. Start a new Claude Code session and ask for something, for example "describe what's on the current Figma page". Tools join the connected file's channel automatically. If several files have the plugin open, Claude asks you to pick one with `join_channel`.
 
@@ -53,7 +71,7 @@ This project is a fork of [cursor-talk-to-figma-mcp](https://github.com/sonnylaz
 `bun setup` writes a machine-specific `.mcp.json` in this repo (project scope), and `bun setup --user` also registers the server for your user. To do it by hand, use absolute paths so Claude Code can launch the server from any folder:
 
 ```bash
-claude mcp add --scope user ClaudeToFigma -- "$(command -v bun)" "$PWD/src/claude_to_figma_mcp/server.ts"
+claude mcp add --scope user LLM2Figma -- "$(command -v bun)" "$PWD/src/claude_to_figma_mcp/server.ts"
 ```
 
 Or add it to a project's `.mcp.json`:
@@ -61,7 +79,7 @@ Or add it to a project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "ClaudeToFigma": {
+    "LLM2Figma": {
       "command": "/absolute/path/to/bun",
       "args": ["/path-to-repo/src/claude_to_figma_mcp/server.ts"]
     }
@@ -83,12 +101,12 @@ export FIGMA_API_TOKEN="figd_..."
 export FIGMA_LIBRARY_FILE_KEYS="abc123,def456"
 ```
 
-Then pass them through in `.mcp.json`'s `ClaudeToFigma` server entry:
+Then pass them through in `.mcp.json`'s `LLM2Figma` server entry:
 
 ```json
 {
   "mcpServers": {
-    "ClaudeToFigma": {
+    "LLM2Figma": {
       "command": "bun",
       "args": ["src/claude_to_figma_mcp/server.ts"],
       "env": {
@@ -131,7 +149,7 @@ bun socket
 
 1. In the Figma desktop app, go to **Plugins → Development → Import plugin from manifest…**
 2. Select the `src/claude_figma_plugin/manifest.json` file
-3. The plugin now appears under **Plugins → Development** as **Claude to Figma Plugin**
+3. The plugin now appears under **Plugins → Development** as **llm2figma**
 
 The plugin includes a **Settings tab** with:
 - **First on top**: When enabled, new auto-layout frames default to first-child-on-top stacking (`itemReverseZIndex`)
@@ -164,7 +182,7 @@ bun socket
 
 1. Start the WebSocket relay (`bun socket`)
 2. Install the MCP server in Claude Code (`bun setup --user`)
-3. Open Figma and run the Claude to Figma Plugin (it auto-connects on launch)
+3. Open Figma and run the llm2figma (it auto-connects on launch)
 4. Use Claude Code with the MCP tools. The first tool call joins the plugin's channel automatically when one file is connected; call `join_channel` with the channel name shown in the plugin when several are
 5. If you change relay code, restart `bun socket`
 

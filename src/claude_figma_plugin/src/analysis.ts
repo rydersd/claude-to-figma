@@ -1,7 +1,7 @@
 // analysis.ts — Analysis, introspection, batch mutation, design query, and component migration
 // Extracted from code.js as part of the plugin modularization refactor.
 
-import { sendProgressUpdate, generateCommandId, loadAllFonts, customBase64Encode, safeMixed, hexToFigmaColor, appendOrInsertChild, getVariableByName, bindVariableToColor, resolveColorValue, rgbaToHex, formatError } from './utils';
+import { loadFontCached, sendProgressUpdate, generateCommandId, loadAllFonts, customBase64Encode, safeMixed, hexToFigmaColor, appendOrInsertChild, getVariableByName, bindVariableToColor, resolveColorValue, rgbaToHex, formatError } from './utils';
 import { setCharacters, setTextDecoration } from './text';
 import { normalizeSvgPath } from './vectors';
 import { setOpacity, setRotation, setBlendMode, setCornerRadius, setEffects } from './styling';
@@ -217,7 +217,7 @@ export async function batchMutate(params: any) {
           if (fontNode.type !== "TEXT") throw new Error("Node is not TEXT: " + op.nodeId);
           var batchFontFamily = op.fontFamily || "Inter";
           var batchFontStyle = op.fontStyle || "Regular";
-          await figma.loadFontAsync({ family: batchFontFamily, style: batchFontStyle });
+          await loadFontCached({ family: batchFontFamily, style: batchFontStyle });
           fontNode.fontName = { family: batchFontFamily, style: batchFontStyle };
           result = { op: "set_font", nodeId: op.nodeId, name: fontNode.name, fontFamily: batchFontFamily, fontStyle: batchFontStyle };
           break;
@@ -313,6 +313,10 @@ export async function scanNodeStyles(params: any) {
   var rootId = params.nodeId;
   var maxDepth = params.maxDepth !== undefined ? params.maxDepth : 10;
 
+  const maxNodes = Math.min(1000, Math.max(1, params.maxNodes ?? 100));
+  const fields: string[] | undefined = params.fields;
+  const wanted = (field: string) => params.summary ? ["fills", "strokes", "font"].includes(field) : !fields?.length || fields.includes(field);
+  let truncated = false;
   var root = await figma.getNodeByIdAsync(rootId);
   if (!root) {
     throw new Error("Node not found with ID: " + rootId);
@@ -331,7 +335,7 @@ export async function scanNodeStyles(params: any) {
           color: { r: f.color.r, g: f.color.g, b: f.color.b },
           opacity: f.opacity !== undefined ? f.opacity : 1,
           visible: f.visible !== false,
-          boundVariable: hasBoundVariable(node, "fills"),
+          boundVariable: Boolean(f.boundVariables?.color),
         });
       } else {
         fills.push({ type: f.type, visible: f.visible !== false });
@@ -351,7 +355,7 @@ export async function scanNodeStyles(params: any) {
           color: { r: s.color.r, g: s.color.g, b: s.color.b },
           opacity: s.opacity !== undefined ? s.opacity : 1,
           visible: s.visible !== false,
-          boundVariable: hasBoundVariable(node, "strokes"),
+          boundVariable: Boolean(s.boundVariables?.color),
         });
       } else {
         strokes.push({ type: s.type, visible: s.visible !== false });
@@ -379,31 +383,32 @@ export async function scanNodeStyles(params: any) {
   }
 
   async function walkNode(node: any, depth: any, parentId: any) {
-    if (depth > maxDepth) return;
+    if (depth > maxDepth || results.length >= maxNodes) { truncated = true; return; }
 
     var entry: any = {
       id: node.id,
       name: node.name,
       type: node.type,
       parentId: parentId,
-      bbox: { x: node.x, y: node.y, width: node.width, height: node.height },
-      visible: node.visible !== false,
     };
 
+    if (wanted("bbox")) entry.bbox = { x: node.x, y: node.y, width: node.width, height: node.height };
+    if (wanted("visible")) entry.visible = node.visible !== false;
+
     // Fills and strokes
-    var fills = extractFills(node);
+    var fills = wanted("fills") ? extractFills(node) : null;
     if (fills) entry.fills = fills;
-    var strokes = extractStrokes(node);
+    var strokes = wanted("strokes") ? extractStrokes(node) : null;
     if (strokes) entry.strokes = strokes;
-    if ("strokeWeight" in node && node.strokeWeight) entry.strokeWeight = safeMixed(node.strokeWeight);
+    if (wanted("strokeWeight") && "strokeWeight" in node && node.strokeWeight) entry.strokeWeight = safeMixed(node.strokeWeight);
 
     // Corner radius
-    if ("cornerRadius" in node && node.cornerRadius !== undefined && node.cornerRadius !== 0) {
+    if (wanted("cornerRadius") && "cornerRadius" in node && node.cornerRadius !== undefined && node.cornerRadius !== 0) {
       entry.cornerRadius = safeMixed(node.cornerRadius);
     }
 
     // Auto layout
-    if ("layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") {
+    if (["layoutMode", "itemSpacing", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].some(wanted) && "layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") {
       entry.layoutMode = node.layoutMode;
       entry.itemSpacing = node.itemSpacing;
       entry.paddingTop = node.paddingTop;
@@ -413,14 +418,14 @@ export async function scanNodeStyles(params: any) {
     }
 
     // Font properties for text
-    var font = extractFont(node);
+    var font = wanted("font") ? extractFont(node) : null;
     if (font) entry.font = font;
 
     // Is it an instance?
-    if (node.type === "INSTANCE") {
+    if (node.type === "INSTANCE" && (wanted("isInstance") || wanted("componentName") || wanted("componentId"))) {
       entry.isInstance = true;
       try {
-        var mainComp = await node.getMainComponentAsync();
+        var mainComp = (wanted("componentName") || wanted("componentId")) ? await node.getMainComponentAsync() : null;
         if (mainComp) {
           entry.componentName = mainComp.name;
           entry.componentId = mainComp.id;
@@ -433,6 +438,7 @@ export async function scanNodeStyles(params: any) {
     // Recurse into children
     if ("children" in node && node.children) {
       for (var i = 0; i < node.children.length; i++) {
+        if (results.length >= maxNodes || depth >= maxDepth) { truncated = true; break; }
         await walkNode(node.children[i], depth + 1, node.id);
       }
     }
@@ -440,11 +446,21 @@ export async function scanNodeStyles(params: any) {
 
   await walkNode(root, 0, null);
 
-  return {
-    rootId: rootId,
-    totalNodes: results.length,
-    nodes: results,
-  };
+  const coverage = { rootId, totalNodes: results.length, truncated, maxNodes, maxDepth };
+  if (params.summary) {
+    const unbound = results.filter(node => [...(node.fills || []), ...(node.strokes || [])].some(paint => paint.type === "SOLID" && paint.visible !== false && paint.opacity !== 0 && !paint.boundVariable));
+    return {
+      ...coverage,
+      summary: {
+        textNodes: results.filter(node => node.type === "TEXT").length,
+        instanceNodes: results.filter(node => node.type === "INSTANCE").length,
+        fontFamilies: [...new Set(results.map(node => node.font?.fontFamily).filter(Boolean))],
+        unboundColorNodes: unbound.length,
+        unboundColorNodeIds: unbound.slice(0, 10).map(node => node.id),
+      },
+    };
+  }
+  return { ...coverage, nodes: fields?.length ? results.map(node => Object.fromEntries(fields.filter(field => field in node).map(field => [field, node[field]]))) : results };
 }
 
 // --- introspect_node: Discover the full manipulation surface of a component/frame ---

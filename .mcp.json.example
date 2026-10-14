@@ -1,7 +1,7 @@
 {
   "_comment": "This is a template. The real .mcp.json is gitignored and generated per machine by scripts/setup.sh — run `bun setup` (or `./scripts/preflight.sh`) on a fresh checkout. The _generatedFor block is stamped at generation time so preflight.sh can detect when the config no longer matches the current machine.",
   "mcpServers": {
-    "ClaudeToFigma": {
+    "LLM2Figma": {
       "type": "stdio",
       "command": "/ABSOLUTE/PATH/TO/bun",
       "args": [

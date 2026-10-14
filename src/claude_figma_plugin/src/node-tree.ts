@@ -1,4 +1,4 @@
-import { sendProgressUpdate, generateCommandId, resolveColorValue, hexToFigmaColor, getVariableByName, bindVariableToColor, appendOrInsertChild, loadAllFonts, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyImageFill } from './utils';
+import { loadFontCached, sendProgressUpdate, generateCommandId, resolveColorValue, hexToFigmaColor, getVariableByName, bindVariableToColor, appendOrInsertChild, loadAllFonts, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyImageFill } from './utils';
 import { setCharacters } from './text';
 import { createFrame, createText, createRectangle } from './creation';
 import { createVector, normalizeSvgPath } from './vectors';
@@ -270,12 +270,12 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
       if (!currentFontName || typeof currentFontName === "symbol" ||
           currentFontName.family !== userFontFamily || currentFontName.style !== userFontStyle) {
         try {
-          await figma.loadFontAsync({ family: userFontFamily, style: userFontStyle });
+          await loadFontCached({ family: userFontFamily, style: userFontStyle });
           existingNode.fontName = { family: userFontFamily, style: userFontStyle };
           changedProps.push("fontName");
         } catch (err) {
           try {
-            await figma.loadFontAsync({ family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) });
+            await loadFontCached({ family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) });
             existingNode.fontName = { family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) };
             changedProps.push("fontName");
           } catch (e2) { /* ignore */ }
@@ -283,7 +283,7 @@ export async function createNodeTree(params: any, firstOnTop: boolean = true) {
       } else {
         // Font unchanged, but still need to load it for setText/fontSize changes
         try {
-          await figma.loadFontAsync({ family: userFontFamily, style: userFontStyle });
+          await loadFontCached({ family: userFontFamily, style: userFontStyle });
         } catch (e) { /* ignore */ }
       }
 

@@ -1,4 +1,4 @@
-// Main entry point for the Claude to Figma plugin
+// Main entry point for the llm2figma plugin
 // Handles state, UI events, and command dispatching
 
 // Module imports
@@ -35,7 +35,7 @@ figma.showUI(__html__, { width: 350, height: 600 });
 // feature-detected; console.error is the one channel that always works.
 function reportUncaught(source: string, error: any) {
   const detail = formatError(error);
-  console.error(`[claude-to-figma] uncaught ${source}:\n${detail}`);
+  console.error(`[llm2figma] uncaught ${source}:\n${detail}`);
   try {
     figma.ui.postMessage({ type: "uncaught-error", source, error: detail });
   } catch (e) {
@@ -141,14 +141,14 @@ async function handleCommand(command: string, params: any) {
       if (!params || !params.nodeId) {
         throw new Error("Missing nodeId parameter");
       }
-      return await getNodeInfo(params.nodeId, params.fields);
+      return await getNodeInfo(params.nodeId, params.fields, params);
     case "get_nodes_info":
       if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
         throw new Error("Missing or invalid nodeIds parameter");
       }
-      return await getNodesInfo(params.nodeIds, params.fields);
+      return await getNodesInfo(params.nodeIds, params.fields, params);
     case "read_my_design":
-      return await readMyDesign();
+      return await readMyDesign(params || {});
     case "create_rectangle":
       return await createRectangle(params);
     case "create_frame":

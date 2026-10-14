@@ -1,7 +1,63 @@
 (function () {
   'use strict';
 
+  // src/shared/inspection.ts
+  function boundNodeTree(root, options = {}) {
+    const maxNodes = Math.min(1e3, Math.max(1, options.maxNodes ?? 100));
+    const maxDepth = Math.min(50, Math.max(0, options.maxDepth ?? 2));
+    const maxTextLength = Math.min(1e4, Math.max(1, options.maxTextLength ?? 2e3));
+    const includeChildren = !options.fields?.length || options.fields.includes("children");
+    let returnedNodes = 0;
+    let truncated = false;
+    function visit(node, depth) {
+      returnedNodes++;
+      const result = { ...node };
+      if ((!options.fields?.length || options.fields.includes("characters")) && typeof result.characters === "string" && result.characters.length > maxTextLength) {
+        result.characters = result.characters.slice(0, maxTextLength);
+        truncated = true;
+      }
+      delete result.children;
+      if (includeChildren && Array.isArray(node.children)) {
+        result.children = [];
+        if (depth >= maxDepth) {
+          if (node.children.length) truncated = true;
+        } else {
+          for (const child of node.children) {
+            if (returnedNodes >= maxNodes) {
+              truncated = true;
+              break;
+            }
+            result.children.push(visit(child, depth + 1));
+          }
+        }
+      }
+      return result;
+    }
+    return {
+      node: visit(root, 0),
+      inspection: { returnedNodes, truncated, maxNodes, maxDepth, maxTextLength }
+    };
+  }
+
+  // src/shared/font-cache.ts
+  function createFontLoader(load) {
+    const cache = /* @__PURE__ */ new Map();
+    return (font) => {
+      const key = JSON.stringify([font.family, font.style]);
+      let pending = cache.get(key);
+      if (!pending) {
+        pending = Promise.resolve().then(() => load(font)).catch((error) => {
+          cache.delete(key);
+          throw error;
+        });
+        cache.set(key, pending);
+      }
+      return pending;
+    };
+  }
+
   // src/claude_figma_plugin/src/utils.ts
+  var loadFontCached = createFontLoader((font) => figma.loadFontAsync(font));
   async function sendProgressUpdate(commandId, commandType, status, progress, totalItems, processedItems, message, payload = null) {
     const update = {
       type: "command_progress",
@@ -614,13 +670,13 @@
       var segments = textNode.getStyledTextSegments(["fontName"]);
       for (var i = 0; i < segments.length; i++) {
         try {
-          await figma.loadFontAsync(segments[i].fontName);
+          await loadFontCached(segments[i].fontName);
         } catch (e) {
         }
       }
     } else {
       try {
-        await figma.loadFontAsync(textNode.fontName);
+        await loadFontCached(textNode.fontName);
       } catch (e) {
       }
     }
@@ -664,7 +720,7 @@
       }))
     };
   }
-  async function getNodeInfo(nodeId, fields) {
+  async function getNodeInfo(nodeId, fields, options = {}) {
     const node = await figma.getNodeByIdAsync(nodeId);
     if (!node) {
       throw new Error(`Node not found with ID: ${nodeId}`);
@@ -672,51 +728,30 @@
     const response = await node.exportAsync({
       format: "JSON_REST_V1"
     });
-    return filterFigmaNode(response.document, fields);
+    const bounded = boundNodeTree(response.document, { ...options, fields });
+    const filtered = filterFigmaNode(bounded.node, fields);
+    return filtered ? { ...filtered, inspection: bounded.inspection } : null;
   }
-  async function getNodesInfo(nodeIds, fields) {
-    try {
-      const nodes = await Promise.all(
-        nodeIds.map((id) => figma.getNodeByIdAsync(id))
-      );
-      const validNodes = nodes.filter((node) => node !== null);
-      const responses = await Promise.all(
-        validNodes.map(async (node) => {
-          const response = await node.exportAsync({
-            format: "JSON_REST_V1"
-          });
-          return {
-            nodeId: node.id,
-            document: filterFigmaNode(response.document, fields)
-          };
-        })
-      );
-      return responses;
-    } catch (error) {
-      throw new Error(`Error getting nodes info: ${error.message}`);
+  async function getNodesInfo(nodeIds, fields, options = {}) {
+    const maxNodes = Math.min(1e3, Math.max(1, options.maxNodes ?? 100));
+    const results = [];
+    let returnedNodes = 0;
+    for (const id of nodeIds) {
+      if (returnedNodes >= maxNodes) {
+        results.push({ nodeId: id, document: null, skipped: "maxNodes" });
+        continue;
+      }
+      const document = await getNodeInfo(id, fields, { ...options, maxNodes: maxNodes - returnedNodes });
+      returnedNodes += document?.inspection.returnedNodes || 1;
+      results.push({ nodeId: id, document });
     }
+    return results;
   }
-  async function readMyDesign() {
-    try {
-      const nodes = await Promise.all(
-        figma.currentPage.selection.map((node) => figma.getNodeByIdAsync(node.id))
-      );
-      const validNodes = nodes.filter((node) => node !== null);
-      const responses = await Promise.all(
-        validNodes.map(async (node) => {
-          const response = await node.exportAsync({
-            format: "JSON_REST_V1"
-          });
-          return {
-            nodeId: node.id,
-            document: filterFigmaNode(response.document)
-          };
-        })
-      );
-      return responses;
-    } catch (error) {
-      throw new Error(`Error getting nodes info: ${error.message}`);
-    }
+  async function readMyDesign(options = {}) {
+    const selection = figma.currentPage.selection;
+    const result = await getNodesInfo(selection.slice(0, 100).map((node) => node.id), options.fields, options);
+    if (selection.length > 100) result.push({ skipped: "selectionLimit", omittedRoots: selection.length - 100 });
+    return result;
   }
   async function getAnnotations(params) {
     try {
@@ -1058,11 +1093,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       if (node.fontName === figma.mixed) {
         if (options && options.smartStrategy === "prevail") ; else if (options && options.smartStrategy === "strict") ; else if (options && options.smartStrategy === "experimental") ; else {
           const firstCharFont = node.getRangeFontName(0, 1);
-          await figma.loadFontAsync(firstCharFont);
+          await loadFontCached(firstCharFont);
           node.fontName = firstCharFont;
         }
       } else {
-        await figma.loadFontAsync({
+        await loadFontCached({
           family: node.fontName.family,
           style: node.fontName.style
         });
@@ -1072,7 +1107,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         `Failed to load "${node.fontName["family"]} ${node.fontName["style"]}" font and replaced with fallback "${fallbackFont.family} ${fallbackFont.style}"`,
         err
       );
-      await figma.loadFontAsync(fallbackFont);
+      await loadFontCached(fallbackFont);
       node.fontName = fallbackFont;
     }
     try {
@@ -1098,7 +1133,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
       fontHashTree[`${startIdx}_${i}`] = startCharFontVal;
     }
-    await figma.loadFontAsync(fallbackFont);
+    await loadFontCached(fallbackFont);
     node.fontName = fallbackFont;
     node.characters = characters;
     console.log(fontHashTree);
@@ -1111,7 +1146,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           family,
           style
         };
-        await figma.loadFontAsync(matchedFont);
+        await loadFontCached(matchedFont);
         return node.setRangeFontName(Number(start), Number(end), matchedFont);
       })
     );
@@ -1189,7 +1224,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       family,
       style
     }));
-    await Promise.all([...fontsToLoad, fallbackFont].map(figma.loadFontAsync));
+    await Promise.all([...fontsToLoad, fallbackFont].map(loadFontCached));
     node.fontName = fallbackFont;
     node.characters = characters;
     let prevPos = 0;
@@ -1751,7 +1786,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (node.type !== "TEXT") {
       throw new Error(`Node is not a text node: ${nodeId}`);
     }
-    await figma.loadFontAsync({ family: fontFamily, style: fontStyle });
+    await loadFontCached({ family: fontFamily, style: fontStyle });
     node.fontName = { family: fontFamily, style: fontStyle };
     return {
       id: node.id,
@@ -1965,7 +2000,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       try {
         if (range.fontFamily !== void 0) {
           var fontStyle = range.fontStyle || "Regular";
-          await figma.loadFontAsync({ family: range.fontFamily, style: fontStyle });
+          await loadFontCached({ family: range.fontFamily, style: fontStyle });
           node.setRangeFontName(start, end, { family: range.fontFamily, style: fontStyle });
         }
         if (range.fontSize !== void 0) {
@@ -2222,7 +2257,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     textNode.y = y;
     textNode.name = name || text;
     try {
-      await figma.loadFontAsync({
+      await loadFontCached({
         family: userFontFamily,
         style: userFontStyle
       });
@@ -2231,7 +2266,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     } catch (error) {
       console.error("Error setting font", error);
       try {
-        await figma.loadFontAsync({ family: "Inter", style: fontWeightToStyle(fontWeight) });
+        await loadFontCached({ family: "Inter", style: fontWeightToStyle(fontWeight) });
         textNode.fontName = { family: "Inter", style: fontWeightToStyle(fontWeight) };
         textNode.fontSize = parseInt(fontSize);
       } catch (fallbackError) {
@@ -5364,17 +5399,17 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             try {
               if (defaultConnector.text && defaultConnector.text.fontName) {
                 const fontName = defaultConnector.text.fontName;
-                await figma.loadFontAsync(fontName);
+                await loadFontCached(fontName);
                 clonedConnector.text.fontName = fontName;
               } else {
-                await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+                await loadFontCached({ family: "Inter", style: "Regular" });
               }
             } catch (fontError) {
               try {
-                await figma.loadFontAsync({ family: "Inter", style: "Medium" });
+                await loadFontCached({ family: "Inter", style: "Medium" });
               } catch (mediumFontError) {
                 try {
-                  await figma.loadFontAsync({ family: "System", style: "Regular" });
+                  await loadFontCached({ family: "System", style: "Regular" });
                 } catch (systemFontError) {
                   throw new Error(`Failed to load any font: ${fontError.message}`);
                 }
@@ -5729,12 +5764,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         const currentFontName = existingNode.fontName;
         if (!currentFontName || typeof currentFontName === "symbol" || currentFontName.family !== userFontFamily || currentFontName.style !== userFontStyle) {
           try {
-            await figma.loadFontAsync({ family: userFontFamily, style: userFontStyle });
+            await loadFontCached({ family: userFontFamily, style: userFontStyle });
             existingNode.fontName = { family: userFontFamily, style: userFontStyle };
             changedProps.push("fontName");
           } catch (err) {
             try {
-              await figma.loadFontAsync({ family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) });
+              await loadFontCached({ family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) });
               existingNode.fontName = { family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) };
               changedProps.push("fontName");
             } catch (e2) {
@@ -5742,7 +5777,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           }
         } else {
           try {
-            await figma.loadFontAsync({ family: userFontFamily, style: userFontStyle });
+            await loadFontCached({ family: userFontFamily, style: userFontStyle });
           } catch (e) {
           }
         }
@@ -6371,7 +6406,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             if (fontNode.type !== "TEXT") throw new Error("Node is not TEXT: " + op.nodeId);
             var batchFontFamily = op.fontFamily || "Inter";
             var batchFontStyle = op.fontStyle || "Regular";
-            await figma.loadFontAsync({ family: batchFontFamily, style: batchFontStyle });
+            await loadFontCached({ family: batchFontFamily, style: batchFontStyle });
             fontNode.fontName = { family: batchFontFamily, style: batchFontStyle };
             result = { op: "set_font", nodeId: op.nodeId, name: fontNode.name, fontFamily: batchFontFamily, fontStyle: batchFontStyle };
             break;
@@ -6452,6 +6487,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   async function scanNodeStyles(params) {
     var rootId = params.nodeId;
     var maxDepth = params.maxDepth !== void 0 ? params.maxDepth : 10;
+    const maxNodes = Math.min(1e3, Math.max(1, params.maxNodes ?? 100));
+    const fields = params.fields;
+    const wanted = (field) => params.summary ? ["fills", "strokes", "font"].includes(field) : !fields?.length || fields.includes(field);
+    let truncated = false;
     var root = await figma.getNodeByIdAsync(rootId);
     if (!root) {
       throw new Error("Node not found with ID: " + rootId);
@@ -6468,7 +6507,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             color: { r: f.color.r, g: f.color.g, b: f.color.b },
             opacity: f.opacity !== void 0 ? f.opacity : 1,
             visible: f.visible !== false,
-            boundVariable: hasBoundVariable(node, "fills")
+            boundVariable: Boolean(f.boundVariables?.color)
           });
         } else {
           fills.push({ type: f.type, visible: f.visible !== false });
@@ -6487,7 +6526,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             color: { r: s.color.r, g: s.color.g, b: s.color.b },
             opacity: s.opacity !== void 0 ? s.opacity : 1,
             visible: s.visible !== false,
-            boundVariable: hasBoundVariable(node, "strokes")
+            boundVariable: Boolean(s.boundVariables?.color)
           });
         } else {
           strokes.push({ type: s.type, visible: s.visible !== false });
@@ -6513,24 +6552,27 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
     }
     async function walkNode(node, depth, parentId) {
-      if (depth > maxDepth) return;
+      if (depth > maxDepth || results.length >= maxNodes) {
+        truncated = true;
+        return;
+      }
       var entry = {
         id: node.id,
         name: node.name,
         type: node.type,
-        parentId,
-        bbox: { x: node.x, y: node.y, width: node.width, height: node.height },
-        visible: node.visible !== false
+        parentId
       };
-      var fills = extractFills(node);
+      if (wanted("bbox")) entry.bbox = { x: node.x, y: node.y, width: node.width, height: node.height };
+      if (wanted("visible")) entry.visible = node.visible !== false;
+      var fills = wanted("fills") ? extractFills(node) : null;
       if (fills) entry.fills = fills;
-      var strokes = extractStrokes(node);
+      var strokes = wanted("strokes") ? extractStrokes(node) : null;
       if (strokes) entry.strokes = strokes;
-      if ("strokeWeight" in node && node.strokeWeight) entry.strokeWeight = safeMixed(node.strokeWeight);
-      if ("cornerRadius" in node && node.cornerRadius !== void 0 && node.cornerRadius !== 0) {
+      if (wanted("strokeWeight") && "strokeWeight" in node && node.strokeWeight) entry.strokeWeight = safeMixed(node.strokeWeight);
+      if (wanted("cornerRadius") && "cornerRadius" in node && node.cornerRadius !== void 0 && node.cornerRadius !== 0) {
         entry.cornerRadius = safeMixed(node.cornerRadius);
       }
-      if ("layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") {
+      if (["layoutMode", "itemSpacing", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].some(wanted) && "layoutMode" in node && node.layoutMode && node.layoutMode !== "NONE") {
         entry.layoutMode = node.layoutMode;
         entry.itemSpacing = node.itemSpacing;
         entry.paddingTop = node.paddingTop;
@@ -6538,12 +6580,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         entry.paddingBottom = node.paddingBottom;
         entry.paddingLeft = node.paddingLeft;
       }
-      var font = extractFont(node);
+      var font = wanted("font") ? extractFont(node) : null;
       if (font) entry.font = font;
-      if (node.type === "INSTANCE") {
+      if (node.type === "INSTANCE" && (wanted("isInstance") || wanted("componentName") || wanted("componentId"))) {
         entry.isInstance = true;
         try {
-          var mainComp = await node.getMainComponentAsync();
+          var mainComp = wanted("componentName") || wanted("componentId") ? await node.getMainComponentAsync() : null;
           if (mainComp) {
             entry.componentName = mainComp.name;
             entry.componentId = mainComp.id;
@@ -6554,16 +6596,30 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       results.push(entry);
       if ("children" in node && node.children) {
         for (var i = 0; i < node.children.length; i++) {
+          if (results.length >= maxNodes || depth >= maxDepth) {
+            truncated = true;
+            break;
+          }
           await walkNode(node.children[i], depth + 1, node.id);
         }
       }
     }
     await walkNode(root, 0, null);
-    return {
-      rootId,
-      totalNodes: results.length,
-      nodes: results
-    };
+    const coverage = { rootId, totalNodes: results.length, truncated, maxNodes, maxDepth };
+    if (params.summary) {
+      const unbound = results.filter((node) => [...node.fills || [], ...node.strokes || []].some((paint) => paint.type === "SOLID" && paint.visible !== false && paint.opacity !== 0 && !paint.boundVariable));
+      return {
+        ...coverage,
+        summary: {
+          textNodes: results.filter((node) => node.type === "TEXT").length,
+          instanceNodes: results.filter((node) => node.type === "INSTANCE").length,
+          fontFamilies: [...new Set(results.map((node) => node.font?.fontFamily).filter(Boolean))],
+          unboundColorNodes: unbound.length,
+          unboundColorNodeIds: unbound.slice(0, 10).map((node) => node.id)
+        }
+      };
+    }
+    return { ...coverage, nodes: fields?.length ? results.map((node) => Object.fromEntries(fields.filter((field) => field in node).map((field) => [field, node[field]]))) : results };
   }
   async function introspectNode(params) {
     var nodeId = params.nodeId;
@@ -7854,7 +7910,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   figma.showUI(__html__, { width: 350, height: 600 });
   function reportUncaught(source, error) {
     const detail = formatError(error);
-    console.error(`[claude-to-figma] uncaught ${source}:
+    console.error(`[llm2figma] uncaught ${source}:
 ${detail}`);
     try {
       figma.ui.postMessage({ type: "uncaught-error", source, error: detail });
@@ -7941,14 +7997,14 @@ ${detail}`);
         if (!params || !params.nodeId) {
           throw new Error("Missing nodeId parameter");
         }
-        return await getNodeInfo(params.nodeId, params.fields);
+        return await getNodeInfo(params.nodeId, params.fields, params);
       case "get_nodes_info":
         if (!params || !params.nodeIds || !Array.isArray(params.nodeIds)) {
           throw new Error("Missing or invalid nodeIds parameter");
         }
-        return await getNodesInfo(params.nodeIds, params.fields);
+        return await getNodesInfo(params.nodeIds, params.fields, params);
       case "read_my_design":
-        return await readMyDesign();
+        return await readMyDesign(params || {});
       case "create_rectangle":
         return await createRectangle(params);
       case "create_frame":

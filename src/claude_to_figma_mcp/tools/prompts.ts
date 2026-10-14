@@ -1,6 +1,18 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+export const EFFICIENT_WORKFLOW = `Efficient llm2figma workflow:
+1. Establish the file/page and selection once. Plan the domain objects, relationships, ownership and actions, then their visual projections.
+2. Inspect only what the next decision needs. Use fields with get_node_info/get_nodes_info, maxNodes (default 100), maxDepth (default 2), and maxTextLength (default 2000). Include children only when needed. Inspect specific child IDs to continue a truncated result.
+3. Read relevant skill guidance once per task. Cache a small reference snapshot with reference_cache: palettes and variable refs, font choices, component/root IDs, reusable layout helper snippets and guidance. Scope it to the file/page or task. Refresh it after reference changes, library updates or deletions; entries expire and disappear on MCP restart.
+4. Reuse auto-layout templates, create_node_tree with $repeat and real library instances. Put repeated layout logic into a helper in one figma_eval call when necessary. Keep design choices consistent with the cached references. Font loads are shared within the plugin session; failed loads can retry.
+5. Batch related edits with create_node_tree, batch_mutate, set_multiple_text_contents or other batch tools. Validate the composition after the batch rather than inspecting every mutation.
+6. Use scan_node_styles with summary:true for compact validation. Check counts, fonts, unbound-color samples and truncated coverage; inspect only findings that need repair. A partial scan cannot validate the whole composition.
+7. After fixes and validation, take one screenshot of the completed composition. Take another only after a meaningful visual change or an unresolved visual defect.`;
+
 export function registerPrompts(server: McpServer) {
+  server.prompt("efficient_workflow", "Bound inspection, reuse references, batch edits and validate each composition once", () => ({
+    messages: [{ role: "assistant", content: { type: "text", text: EFFICIENT_WORKFLOW } }],
+  }));
   // Design strategy prompt
   server.prompt(
     "design_strategy",
@@ -12,7 +24,9 @@ export function registerPrompts(server: McpServer) {
             role: "assistant",
             content: {
               type: "text",
-              text: `When working with Figma designs, follow these best practices:
+              text: `${EFFICIENT_WORKFLOW}
+
+When working with Figma designs, follow these best practices:
 
 1. Start with Document Structure:
    - First use get_document_info() to understand the current document
@@ -59,7 +73,7 @@ export function registerPrompts(server: McpServer) {
      * Smaller for helper text/links
 
 8. Best Practices:
-   - Verify each creation with get_node_info()
+   - Validate each completed composition with a compact style summary and targeted node reads
    - Use parentId to maintain proper hierarchy
    - Group related elements together in frames
    - Keep consistent spacing and alignment

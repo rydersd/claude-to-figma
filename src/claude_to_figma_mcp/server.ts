@@ -33,9 +33,11 @@ import { registerTools as registerLibraryTools } from "./tools/library.js";
 import { registerTools as registerEventTools } from "./tools/events.js";
 import { registerPrompts } from "./tools/prompts.js";
 
+import { registerTools as registerReferenceCacheTools } from "./tools/reference-cache.js";
+
 // Create MCP server
 const server = new McpServer({
-  name: "ClaudeToFigmaMCP",
+  name: "llm2figma",
   version: "1.0.0",
 });
 
@@ -65,6 +67,7 @@ registerPageCompilerTools(server, sendCommandToFigma);
 registerImageTools(server, sendCommandToFigma);
 registerLibraryTools(server, sendCommandToFigma);
 registerEventTools(server, sendCommandToFigma);
+registerReferenceCacheTools(server);
 
 // Register prompts
 registerPrompts(server);
@@ -82,11 +85,11 @@ async function main() {
   // Start the MCP server with stdio transport
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  logger.info('FigmaMCP server running on stdio');
+  logger.info('llm2figma server running on stdio');
 }
 
 // Run the server
 main().catch(error => {
-  logger.error(`Error starting FigmaMCP server: ${error instanceof Error ? error.message : String(error)}`);
+  logger.error(`Error starting llm2figma server: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 });

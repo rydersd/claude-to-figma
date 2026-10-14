@@ -1,4 +1,4 @@
-import { sendProgressUpdate, generateCommandId } from './utils';
+import { loadFontCached, sendProgressUpdate, generateCommandId } from './utils';
 
 // --- Prototyping / Reactions ---
 
@@ -767,20 +767,20 @@ export async function createConnections(params: any) {
             // First check if default connector has font and use the same
             if (defaultConnector.text && defaultConnector.text.fontName) {
               const fontName = defaultConnector.text.fontName;
-              await figma.loadFontAsync(fontName);
+              await loadFontCached(fontName);
               clonedConnector.text.fontName = fontName;
             } else {
               // Try default Inter font
-              await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+              await loadFontCached({ family: "Inter", style: "Regular" });
             }
           } catch (fontError: any) {
             // If first font load fails, try another font style
             try {
-              await figma.loadFontAsync({ family: "Inter", style: "Medium" });
+              await loadFontCached({ family: "Inter", style: "Medium" });
             } catch (mediumFontError) {
               // If second font fails, try system font
               try {
-                await figma.loadFontAsync({ family: "System", style: "Regular" });
+                await loadFontCached({ family: "System", style: "Regular" });
               } catch (systemFontError) {
                 // If all font loading attempts fail, throw error
                 throw new Error(`Failed to load any font: ${fontError.message}`);

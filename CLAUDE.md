@@ -8,10 +8,10 @@ This project is a fork of [cursor-talk-to-figma-mcp](https://github.com/sonnylaz
 
 ## Project Overview
 
-MCP (Model Context Protocol) server that bridges Claude Code with Figma. Three components communicate in a pipeline:
+MCP (Model Context Protocol) server that bridges MCP-compatible AI assistants with Figma. Three components communicate in a pipeline:
 
 ```
-Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay ←(WebSocket)→ Figma Plugin
+MCP Client ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay ←(WebSocket)→ Figma Plugin
 ```
 
 ## Build & Development Commands
@@ -29,7 +29,7 @@ bun setup                # Full setup (install + write .mcp.json)
 
 `bun run build` uses tsup/esbuild, which **strips types without checking them** — a build can succeed on code that does not typecheck. Run `bun run typecheck` separately; "build succeeded" is not evidence the code compiles.
 
-Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts` runs unit and plugin-contract tests (no Figma needed). `tests/library-live.test.ts` hits the real Figma REST API and only runs when `FIGMA_API_TOKEN`/`FIGMA_LIBRARY_FILE_KEYS` are set (skipped otherwise). The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel and time out otherwise. No linter is configured.
+Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts tests/efficiency.test.ts tests/launcher.test.ts` runs unit and plugin-contract tests (no Figma needed). `tests/library-live.test.ts` hits the real Figma REST API and only runs when `FIGMA_API_TOKEN`/`FIGMA_LIBRARY_FILE_KEYS` are set (skipped otherwise). The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel and time out otherwise. No linter is configured.
 
 ## Architecture
 
@@ -138,3 +138,12 @@ Non-obvious knowledge (architecture decisions, gotchas, patterns) lives in `wiki
 - `wiki/concepts/sf-symbol-icon-extraction.md` — exact SF Symbol → Figma via `NSSymbolImageRep.outlinePath` (cross-linked to `~/Developer/GitHub/llm-tooling/`)
 
 File new findings here as you work. See the global wiki rule in `~/.claude/CLAUDE.md`.
+
+## Efficient design workflow
+
+- Establish the file/page and selection once, then inspect only the properties needed for the next decision. Use `fields`, `maxNodes`, `maxDepth`, and `maxTextLength` with node inspection; include `children` only when necessary. Defaults cap inspection at 100 nodes, depth 2, and 2,000 characters per text node. Follow explicit `inspection.truncated` metadata with targeted child/root reads.
+- Keep a small reference snapshot of palettes/variable refs, font choices, component/root IDs, layout helper snippets, and already-read skill guidance. `reference_cache` scopes entries to a file/page or task; defaults to 30-minute expiry with a 64-entry, 64KB-per-entry bound. Refresh references after library changes, deletions, or changes to the source design. Cache misses require a fresh read.
+- Reuse auto-layout helpers, section templates, real library instances, and `$repeat` templates. Use one `figma_eval` helper definition per composition when custom layout logic is needed. Successful and in-flight font loads are shared for the plugin session; failed loads can retry.
+- Batch related mutations and validate the composition after the batch. `scan_node_styles` with `summary:true` returns counts, font families, up to ten unbound-color example IDs, and coverage metadata. Its default budget is 100 nodes at depth 10. `truncated:true` means validation covered only part of the tree; increase the budget or validate separate subtrees before reporting completion.
+- After repairs and compact validation, take one screenshot per completed composition. Repeat screenshots after meaningful visual changes or when a visual defect remains unresolved.
+- Load relevant skill guidance once per task. The `efficient_workflow` MCP prompt carries these rules for any compatible client.

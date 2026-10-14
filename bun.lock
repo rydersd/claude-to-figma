@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "claude-to-figma",
+      "name": "llm2figma",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.13.1",
         "uuid": "latest",

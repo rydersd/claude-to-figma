@@ -1,3 +1,7 @@
+import { createFontLoader } from "../../shared/font-cache";
+
+export const loadFontCached = createFontLoader(font => figma.loadFontAsync(font));
+
 // Shared utility functions for the Figma plugin.
 // `figma` is a global provided by the Figma plugin runtime — do NOT import it.
 
@@ -788,12 +792,12 @@ export async function loadAllFonts(textNode: any) {
     var segments = textNode.getStyledTextSegments(["fontName"]);
     for (var i = 0; i < segments.length; i++) {
       try {
-        await figma.loadFontAsync(segments[i].fontName);
+        await loadFontCached(segments[i].fontName);
       } catch (e) {}
     }
   } else {
     try {
-      await figma.loadFontAsync(textNode.fontName);
+      await loadFontCached(textNode.fontName);
     } catch (e) {}
   }
 }

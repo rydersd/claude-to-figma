@@ -1,3 +1,4 @@
+import { boundNodeTree, type InspectionOptions } from "../../shared/inspection";
 import { filterFigmaNode, sendProgressUpdate, generateCommandId } from './utils';
 
 export async function getDocumentInfo(): Promise<any> {
@@ -39,7 +40,7 @@ export async function getSelection(): Promise<any> {
   };
 }
 
-export async function getNodeInfo(nodeId: string, fields?: string[]): Promise<any> {
+export async function getNodeInfo(nodeId: string, fields?: string[], options: InspectionOptions = {}): Promise<any> {
   const node = await figma.getNodeByIdAsync(nodeId);
 
   if (!node) {
@@ -50,65 +51,33 @@ export async function getNodeInfo(nodeId: string, fields?: string[]): Promise<an
     format: "JSON_REST_V1",
   });
 
-  return filterFigmaNode(response.document, fields);
+  const bounded = boundNodeTree(response.document, { ...options, fields });
+  const filtered = filterFigmaNode(bounded.node, fields);
+  return filtered ? { ...filtered, inspection: bounded.inspection } : null;
 }
 
-export async function getNodesInfo(nodeIds: string[], fields?: string[]): Promise<any> {
-  try {
-    // Load all nodes in parallel
-    const nodes = await Promise.all(
-      nodeIds.map((id) => figma.getNodeByIdAsync(id))
-    );
-
-    // Filter out any null values (nodes that weren't found)
-    const validNodes = nodes.filter((node) => node !== null);
-
-    // Export all valid nodes in parallel
-    const responses = await Promise.all(
-      validNodes.map(async (node) => {
-        const response = await (node as any).exportAsync({
-          format: "JSON_REST_V1",
-        });
-        return {
-          nodeId: node.id,
-          document: filterFigmaNode(response.document, fields),
-        };
-      })
-    );
-
-    return responses;
-  } catch (error: any) {
-    throw new Error(`Error getting nodes info: ${error.message}`);
+export async function getNodesInfo(nodeIds: string[], fields?: string[], options: InspectionOptions = {}): Promise<any> {
+  // A single command, with a shared node budget across every requested root.
+  const maxNodes = Math.min(1000, Math.max(1, options.maxNodes ?? 100));
+  const results: any[] = [];
+  let returnedNodes = 0;
+  for (const id of nodeIds) {
+    if (returnedNodes >= maxNodes) {
+      results.push({ nodeId: id, document: null, skipped: "maxNodes" });
+      continue;
+    }
+    const document = await getNodeInfo(id, fields, { ...options, maxNodes: maxNodes - returnedNodes });
+    returnedNodes += document?.inspection.returnedNodes || 1;
+    results.push({ nodeId: id, document });
   }
+  return results;
 }
 
-export async function readMyDesign(): Promise<any> {
-  try {
-    // Load all selected nodes in parallel
-    const nodes = await Promise.all(
-      figma.currentPage.selection.map((node) => figma.getNodeByIdAsync(node.id))
-    );
-
-    // Filter out any null values (nodes that weren't found)
-    const validNodes = nodes.filter((node) => node !== null);
-
-    // Export all valid nodes in parallel
-    const responses = await Promise.all(
-      validNodes.map(async (node) => {
-        const response = await (node as any).exportAsync({
-          format: "JSON_REST_V1",
-        });
-        return {
-          nodeId: node.id,
-          document: filterFigmaNode(response.document),
-        };
-      })
-    );
-
-    return responses;
-  } catch (error: any) {
-    throw new Error(`Error getting nodes info: ${error.message}`);
-  }
+export async function readMyDesign(options: InspectionOptions = {}): Promise<any> {
+  const selection = figma.currentPage.selection;
+  const result = await getNodesInfo(selection.slice(0, 100).map(node => node.id), options.fields, options);
+  if (selection.length > 100) result.push({ skipped: "selectionLimit", omittedRoots: selection.length - 100 });
+  return result;
 }
 
 export async function getAnnotations(params: any): Promise<any> {

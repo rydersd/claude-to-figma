@@ -1,7 +1,7 @@
 // Text operations module for the Figma plugin.
 // `figma` is a global provided by the Figma plugin runtime — do NOT import it.
 
-import { sendProgressUpdate, generateCommandId, loadAllFonts, safeMixed } from './utils';
+import { loadFontCached, sendProgressUpdate, generateCommandId, loadAllFonts, safeMixed } from './utils';
 import { delay, hexToFigmaColor } from './utils';
 
 // --- Set text content on a single text node ---
@@ -80,7 +80,7 @@ export const setCharacters = async (node: any, characters: any, options?: any) =
           family,
           style,
         };
-        await figma.loadFontAsync(prevailedFont);
+        await loadFontCached(prevailedFont);
         node.fontName = prevailedFont;
       } else if (options && options.smartStrategy === "strict") {
         return setCharactersWithStrictMatchFont(node, characters, fallbackFont);
@@ -88,11 +88,11 @@ export const setCharacters = async (node: any, characters: any, options?: any) =
         return setCharactersWithSmartMatchFont(node, characters, fallbackFont);
       } else {
         const firstCharFont = node.getRangeFontName(0, 1);
-        await figma.loadFontAsync(firstCharFont);
+        await loadFontCached(firstCharFont);
         node.fontName = firstCharFont;
       }
     } else {
-      await figma.loadFontAsync({
+      await loadFontCached({
         family: node.fontName.family,
         style: node.fontName.style,
       });
@@ -102,7 +102,7 @@ export const setCharacters = async (node: any, characters: any, options?: any) =
       `Failed to load "${node.fontName["family"]} ${node.fontName["style"]}" font and replaced with fallback "${fallbackFont.family} ${fallbackFont.style}"`,
       err
     );
-    await figma.loadFontAsync(fallbackFont);
+    await loadFontCached(fallbackFont);
     node.fontName = fallbackFont;
   }
   try {
@@ -134,7 +134,7 @@ const setCharactersWithStrictMatchFont = async (
     }
     fontHashTree[`${startIdx}_${i}`] = startCharFontVal;
   }
-  await figma.loadFontAsync(fallbackFont);
+  await loadFontCached(fallbackFont);
   node.fontName = fallbackFont;
   node.characters = characters;
   console.log(fontHashTree);
@@ -147,7 +147,7 @@ const setCharactersWithStrictMatchFont = async (
         family,
         style,
       };
-      await figma.loadFontAsync(matchedFont);
+      await loadFontCached(matchedFont);
       return node.setRangeFontName(Number(start), Number(end), matchedFont);
     })
   );
@@ -242,7 +242,7 @@ const setCharactersWithSmartMatchFont = async (
     style,
   }));
 
-  await Promise.all([...fontsToLoad, fallbackFont].map(figma.loadFontAsync));
+  await Promise.all([...fontsToLoad, fallbackFont].map(loadFontCached));
 
   node.fontName = fallbackFont;
   node.characters = characters;
@@ -957,7 +957,7 @@ export async function setFontFamily(params: any) {
     throw new Error(`Node is not a text node: ${nodeId}`);
   }
 
-  await figma.loadFontAsync({ family: fontFamily, style: fontStyle });
+  await loadFontCached({ family: fontFamily, style: fontStyle });
   node.fontName = { family: fontFamily, style: fontStyle };
 
   return {
@@ -1224,7 +1224,7 @@ export async function setRangeFormat(params: any) {
       // Font family + style
       if (range.fontFamily !== undefined) {
         var fontStyle = range.fontStyle || "Regular";
-        await figma.loadFontAsync({ family: range.fontFamily, style: fontStyle });
+        await loadFontCached({ family: range.fontFamily, style: fontStyle });
         node.setRangeFontName(start, end, { family: range.fontFamily, style: fontStyle });
       }
 

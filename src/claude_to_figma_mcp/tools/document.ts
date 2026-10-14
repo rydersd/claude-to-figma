@@ -1,7 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
-import { filterFigmaNode } from "../helpers.js";
+const InspectionSchema = {
+  fields: z.array(z.string()).max(30).optional().describe("Only return these fields, recursively. Include children to inspect descendants; omit for all supported fields."),
+  maxNodes: z.number().int().min(1).max(1000).optional().describe("Total node budget, including roots (default 100). Truncation is reported."),
+  maxDepth: z.number().int().min(0).max(50).optional().describe("Maximum descendant depth (default 2; 0 = roots only)."),
+  maxTextLength: z.number().int().min(1).max(10000).optional().describe("Maximum characters per text node (default 2000)."),
+};
 
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
   // Document Info Tool
@@ -45,11 +50,11 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
   // Read My Design Tool
   server.tool(
     "read_my_design",
-    "Get detailed information about the current selection in Figma, including all node details",
-    {},
-    async () => {
+    "Inspect the selected Figma nodes with a shared node budget and explicit truncation metadata.",
+    InspectionSchema,
+    async (options: any) => {
       try {
-        const result = await sendCommandToFigma("read_my_design", {});
+        const result = await sendCommandToFigma("read_my_design", options);
         return {
           content: [{ type: "text", text: JSON.stringify(result) }]
         };
@@ -67,13 +72,13 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     "Get detailed information about a specific node in Figma",
     {
       nodeId: z.string().describe("The ID of the node to get information about"),
-      fields: z.array(z.string()).optional().describe("Optional whitelist of fields to return (e.g. ['id','name','absoluteBoundingBox']). Projection is applied recursively to children. Omit to get the full filtered node."),
+      ...InspectionSchema,
     },
-    async ({ nodeId, fields }: any) => {
+    async ({ nodeId, ...options }: any) => {
       try {
-        const result = await sendCommandToFigma("get_node_info", { nodeId, fields });
+        const result = await sendCommandToFigma("get_node_info", { nodeId, ...options });
         return {
-          content: [{ type: "text", text: JSON.stringify(filterFigmaNode(result, fields)) }]
+          content: [{ type: "text", text: JSON.stringify(result) }]
         };
       } catch (error) {
         return {
@@ -88,19 +93,14 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     "get_nodes_info",
     "Get detailed information about multiple nodes in Figma",
     {
-      nodeIds: z.array(z.string()).describe("Array of node IDs to get information about"),
-      fields: z.array(z.string()).optional().describe("Optional whitelist of fields to return per node (e.g. ['id','name','absoluteBoundingBox']). Projection is applied recursively to children. Omit to get the full filtered nodes."),
+      nodeIds: z.array(z.string()).min(1).max(100).describe("Root IDs to inspect in one round-trip with a shared node budget"),
+      ...InspectionSchema,
     },
-    async ({ nodeIds, fields }: any) => {
+    async ({ nodeIds, ...options }: any) => {
       try {
-        const results = await Promise.all(
-          nodeIds.map(async (nodeId: any) => {
-            const result = await sendCommandToFigma('get_node_info', { nodeId, fields });
-            return { nodeId, info: result };
-          })
-        );
+        const results = await sendCommandToFigma("get_nodes_info", { nodeIds, ...options }) as any[];
         return {
-          content: [{ type: "text", text: JSON.stringify(results.map((result) => filterFigmaNode(result.info, fields))) }]
+          content: [{ type: "text", text: JSON.stringify(results.map(result => result.skipped ? result : result.document)) }]
         };
       } catch (error) {
         return {

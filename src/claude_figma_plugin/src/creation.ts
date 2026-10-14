@@ -1,7 +1,7 @@
 // Node creation functions for the Figma plugin.
 // Extracted from code.js — pure structural refactor.
 
-import { appendOrInsertChild, hexToFigmaColor, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyImageFill } from './utils';
+import { loadFontCached, appendOrInsertChild, hexToFigmaColor, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyImageFill } from './utils';
 import { setCharacters } from './text';
 
 export async function createRectangle(params: any) {
@@ -237,7 +237,7 @@ export async function createText(params: any) {
   textNode.y = y;
   textNode.name = name || text;
   try {
-    await figma.loadFontAsync({
+    await loadFontCached({
       family: userFontFamily,
       style: userFontStyle,
     });
@@ -247,7 +247,7 @@ export async function createText(params: any) {
     console.error("Error setting font", error);
     // Fallback to Inter if the requested font is not available
     try {
-      await figma.loadFontAsync({ family: "Inter", style: fontWeightToStyle(fontWeight) });
+      await loadFontCached({ family: "Inter", style: fontWeightToStyle(fontWeight) });
       textNode.fontName = { family: "Inter", style: fontWeightToStyle(fontWeight) };
       textNode.fontSize = parseInt(fontSize);
     } catch (fallbackError) {

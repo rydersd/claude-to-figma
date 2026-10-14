@@ -1,5 +1,5 @@
 {
-  "name": "Claude to Figma Plugin",
+  "name": "llm2figma",
   "id": "1485687494525374295",
   "api": "1.0.0",
   "main": "code.js",
@@ -8,7 +8,9 @@
     "figma",
     "figjam"
   ],
-  "permissions": ["teamlibrary"],
+  "permissions": [
+    "teamlibrary"
+  ],
   "networkAccess": {
     "allowedDomains": [
       "ws://localhost:3055"
