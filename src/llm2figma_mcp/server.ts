@@ -40,6 +40,7 @@ import { installFigmaPluginFiles, isPluginInstall } from "./plugin-runtime.js";
 import { registerSetupTools } from "./tools/setup.js";
 
 import { registerTools as registerReferenceCacheTools } from "./tools/reference-cache.js";
+import { registerTools as registerCodeMapTools } from "./tools/code-map.js";
 
 // Create MCP server
 const server = new McpServer({
@@ -85,6 +86,7 @@ registerFeature("COMMENTS_WRITE", registerCommentWriteTools);
 registerReferenceCacheTools(server);
 registerSetupTools(server);
 registerFeature("FLOWS", registerFlowTools);
+registerFeature("CODE_MAP", (s) => registerCodeMapTools(s));
 
 // Register prompts
 registerPrompts(server);

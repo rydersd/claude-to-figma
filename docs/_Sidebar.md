@@ -16,6 +16,7 @@
 - [[Tools-Components]]
 - [[Tools-Prototyping-and-Annotations]]
 - [[Tools-Batch-Operations]]
+- [Tools-Code-Map](Tools-Code-Map.md)
 
 ### Workflows
 

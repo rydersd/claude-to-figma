@@ -317,6 +317,13 @@ The MCP server provides the following tools for interacting with Figma:
 - `set_properties` - Applies value changes to multiple properties by semantic key in one call. Accepts text strings, hex colors, variant names, booleans, and component property values. Each property is applied independently — one failure won't abort others.
 - `optimize_structure` - Analyzes a component or frame for structural inefficiencies (wrapper frames, unnamed text nodes) and optionally applies fixes. Dry-run by default — reports proposed changes without modifying anything.
 
+### Code Map (behind `L2F_CODE_MAP=1`)
+
+Maps Figma components to the components of a code repository you name on every call. Reads declaration files as text and never runs anything from that repository; the only file written is `<codeRepo>/.l2f/code-map.json`. See [docs/Tools-Code-Map.md](docs/Tools-Code-Map.md).
+
+- `scan_code_components` - Lists a code repository's dependencies, or the components (PascalCase exports, with props and how complete that prop list is) one design-system package exports
+- `set_code_map_entries` - Merges Figma-key → code-component entries and token names into the repository's code map, validating each entry against the Manifest and the package scan
+
 ### Vectors
 
 - `create_vector` - Places a vector node from an SVG path string (also listed under Creating Elements)

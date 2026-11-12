@@ -15,6 +15,11 @@ describe("feature flags", () => {
       for (const other of FEATURES) expect(isEnabled(other, env)).toBe(other === feature);
     }
   });
+  test("CODE_MAP is a feature that L2F_ALL enables", () => {
+    expect(FEATURES).toContain("CODE_MAP");
+    expect(isEnabled("CODE_MAP", { L2F_CODE_MAP: "1" })).toBe(true);
+    expect(isEnabled("CODE_MAP", { L2F_ALL: "1" })).toBe(true);
+  });
   test("only the value 1 enables a flag", () => {
     expect(isEnabled("FLOWS", { L2F_FLOWS: "" })).toBe(false);
     expect(isEnabled("FLOWS", { L2F_FLOWS: "true" })).toBe(false);
@@ -40,6 +45,7 @@ describe("launch paths", () => {
     const env = makeMcpConfig({}, "/bun", "/repo", {}).mcpServers.LLM2Figma.env;
     for (const key of [...FLAG_ENV_KEYS, ...SETTING_ENV_KEYS]) expect(env[key]).toBe(`\${${key}:-}`);
     expect(FLAG_ENV_KEYS).toContain("L2F_COMMENTS_WRITE");
+    expect(FLAG_ENV_KEYS).toContain("L2F_CODE_MAP");
   });
   test("write-mcp-config keeps values already set in the existing config", () => {
     const previous = { mcpServers: { LLM2Figma: { env: { L2F_FLOWS: "1", OTHER: "x" } } } };
