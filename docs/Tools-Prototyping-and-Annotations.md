@@ -18,6 +18,16 @@ Tools for wiring interactive prototypes (reactions, triggers, transitions), visu
 
 For transition types, easing, and Smart Animate specifics, see [[Animation-and-Prototyping]].
 
+## Flows and prototype links
+
+Available only when the server runs with `L2F_FLOWS=1` (or `L2F_ALL=1`). A flow is a named starting point on a page.
+
+- `get_flows` — every flow on a page: name, starting frame id and name, the top-level section it sits in, and the page's prototype background. A flow whose starting frame no longer exists is listed with `missing: true` rather than dropped.
+- `set_flows` — replace all flows on a page. The list is assigned whole, so the same call twice gives the same page and `flows: []` clears them. Every node must be a top-level frame on that page (directly on the page, or inside sections only); otherwise nothing is written and the bad ones are listed. `background` is one solid colour, `#RRGGBB` or `#RRGGBBAA`. Refused in Dev Mode.
+- `get_prototype_links` — one link per flow, optionally only the flows in one top-level section (`sectionId`). Needs the file key: the plugin reports it, or pass `fileKey` to `join_channel` (a development plugin does not report one; that parameter exists only with `L2F_FILE_KEY=1`). The link format, `https://www.figma.com/proto/<key>/<file name>?node-id=<id>&starting-point-node-id=<id>`, is unconfirmed: compare it with a link copied from Figma before relying on it.
+
+The prototype device is not in the plugin API, so it is still set by hand. Feeding `get_flows` output back into `set_flows` is a no-op, which makes it a quick check after editing flows. See [File key](plans/2026-11-12-figma-api-catch-up.md#pr-2-file-key) for where the key comes from.
+
 ## Flow visualization (FigJam connectors)
 
 - `set_default_connector` — copy a FigJam connector's appearance as the template for subsequent connections

@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
+import { getChannelFileKey } from "../connection.js";
+import { mergeFileKey } from "../file-key.js";
 
 // --- Reaction schema ---
 
@@ -172,6 +174,85 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
       } catch (error) {
         return { content: [{ type: "text", text: `Error batch setting reactions: ${error instanceof Error ? error.message : String(error)}` }] };
+      }
+    }
+  );
+}
+
+// --- Flows (L2F_FLOWS) ---
+
+// One solid colour only: a gradient or image cannot be expressed here.
+export const BackgroundSchema = z.string().regex(/^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/, "Use one solid colour as #RRGGBB or #RRGGBBAA")
+  .describe("Prototype background: one solid colour as #RRGGBB or #RRGGBBAA");
+
+export const NO_FILE_KEY = "No file key is known for this file, so no prototype link can be built. A development plugin does not report one: call join_channel again with fileKey set to the file's figma.com URL or key. join_channel takes fileKey only when the server runs with L2F_FILE_KEY=1.";
+
+// UNCONFIRMED format: compare with a prototype link copied from Figma (Share prototype).
+export function buildPrototypeLink(fileKey: string, fileName: string | null | undefined, nodeId: string): string {
+  const id = encodeURIComponent(nodeId.replace(/:/g, "-"));
+  return `https://www.figma.com/proto/${encodeURIComponent(fileKey)}/${encodeURIComponent(fileName || "Untitled")}?node-id=${id}&starting-point-node-id=${id}`;
+}
+
+const text = (value: unknown) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value) }] });
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+// Registered only when L2F_FLOWS is on (see server.ts).
+export function registerFlowTools(
+  server: McpServer,
+  sendCommandToFigma: SendCommandFn,
+  userFileKey: () => string | undefined = getChannelFileKey,
+) {
+  server.tool(
+    "get_flows",
+    "Read the prototype flows on a page: each flow's name, starting frame id and name, and the top-level section it sits in, plus the page's prototype background. A flow whose starting frame no longer exists is listed with missing: true.",
+    { pageId: z.string().min(1).describe("The page to read flows from") },
+    async ({ pageId }: any) => {
+      try {
+        return text(await sendCommandToFigma("get_flows", { pageId }));
+      } catch (error) {
+        return text(`Error getting flows: ${message(error)}`);
+      }
+    }
+  );
+
+  server.tool(
+    "set_flows",
+    "Replace all prototype flows on a page. The list is assigned whole, so running the same call twice gives the same page, and an empty list clears them. Every node must be a top-level frame on that page (directly on the page or inside sections only); otherwise nothing is written and the bad ones are listed. The optional background is one solid colour. The prototype device cannot be set from the plugin API.",
+    {
+      pageId: z.string().min(1).describe("The page whose flows are replaced"),
+      flows: z.array(z.object({
+        name: z.string().min(1).describe("Flow name shown in Figma"),
+        nodeId: z.string().min(1).describe("Top-level frame the flow starts at"),
+      })).max(500).describe("The complete list of flows for the page, in order"),
+      background: BackgroundSchema.optional(),
+    },
+    async ({ pageId, flows, background }: any) => {
+      try {
+        return text(await sendCommandToFigma("set_flows", { pageId, flows, background }));
+      } catch (error) {
+        return text(`Error setting flows: ${message(error)}`);
+      }
+    }
+  );
+
+  server.tool(
+    "get_prototype_links",
+    "Build a prototype link for each flow on a page, optionally only the flows in one top-level section. Needs the file key: reported by the plugin, or given to join_channel as fileKey. The link format (https://www.figma.com/proto/<key>/<name>?node-id=...&starting-point-node-id=...) is UNCONFIRMED: compare it with a link copied from Figma before relying on it. A flow whose starting frame is missing gets link: null.",
+    {
+      pageId: z.string().min(1).describe("The page whose flows to link"),
+      sectionId: z.string().min(1).optional().describe("Only flows whose starting frame is in this top-level section"),
+    },
+    async ({ pageId, sectionId }: any) => {
+      try {
+        const info = mergeFileKey(await sendCommandToFigma("get_document_info"), userFileKey(), true) as { fileKey?: string | null; fileKeySource?: string | null };
+        if (!info.fileKey) return text(NO_FILE_KEY);
+        const page = await sendCommandToFigma("get_flows", { pageId }) as { fileName: string | null; flows: any[] };
+        const links = page.flows
+          .filter((flow) => !sectionId || flow.section?.id === sectionId)
+          .map((flow) => ({ ...flow, link: flow.missing ? null : buildPrototypeLink(info.fileKey as string, page.fileName, flow.nodeId) }));
+        return text({ fileKeySource: info.fileKeySource, links });
+      } catch (error) {
+        return text(`Error getting prototype links: ${message(error)}`);
       }
     }
   );

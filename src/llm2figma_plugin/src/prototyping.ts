@@ -938,3 +938,109 @@ export async function setSelections(params: any) {
     message: `Selected ${nodes.length} nodes${notFoundIds.length > 0 ? ` (${notFoundIds.length} not found)` : ''}`
   };
 }
+
+// --- Flows (L2F_FLOWS) ---
+// A Flow is a named starting point on a page: { name, nodeId } in page.flowStartingPoints.
+
+async function loadPage(pageId: string): Promise<any> {
+  const page: any = await figma.getNodeByIdAsync(pageId);
+  if (!page || page.type !== "PAGE") throw new Error(`Page not found: ${pageId}`);
+  if (typeof page.loadAsync === "function") await page.loadAsync();
+  return page;
+}
+
+// The outermost section between a node and its page, or null.
+function topLevelSection(node: any): { id: string; name: string } | null {
+  let section: any = null;
+  for (let p = node.parent; p && p.type !== "PAGE"; p = p.parent) {
+    if (p.type === "SECTION") section = p;
+  }
+  return section ? { id: section.id, name: section.name } : null;
+}
+
+// Why a node cannot start a flow on this page, or null when it can. A flow starts
+// at a top-level frame: its parent is the page, or sections only up to the page.
+function flowStartProblem(node: any, page: any): string | null {
+  if (!node) return "node not found";
+  if (node.type !== "FRAME") return `${node.type} is not a frame`;
+  for (let p = node.parent; p; p = p.parent) {
+    if (p.type === "PAGE") return p.id === page.id ? null : `on another page (${p.name})`;
+    if (p.type !== "SECTION") return `not a top-level frame (inside ${p.type} ${p.id})`;
+  }
+  return "not on a page";
+}
+
+const toHexByte = (unit: number) => Math.round(Math.min(1, Math.max(0, unit)) * 255).toString(16).padStart(2, "0");
+
+// One solid paint as #RRGGBB, or #RRGGBBAA when it is not fully opaque.
+function solidToHex(paint: any): string {
+  const { r, g, b } = paint.color;
+  const alpha = paint.opacity ?? 1;
+  return "#" + toHexByte(r) + toHexByte(g) + toHexByte(b) + (alpha < 1 ? toHexByte(alpha) : "");
+}
+
+function hexToSolid(hex: string): any {
+  const match = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex);
+  if (!match) throw new Error(`Invalid background: ${hex}. Use one solid colour as #RRGGBB or #RRGGBBAA.`);
+  const byte = (i: number) => parseInt(match[1].slice(i, i + 2), 16) / 255;
+  const opacity = match[2] ? parseInt(match[2], 16) / 255 : 1;
+  return { type: "SOLID", color: { r: byte(0), g: byte(2), b: byte(4) }, opacity };
+}
+
+export async function getFlows(params: { pageId: string }) {
+  const page = await loadPage(params.pageId);
+  const flows = [];
+  for (const start of page.flowStartingPoints || []) {
+    const node: any = await figma.getNodeByIdAsync(start.nodeId);
+    // A flow whose starting node is gone is reported, not dropped.
+    flows.push({
+      name: start.name,
+      nodeId: start.nodeId,
+      nodeName: node ? node.name : null,
+      section: node ? topLevelSection(node) : null,
+      missing: !node,
+    });
+  }
+  const paints: any[] = page.prototypeBackgrounds || [];
+  const solid = paints.length === 1 && paints[0].type === "SOLID";
+  return {
+    pageId: page.id,
+    pageName: page.name,
+    fileName: figma.root ? figma.root.name : null,
+    flows,
+    background: solid ? solidToHex(paints[0]) : null,
+    ...(paints.length > 0 && !solid ? { backgroundPaintTypes: paints.map((p) => p.type) } : {}),
+  };
+}
+
+export async function setFlows(params: { pageId: string; flows: Array<{ name: string; nodeId: string }>; background?: string }) {
+  const page = await loadPage(params.pageId);
+  const paint = params.background !== undefined ? hexToSolid(params.background) : null;
+
+  // Validate every flow before writing anything.
+  const seen = new Set<string>();
+  const rejected = [];
+  for (const flow of params.flows) {
+    const problem = seen.has(flow.nodeId)
+      ? "listed more than once"
+      : flowStartProblem(await figma.getNodeByIdAsync(flow.nodeId), page);
+    seen.add(flow.nodeId);
+    if (problem) rejected.push(`${flow.name} (${flow.nodeId}): ${problem}`);
+  }
+  if (rejected.length > 0) {
+    throw new Error(`Nothing written. ${rejected.length} flow(s) do not start at a top-level frame on page ${page.name}: ${rejected.join("; ")}`);
+  }
+
+  // Assigned whole, so running the same call again gives the same page.
+  const previous = page.flowStartingPoints;
+  page.flowStartingPoints = params.flows.map((flow) => ({ name: flow.name, nodeId: flow.nodeId }));
+  if (paint) {
+    try {
+      page.prototypeBackgrounds = [paint];
+    } catch (error) {
+      page.flowStartingPoints = previous;
+      throw error;
+    }
+  }
+  return await getFlows({ pageId: page.id });
+}

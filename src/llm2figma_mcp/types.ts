@@ -154,6 +154,8 @@ export type FigmaCommand =
   | "remove_reactions"
   | "get_interactions"
   | "batch_set_reactions"
+  | "get_flows"
+  | "set_flows"
   | "undo"
   | "subscribe_events"
   | "unsubscribe_events"
@@ -434,6 +436,12 @@ export type CommandParams = {
         }>;
       }>;
     }>;
+  };
+  get_flows: { pageId: string };
+  set_flows: {
+    pageId: string;
+    flows: Array<{ name: string; nodeId: string }>;
+    background?: string;
   };
   get_local_variables: Record<string, never>;
   get_library_variables: Record<string, never>;

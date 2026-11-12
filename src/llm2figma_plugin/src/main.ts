@@ -10,7 +10,7 @@ import { moveNode, resizeNode, deleteNode, deleteMultipleNodes, cloneNode, batch
 import { setLayoutMode, setPadding, setAxisAlign, setLayoutSizing, setItemSpacing } from './layout';
 import { getStyles, getLocalComponents, createComponentInstance, swapInstanceVariant, setComponentProperties, exportNodeAsImage, createComponent, getInstanceOverrides, getValidTargetInstances, getSourceInstanceData, setInstanceOverrides, createComponentSet, getLocalVariables, getLibraryVariables } from './components';
 import { normalizeSvgPath, createVector, createLine, setVectorPath, getVectorNetwork, setVectorNetwork } from './vectors';
-import { getReactions, setReactions, addReaction, removeReactions, getInteractions, batchSetReactions, setDefaultConnector, createConnections, setFocus, setSelections } from './prototyping';
+import { getReactions, setReactions, addReaction, removeReactions, getInteractions, batchSetReactions, setDefaultConnector, createConnections, setFocus, setSelections, getFlows, setFlows } from './prototyping';
 import { createNodeTree } from './node-tree';
 import { screenshotRegion, batchMutate, scanNodeStyles, introspectNode, setProperties, optimizeStructure, designQuery, figmaEval, diffComponents, migrateInstance, batchMigrate } from './analysis';
 import { formatError } from './utils';
@@ -513,6 +513,16 @@ async function handleCommand(command: string, params: any) {
         throw new Error("Missing or invalid operations parameter");
       }
       return await batchSetReactions(params);
+    case "get_flows":
+      if (!params || !params.pageId) {
+        throw new Error("Missing required parameter: pageId");
+      }
+      return await getFlows(params);
+    case "set_flows":
+      if (!params || !params.pageId || !Array.isArray(params.flows)) {
+        throw new Error("Missing required parameters: pageId and flows");
+      }
+      return await setFlows(params);
     // Event streaming commands
     case "subscribe_events":
       startEventStreaming();
