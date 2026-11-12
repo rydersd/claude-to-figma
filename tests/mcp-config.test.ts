@@ -22,7 +22,7 @@ describe("makeMcpConfig keeps connection arguments (finding #7)", () => {
     const previous = { mcpServers: { ClaudeToFigma: { command: "bun", args: ["/old/src/talk_to_figma_mcp/server.ts", "--server=relay.example.com"], env: { FIGMA_API_TOKEN: "t" } } } };
     const config = makeMcpConfig(previous, "/bun", "/repo", {});
     expect(config.mcpServers.LLM2Figma.args).toEqual(["/repo/src/llm2figma_mcp/server.ts", "--server=relay.example.com"]);
-    expect(config.mcpServers.LLM2Figma.env).toEqual({ FIGMA_API_TOKEN: "t" });
+    expect(config.mcpServers.LLM2Figma.env).toMatchObject({ FIGMA_API_TOKEN: "t", L2F_ALL: "${L2F_ALL:-}" });
     expect(config.mcpServers.ClaudeToFigma).toBeUndefined();
   });
 
@@ -47,6 +47,7 @@ function runSetupUser(claudeJson: any, opts: { failAddJson?: boolean } = {}) {
   mkdirSync(home);
   mkdirSync(bin);
   cpSync(resolve("scripts"), join(repo, "scripts"), { recursive: true });
+  cpSync(resolve("src/shared"), join(repo, "src", "shared"), { recursive: true });
   writeFileSync(join(home, ".claude.json"), JSON.stringify(claudeJson));
   const realBun = process.execPath;
   writeFileSync(join(bin, "bun"), `#!/bin/bash\nif [ "$1" = install ]; then exit 0; fi\nexec ${JSON.stringify(realBun)} "$@"\n`, { mode: 0o755 });
@@ -100,7 +101,7 @@ describe("setup.sh --user migration (finding #6)", () => {
     expect(result.stderr).toBe("");
     expect(result.exitCode).toBe(0);
     const entry = result.config.mcpServers.LLM2Figma;
-    expect(entry.env).toEqual(legacy.env);
+    expect(entry.env).toMatchObject({ ...legacy.env, L2F_ALL: "${L2F_ALL:-}" });
     expect(entry.args).toEqual([join(result.repo, "src/llm2figma_mcp/server.ts"), "--server=relay.example.com"]);
     expect(result.config.mcpServers.ClaudeToFigma).toBeUndefined();
     expect(result.config.mcpServers.Other).toEqual({ command: "x" });

@@ -14,6 +14,7 @@ import { getReactions, setReactions, addReaction, removeReactions, getInteractio
 import { createNodeTree } from './node-tree';
 import { screenshotRegion, batchMutate, scanNodeStyles, introspectNode, setProperties, optimizeStructure, designQuery, figmaEval, diffComponents, migrateInstance, batchMigrate } from './analysis';
 import { formatError } from './utils';
+import { assertEditorAllowed } from './editor-gate';
 import { startEventStreaming, stopEventStreaming, setPluginOperationGuard } from './events';
 
 // Plugin state
@@ -132,6 +133,7 @@ function updateSettings(settings: any) {
 
 // Handle commands from UI
 async function handleCommand(command: string, params: any) {
+  assertEditorAllowed(command, figma.editorType, params);
   switch (command) {
     case "get_document_info":
       return await getDocumentInfo();

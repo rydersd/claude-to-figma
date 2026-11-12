@@ -148,7 +148,7 @@ describe("llm2figma setup compatibility", () => {
   test("regeneration migrates the legacy name and preserves env and unrelated servers", () => {
     const previous = { mcpServers: { ClaudeToFigma: { env: { FIGMA_API_TOKEN: "test-token" } }, Other: { command: "other" } } };
     const config = makeMcpConfig(previous, "/bun", "/repo", { hostname: "host" });
-    expect(config.mcpServers.LLM2Figma.env).toEqual(previous.mcpServers.ClaudeToFigma.env);
+    expect(config.mcpServers.LLM2Figma.env.FIGMA_API_TOKEN).toBe("test-token");
     expect(config.mcpServers.Other).toEqual(previous.mcpServers.Other);
     expect(config.mcpServers.ClaudeToFigma).toBeUndefined();
   });

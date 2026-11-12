@@ -690,6 +690,7 @@
       name: page.name,
       id: page.id,
       type: page.type,
+      editorType: figma.editorType,
       children: page.children.map((node) => ({
         id: node.id,
         name: node.name,
@@ -7799,6 +7800,49 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
+  // src/llm2figma_plugin/src/editor-gate.ts
+  var ALL_EDITORS = ["figma", "figjam", "slides", "buzz", "dev"];
+  var EDIT_EDITORS = ["figma", "figjam", "slides", "buzz"];
+  var READ_ONLY = /* @__PURE__ */ new Set([
+    "get_document_info",
+    "get_selection",
+    "get_node_info",
+    "get_nodes_info",
+    "read_my_design",
+    "get_styles",
+    "get_local_components",
+    "export_node_as_image",
+    "scan_text_nodes",
+    "get_annotations",
+    "scan_nodes_by_types",
+    "get_instance_overrides",
+    "get_reactions",
+    "get_local_variables",
+    "get_library_variables",
+    "get_vector_network",
+    "scan_node_styles",
+    "introspect_node",
+    "design_query",
+    "diff_components",
+    "get_interactions",
+    "subscribe_events",
+    "unsubscribe_events",
+    "set_focus",
+    "set_selections"
+  ]);
+  var COMMAND_EDITORS = {};
+  function allowedEditors(command) {
+    return COMMAND_EDITORS[command] || (READ_ONLY.has(command) ? ALL_EDITORS : EDIT_EDITORS);
+  }
+  function assertEditorAllowed(command, editorType, params) {
+    if (command === "design_query" && editorType === "dev" && params && params.update != null) {
+      throw new Error("design_query with update is not available in the dev editor");
+    }
+    if (!allowedEditors(command).includes(editorType)) {
+      throw new Error(`${command} is not available in the ${editorType} editor`);
+    }
+  }
+
   // src/llm2figma_plugin/src/events.ts
   function debounce(fn, ms) {
     let timer = null;
@@ -8033,6 +8077,7 @@ ${detail}`);
     });
   }
   async function handleCommand(command, params) {
+    assertEditorAllowed(command, figma.editorType, params);
     switch (command) {
       case "get_document_info":
         return await getDocumentInfo();

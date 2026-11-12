@@ -31,6 +31,7 @@ import { registerTools as registerPageCompilerTools } from "./tools/page-compile
 import { registerTools as registerImageTools } from "./tools/images.js";
 import { registerTools as registerLibraryTools } from "./tools/library.js";
 import { registerTools as registerEventTools } from "./tools/events.js";
+import { registerWhenEnabled, type Feature } from "../shared/flags.js";
 import { registerPrompts } from "./tools/prompts.js";
 import { installFigmaPluginFiles, isPluginInstall } from "./plugin-runtime.js";
 import { registerSetupTools } from "./tools/setup.js";
@@ -42,6 +43,11 @@ const server = new McpServer({
   name: "llm2figma",
   version: "1.0.0",
 });
+
+// Feature modules register through this and are skipped unless L2F_<FEATURE> is set
+// in the server environment (see src/shared/flags.ts).
+const registerFeature = (feature: Feature, register: (server: McpServer, send: typeof sendCommandToFigma) => void) =>
+  registerWhenEnabled(feature, register, server, sendCommandToFigma);
 
 // Register all tools
 registerDocumentTools(server, sendCommandToFigma);

@@ -1,5 +1,10 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { FEATURES } from "../src/shared/flags";
+
+// Pass each L2F_* flag through from the shell that starts Claude Code. The :- default keeps an unset flag empty (off) instead of failing config expansion.
+const flagRefs = Object.fromEntries(FEATURES.map(f => [`L2F_${f}`, `\${L2F_${f}:-}`]));
+export const FLAG_ENV_KEYS = ["L2F_ALL", ...FEATURES.map(f => `L2F_${f}`)];
 
 // Arguments after the server entry path that the server reads (--server=…).
 // The entry path is the first non-flag argument (after an optional runner
@@ -18,7 +23,7 @@ function connectionArgs(args: unknown): string[] {
  */
 export function migrateServerEntry(servers: any, bunPath: string, serverPath: string) {
   const previousServer = { ...servers?.ClaudeToFigma, ...servers?.LLM2Figma };
-  const env = { ...servers?.ClaudeToFigma?.env, ...servers?.LLM2Figma?.env };
+  const env = { L2F_ALL: "${L2F_ALL:-}", ...flagRefs, ...servers?.ClaudeToFigma?.env, ...servers?.LLM2Figma?.env };
   return {
     ...previousServer, type: "stdio", command: bunPath,
     args: [serverPath, ...connectionArgs(previousServer.args)],

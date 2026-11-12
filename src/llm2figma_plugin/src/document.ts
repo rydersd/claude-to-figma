@@ -8,6 +8,7 @@ export async function getDocumentInfo(): Promise<any> {
     name: page.name,
     id: page.id,
     type: page.type,
+    editorType: figma.editorType,
     children: page.children.map((node) => ({
       id: node.id,
       name: node.name,
