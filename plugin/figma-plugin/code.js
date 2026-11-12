@@ -60,6 +60,300 @@
     };
   }
 
+  // src/shared/spec.ts
+  var SPEC_TYPES = ["frame", "text", "rectangle", "vector", "instance"];
+  var OPAQUE_TYPE = "$opaque";
+  var NO_PAINT = "#00000000";
+  var COMMON = ["name", "x", "y", "opacity", "layoutPositioning"];
+  var SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
+  var PAINTED = ["fillColor", "strokeColor", "strokeWeight", "strokeAlign", "effects"];
+  var AUTO_LAYOUT = [
+    "layoutWrap",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "primaryAxisAlignItems",
+    "counterAxisAlignItems",
+    "itemSpacing",
+    "counterAxisSpacing",
+    "itemReverseZIndex"
+  ];
+  var SPEC_VOCABULARY = {
+    frame: [...COMMON, "width", "height", ...PAINTED, "cornerRadius", "clipsContent", "layoutMode", ...AUTO_LAYOUT, ...SIZING],
+    rectangle: [...COMMON, "width", "height", ...PAINTED, "cornerRadius", ...SIZING],
+    vector: [...COMMON, "width", "height", ...PAINTED, "strokeCap", "pathData", ...SIZING],
+    text: [
+      ...COMMON,
+      "text",
+      "fontFamily",
+      "fontStyle",
+      "fontSize",
+      "fontColor",
+      "lineHeight",
+      "letterSpacing",
+      "textCase",
+      "textAlignHorizontal",
+      "textAutoResize",
+      "width",
+      "effects",
+      ...SIZING
+    ],
+    instance: [...COMMON, "componentKey", "componentId", "properties", ...SIZING]
+  };
+  var BASE_DEFAULTS = { x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED" };
+  var PAINT_DEFAULTS = { fillColor: NO_PAINT, strokeColor: NO_PAINT, strokeWeight: 1, effects: [] };
+  var SPEC_DEFAULTS = {
+    frame: {
+      ...BASE_DEFAULTS,
+      ...PAINT_DEFAULTS,
+      width: 100,
+      height: 100,
+      strokeAlign: "INSIDE",
+      cornerRadius: 0,
+      clipsContent: true,
+      layoutMode: "NONE",
+      layoutWrap: "NO_WRAP",
+      paddingTop: 10,
+      paddingRight: 10,
+      paddingBottom: 10,
+      paddingLeft: 10,
+      primaryAxisAlignItems: "MIN",
+      counterAxisAlignItems: "MIN",
+      itemSpacing: 0,
+      counterAxisSpacing: 0,
+      itemReverseZIndex: true
+    },
+    rectangle: { ...BASE_DEFAULTS, ...PAINT_DEFAULTS, width: 100, height: 100, strokeAlign: "INSIDE", cornerRadius: 0 },
+    vector: { ...BASE_DEFAULTS, ...PAINT_DEFAULTS, strokeAlign: "CENTER", strokeCap: "NONE" },
+    text: {
+      x: 0,
+      y: 0,
+      opacity: 1,
+      layoutPositioning: "AUTO",
+      effects: [],
+      fontFamily: "Inter",
+      fontStyle: "Regular",
+      fontSize: 14,
+      fontColor: "#000000",
+      letterSpacing: 0,
+      textCase: "ORIGINAL",
+      textAlignHorizontal: "LEFT"
+    },
+    instance: { ...BASE_DEFAULTS, properties: {} }
+  };
+  var ALWAYS_EMITTED = /* @__PURE__ */ new Set(["name", "text", "textAutoResize", "pathData", "componentKey", "componentId"]);
+  var DEFAULT_NAMES = { frame: "Frame", rectangle: "Rectangle", vector: "Vector" };
+  var COLOR_KEYS = /* @__PURE__ */ new Set(["fillColor", "strokeColor", "fontColor"]);
+  var BOOLEAN_KEYS = /* @__PURE__ */ new Set(["clipsContent", "itemReverseZIndex"]);
+  var NUMBER_KEYS = /* @__PURE__ */ new Set([
+    "x",
+    "y",
+    "width",
+    "height",
+    "opacity",
+    "strokeWeight",
+    "cornerRadius",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "itemSpacing",
+    "counterAxisSpacing",
+    "fontSize",
+    "lineHeight",
+    "letterSpacing"
+  ]);
+  var KEY_ORDER = [
+    "type",
+    "name",
+    "nodeType",
+    "truncated",
+    "componentKey",
+    "componentId",
+    "text",
+    "x",
+    "y",
+    "width",
+    "height",
+    "layoutPositioning",
+    ...SIZING,
+    "layoutMode",
+    ...AUTO_LAYOUT,
+    "clipsContent",
+    "fillColor",
+    "strokeColor",
+    "strokeWeight",
+    "strokeAlign",
+    "strokeCap",
+    "cornerRadius",
+    "opacity",
+    "effects",
+    "fontFamily",
+    "fontStyle",
+    "fontSize",
+    "fontColor",
+    "lineHeight",
+    "letterSpacing",
+    "textCase",
+    "textAlignHorizontal",
+    "textAutoResize",
+    "pathData",
+    "properties"
+  ];
+  function fontWeightToStyle(weight) {
+    switch (weight) {
+      case 100:
+        return "Thin";
+      case 200:
+        return "Extra Light";
+      case 300:
+        return "Light";
+      case 400:
+        return "Regular";
+      case 500:
+        return "Medium";
+      case 600:
+        return "Semi Bold";
+      case 700:
+        return "Bold";
+      case 800:
+        return "Extra Bold";
+      case 900:
+        return "Black";
+      default:
+        return "Regular";
+    }
+  }
+  function round2(n) {
+    const r = Math.round(n * 100) / 100;
+    return Object.is(r, -0) ? 0 : r;
+  }
+  var byte = (v) => Math.round(Math.min(1, Math.max(0, Number(v) || 0)) * 255);
+  var hex2 = (n) => n.toString(16).padStart(2, "0").toUpperCase();
+  function hexFromBytes(r, g, b, a) {
+    if (a === 0) return NO_PAINT;
+    return "#" + hex2(r) + hex2(g) + hex2(b) + (a === 255 ? "" : hex2(a));
+  }
+  function colorToHex(color, opacity = color.a ?? 1) {
+    return hexFromBytes(byte(color.r), byte(color.g), byte(color.b), byte(opacity));
+  }
+  function canonicalColor(value) {
+    if (typeof value === "string") {
+      const s = value.trim();
+      const m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s);
+      if (!m) return s;
+      let h = m[1];
+      if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+      const n = (i) => parseInt(h.slice(i, i + 2), 16);
+      return hexFromBytes(n(0), n(2), n(4), h.length === 8 ? n(6) : 255);
+    }
+    if (value && typeof value === "object" && "r" in value) return colorToHex(value);
+    return void 0;
+  }
+  function canonicalEffects(list) {
+    if (!Array.isArray(list)) return void 0;
+    const out = [];
+    for (const e of list) {
+      if (!e || typeof e !== "object") return void 0;
+      const visible = e.visible !== false;
+      if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
+        out.push({
+          type: e.type,
+          visible,
+          color: canonicalColor(e.color ?? { r: 0, g: 0, b: 0, a: 0.25 }),
+          offset: { x: round2(Number(e.offset?.x ?? 0)), y: round2(Number(e.offset?.y ?? 4)) },
+          radius: round2(Number(e.radius ?? 4)),
+          spread: round2(Number(e.spread ?? 0)),
+          blendMode: e.blendMode || "NORMAL"
+        });
+      } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+        out.push({ type: e.type, visible, radius: round2(Number(e.radius ?? 4)) });
+      } else {
+        return void 0;
+      }
+    }
+    return out;
+  }
+  function canonicalValue(key, value) {
+    if (COLOR_KEYS.has(key)) return canonicalColor(value);
+    if (key === "effects") return canonicalEffects(value);
+    if (NUMBER_KEYS.has(key)) {
+      const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+      return typeof n === "number" && isFinite(n) ? round2(n) : void 0;
+    }
+    if (BOOLEAN_KEYS.has(key)) return !!value;
+    if (key === "pathData") return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : void 0;
+    if (key === "properties") return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : void 0;
+    return value;
+  }
+  var isAutoLayout = (layoutMode) => typeof layoutMode === "string" && layoutMode !== "NONE";
+  function orderKeys(props) {
+    const out = {};
+    for (const key of KEY_ORDER) if (props[key] !== void 0) out[key] = props[key];
+    for (const key of Object.keys(props).sort()) if (!(key in out) && props[key] !== void 0) out[key] = props[key];
+    return out;
+  }
+  function normalizeNode(node, parent = {}) {
+    if (node.type === OPAQUE_TYPE) {
+      return orderKeys({ type: OPAQUE_TYPE, name: node.name, nodeType: node.nodeType, truncated: node.truncated === true ? true : void 0 });
+    }
+    const type = node.type;
+    if (!SPEC_TYPES.includes(type)) throw new Error(`Unknown Spec node type: ${JSON.stringify(node.type)}`);
+    const src = { ...node };
+    if (type === "text") {
+      if (src.fontStyle === void 0 && src.fontWeight !== void 0) src.fontStyle = fontWeightToStyle(Number(src.fontWeight));
+      if (src.text === void 0) src.text = "Text";
+      if (src.textAutoResize === void 0) src.textAutoResize = src.width !== void 0 ? "HEIGHT" : "WIDTH_AND_HEIGHT";
+      if (src.name === void 0 || src.name === "") src.name = src.text;
+    } else if (src.name === void 0 && DEFAULT_NAMES[type]) {
+      src.name = DEFAULT_NAMES[type];
+    }
+    const out = { type };
+    for (const key of SPEC_VOCABULARY[type]) {
+      if (src[key] === void 0 || src[key] === null) continue;
+      const value = canonicalValue(key, src[key]);
+      if (value !== void 0) out[key] = value;
+    }
+    if (isAutoLayout(parent.layoutMode) && out.layoutPositioning !== "ABSOLUTE") {
+      delete out.x;
+      delete out.y;
+    }
+    if (type === "text") {
+      if (out.textAutoResize !== "HEIGHT") delete out.width;
+      for (const key of SIZING) if (out[key] !== "FILL") delete out[key];
+    }
+    if (out.layoutSizingHorizontal === "HUG" || out.layoutSizingHorizontal === "FILL") delete out.width;
+    if (out.layoutSizingVertical === "HUG" || out.layoutSizingVertical === "FILL") delete out.height;
+    if (type === "frame") {
+      if (!isAutoLayout(out.layoutMode)) for (const key of AUTO_LAYOUT) delete out[key];
+      if (out.layoutWrap !== "WRAP") delete out.counterAxisSpacing;
+    }
+    if (typeof out.fontSize === "number" && !Number.isInteger(out.fontSize)) delete out.fontSize;
+    const defaults = SPEC_DEFAULTS[type];
+    for (const key of Object.keys(out)) {
+      if (key === "type" || ALWAYS_EMITTED.has(key) || !(key in defaults)) continue;
+      if (stableStringify(out[key]) === stableStringify(defaults[key])) delete out[key];
+    }
+    return orderKeys(out);
+  }
+  function normalizeSpecTree(node, parent = {}) {
+    const props = normalizeNode(node, parent);
+    const out = node.id !== void 0 ? { id: node.id, ...props } : { ...props };
+    if (props.type === "frame") {
+      const layout = { layoutMode: typeof node.layoutMode === "string" ? node.layoutMode : "NONE" };
+      out.children = (Array.isArray(node.children) ? node.children : []).map((child) => normalizeSpecTree(child, layout));
+    }
+    return out;
+  }
+  function stableStringify(value) {
+    if (typeof value === "number") return JSON.stringify(isFinite(value) ? round2(value) : null);
+    if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+    if (Array.isArray(value)) return "[" + value.map((v) => v === void 0 ? "null" : stableStringify(v)).join(",") + "]";
+    const keys = Object.keys(value).filter((k) => value[k] !== void 0).sort();
+    return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(value[k])).join(",") + "}";
+  }
+
   // src/llm2figma_plugin/src/utils.ts
   var loadFontCached = createFontLoader((font) => figma.loadFontAsync(font));
   async function sendProgressUpdate(commandId, commandType, status, progress, totalItems, processedItems, message, payload = null) {
@@ -432,30 +726,6 @@
   function safeMixed(val) {
     if (typeof val === "symbol") return "mixed";
     return val;
-  }
-  function fontWeightToStyle(weight) {
-    switch (weight) {
-      case 100:
-        return "Thin";
-      case 200:
-        return "Extra Light";
-      case 300:
-        return "Light";
-      case 400:
-        return "Regular";
-      case 500:
-        return "Medium";
-      case 600:
-        return "Semi Bold";
-      case 700:
-        return "Bold";
-      case 800:
-        return "Extra Bold";
-      case 900:
-        return "Black";
-      default:
-        return "Regular";
-    }
   }
   function isGradientValue(value) {
     if (value && typeof value === "object" && Array.isArray(value.stops)) return true;
@@ -5950,9 +6220,9 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   function hexToSolid(hex) {
     const match = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex);
     if (!match) throw new Error(`Invalid background: ${hex}. Use one solid colour as #RRGGBB or #RRGGBBAA.`);
-    const byte = (i) => parseInt(match[1].slice(i, i + 2), 16) / 255;
+    const byte2 = (i) => parseInt(match[1].slice(i, i + 2), 16) / 255;
     const opacity = match[2] ? parseInt(match[2], 16) / 255 : 1;
-    return { type: "SOLID", color: { r: byte(0), g: byte(2), b: byte(4) }, opacity };
+    return { type: "SOLID", color: { r: byte2(0), g: byte2(2), b: byte2(4) }, opacity };
   }
   function writableBackgroundPaints(paints) {
     if (paints.length > 1 || paints.length === 1 && paints[0].type !== "SOLID") return null;
@@ -6736,16 +7006,16 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       return false;
     }
     warnRepeatWithoutAutoLayout(tree, treeHadRepeat(rawTree));
-    function countNodes(node) {
+    function countNodes2(node) {
       let count = 1;
       if (node.children && Array.isArray(node.children)) {
         for (const child of node.children) {
-          count += countNodes(child);
+          count += countNodes2(child);
         }
       }
       return count;
     }
-    const totalNodes = countNodes(tree);
+    const totalNodes = countNodes2(tree);
     const ctx = createNodeTreeContext({ totalNodes, firstOnTop, commandId, prune });
     if (commandId) {
       await sendProgressUpdate(
@@ -8347,7 +8617,9 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     // L2F_VERIFY: snapshots live in a plugin-side store, never in the document.
     "assert_contained",
     "snapshot_positions",
-    "diff_positions"
+    "diff_positions",
+    // L2F_SPEC_SYNC: reads a subtree; the Spec file is written by the server.
+    "export_spec"
   ]);
   var COMMAND_EDITORS = {};
   function allowedEditors(command) {
@@ -8360,6 +8632,280 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!allowedEditors(command).includes(editorType)) {
       throw new Error(`${command} is not available in the ${editorType} editor`);
     }
+  }
+
+  // src/llm2figma_plugin/src/spec.ts
+  var SPEC_TYPE_OF = {
+    FRAME: "frame",
+    TEXT: "text",
+    RECTANGLE: "rectangle",
+    VECTOR: "vector",
+    INSTANCE: "instance"
+  };
+  var PROGRESS_EVERY = 50;
+  var isMixed = (value) => typeof value === "symbol";
+  var isRotated2 = (node) => typeof node.rotation === "number" && Math.abs(node.rotation) > 0.01;
+  function opaqueReason(node) {
+    if (!SPEC_TYPE_OF[node.type]) return node.type;
+    if (isRotated2(node)) return "rotated";
+    if (node.type === "FRAME" && node.layoutMode === "GRID") return "grid layout";
+    return null;
+  }
+  function pageOf(node) {
+    let current = node;
+    while (current && current.type !== "PAGE") current = current.parent;
+    return current || null;
+  }
+  async function resolveSpecTarget(nodeId, expect = {}) {
+    const fileKey = figma.fileKey ?? null;
+    const fileName = figma.root ? figma.root.name : null;
+    if (expect.fileKey && fileKey) {
+      if (expect.fileKey !== fileKey) throw new Error(`Wrong file: expected file key ${expect.fileKey}, but the connected file's key is ${fileKey}.`);
+    } else if (expect.fileName != null && expect.fileName !== fileName) {
+      throw new Error(`Wrong file: expected "${expect.fileName}", but the connected file is "${fileName}".`);
+    }
+    let page = null;
+    if (expect.pageId) {
+      page = await figma.getNodeByIdAsync(expect.pageId);
+      if (!page || page.type !== "PAGE") throw new Error(`Wrong file or page: page ${expect.pageId} is not in the connected file.`);
+      if (typeof page.loadAsync === "function") await page.loadAsync();
+    }
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+    const nodePage = pageOf(node);
+    if (!nodePage) throw new Error(`Node ${nodeId} is not on a page.`);
+    if (page && nodePage.id !== page.id) throw new Error(`Wrong page: node ${nodeId} is on page ${nodePage.id}, expected ${page.id}.`);
+    if (!page) {
+      page = nodePage;
+      if (typeof page.loadAsync === "function") await page.loadAsync();
+    }
+    return { node, page, fileKey, fileName };
+  }
+  var SpecReadCache = class {
+    constructor() {
+      __publicField(this, "refs", /* @__PURE__ */ new Map());
+      __publicField(this, "collections", /* @__PURE__ */ new Map());
+    }
+    // The `Collection/Name` that resolves back to exactly this variable through
+    // the same lookup a write uses (getVariableByName), or null when it does not
+    // (another variable shares the name, or the name is ambiguous).
+    variableRef(id) {
+      if (!this.refs.has(id)) this.refs.set(id, this.resolveRef(id));
+      return this.refs.get(id);
+    }
+    collection(id) {
+      if (!this.collections.has(id)) this.collections.set(id, figma.variables.getVariableCollectionByIdAsync(id).catch(() => null));
+      return this.collections.get(id);
+    }
+    async resolveRef(id) {
+      try {
+        const variable = await figma.variables.getVariableByIdAsync(id);
+        if (!variable || !variable.variableCollectionId) return null;
+        const collection = await this.collection(variable.variableCollectionId);
+        if (!collection) return null;
+        const ref = `${collection.name}/${variable.name}`;
+        const resolved = await getVariableByName(ref);
+        return resolved && resolved.id === id ? ref : null;
+      } catch {
+        return null;
+      }
+    }
+  };
+  async function solidColor(paints, cache) {
+    if (isMixed(paints) || !Array.isArray(paints)) return void 0;
+    if (paints.length === 0) return NO_PAINT;
+    if (paints.length !== 1) return void 0;
+    const paint = paints[0];
+    if (paint.type !== "SOLID" || paint.visible === false || paint.blendMode && paint.blendMode !== "NORMAL") return void 0;
+    const alias = paint.boundVariables && paint.boundVariables.color;
+    if (alias && alias.id) {
+      const ref = await cache.variableRef(alias.id);
+      return ref ? `$var:${ref}` : void 0;
+    }
+    return colorToHex(paint.color, paint.opacity ?? 1);
+  }
+  function readEffects(effects) {
+    if (isMixed(effects) || !Array.isArray(effects)) return void 0;
+    for (const e of effects) {
+      if (!["DROP_SHADOW", "INNER_SHADOW", "LAYER_BLUR", "BACKGROUND_BLUR"].includes(e.type)) return void 0;
+      if (e.boundVariables && Object.keys(e.boundVariables).length) return void 0;
+      if (e.showShadowBehindNode === true || e.blurType && e.blurType !== "NORMAL") return void 0;
+    }
+    return effects;
+  }
+  var notMixed = (value) => isMixed(value) ? void 0 : value;
+  var pixels = (value) => value && value.unit === "PIXELS" ? value.value : void 0;
+  function common(node, type) {
+    return {
+      type,
+      name: node.name,
+      x: node.x,
+      y: node.y,
+      opacity: node.opacity,
+      layoutPositioning: node.layoutPositioning,
+      layoutSizingHorizontal: node.layoutSizingHorizontal,
+      layoutSizingVertical: node.layoutSizingVertical
+    };
+  }
+  async function paintedProps(node, cache) {
+    return {
+      width: node.width,
+      height: node.height,
+      fillColor: await solidColor(node.fills, cache),
+      strokeColor: await solidColor(node.strokes, cache),
+      strokeWeight: notMixed(node.strokeWeight),
+      strokeAlign: node.strokeAlign,
+      effects: readEffects(node.effects)
+    };
+  }
+  function sharedStrokeCap(node) {
+    try {
+      const vertices = node.vectorNetwork && node.vectorNetwork.vertices;
+      if (!Array.isArray(vertices) || !vertices.length) return void 0;
+      const caps = new Set(vertices.map((v) => v.strokeCap || "NONE"));
+      return caps.size === 1 ? [...caps][0] : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function singlePath(node) {
+    const paths = node.vectorPaths;
+    if (!Array.isArray(paths) || paths.length !== 1) return void 0;
+    if (paths[0].windingRule && paths[0].windingRule !== "NONZERO") return void 0;
+    return paths[0].data;
+  }
+  function flatProperties(node) {
+    const out = {};
+    const props = node.componentProperties || {};
+    for (const key of Object.keys(props)) {
+      if (props[key] && props[key].type !== "INSTANCE_SWAP") out[key] = props[key].value;
+    }
+    return out;
+  }
+  async function readSpecProps(node, cache) {
+    const type = SPEC_TYPE_OF[node.type];
+    switch (type) {
+      case "frame":
+        return {
+          ...common(node, type),
+          ...await paintedProps(node, cache),
+          cornerRadius: notMixed(node.cornerRadius),
+          clipsContent: node.clipsContent,
+          layoutMode: node.layoutMode,
+          layoutWrap: node.layoutWrap,
+          paddingTop: node.paddingTop,
+          paddingRight: node.paddingRight,
+          paddingBottom: node.paddingBottom,
+          paddingLeft: node.paddingLeft,
+          primaryAxisAlignItems: node.primaryAxisAlignItems,
+          counterAxisAlignItems: node.counterAxisAlignItems,
+          itemSpacing: node.itemSpacing,
+          counterAxisSpacing: node.counterAxisSpacing,
+          itemReverseZIndex: node.itemReverseZIndex
+        };
+      case "rectangle":
+        return { ...common(node, type), ...await paintedProps(node, cache), cornerRadius: notMixed(node.cornerRadius) };
+      case "vector":
+        return { ...common(node, type), ...await paintedProps(node, cache), strokeCap: sharedStrokeCap(node), pathData: singlePath(node) };
+      case "text": {
+        const props = {
+          ...common(node, type),
+          text: node.characters,
+          textAlignHorizontal: node.textAlignHorizontal,
+          textAutoResize: node.textAutoResize,
+          width: node.width,
+          effects: readEffects(node.effects)
+        };
+        const styles = [node.fontName, node.fontSize, node.fills, node.lineHeight, node.letterSpacing, node.textCase];
+        if (styles.some(isMixed)) return props;
+        const letterSpacing = node.letterSpacing && node.letterSpacing.unit === "PERCENT" && node.letterSpacing.value === 0 ? 0 : pixels(node.letterSpacing);
+        return {
+          ...props,
+          fontFamily: node.fontName && node.fontName.family,
+          fontStyle: node.fontName && node.fontName.style,
+          fontSize: node.fontSize,
+          fontColor: await solidColor(node.fills, cache),
+          lineHeight: pixels(node.lineHeight),
+          letterSpacing,
+          textCase: node.textCase
+        };
+      }
+      case "instance": {
+        const main = await node.getMainComponentAsync();
+        if (!main) return null;
+        const source = main.remote ? { componentKey: main.key } : { componentId: main.id };
+        return { ...common(node, type), ...source, properties: flatProperties(node) };
+      }
+      default:
+        return null;
+    }
+  }
+  function opaqueNode(node, truncated) {
+    return { id: node.id, type: OPAQUE_TYPE, name: node.name, nodeType: node.type, ...truncated ? { truncated: true } : {} };
+  }
+  function countNodes(node) {
+    return 1 + (Array.isArray(node.children) ? node.children.reduce((n, child) => n + countNodes(child), 0) : 0);
+  }
+  async function exportSpec(params) {
+    const { nodeId, expect, maxNodes, maxDepth, commandId } = params || {};
+    if (!nodeId || typeof nodeId !== "string") throw new Error("Missing nodeId parameter");
+    if (nodeId.includes(";")) throw new Error(`Cannot pull ${nodeId}: it is inside an instance. Pull a node outside the instance; instances are exported as leaves.`);
+    const { node: root, page, fileKey, fileName } = await resolveSpecTarget(nodeId, expect || {});
+    const rootReason = opaqueReason(root);
+    if (rootReason) {
+      const detail = rootReason === root.type ? root.type : `${root.type}, ${rootReason}`;
+      throw new Error(`Cannot pull ${nodeId}: a Spec root must be a frame, text, rectangle, vector or instance without rotation or grid layout (this node: ${detail}).`);
+    }
+    const walk = { maxNodes, maxDepth };
+    const visited = [];
+    const result = walkTree(root, (node) => {
+      visited.push(node);
+      return opaqueReason(node) === null && node.type !== "INSTANCE";
+    }, walk);
+    const cutOff = new Set(result.truncatedParents);
+    if (cutOff.has(root)) throw new Error(`maxNodes/maxDepth are too small to read the children of ${nodeId}.`);
+    const total = visited.length;
+    const cache = new SpecReadCache();
+    let done = 0;
+    let opaqueCount = 0;
+    if (commandId) await sendProgressUpdate(commandId, "export_spec", "started", 0, total, 0, `Reading ${total} nodes`);
+    const build = async (node) => {
+      done++;
+      if (commandId && done % PROGRESS_EVERY === 0) {
+        await sendProgressUpdate(commandId, "export_spec", "in_progress", Math.round(done / total * 100), total, done, `Read ${done}/${total} nodes`);
+      }
+      const truncated = cutOff.has(node);
+      if (truncated || opaqueReason(node)) {
+        opaqueCount++;
+        return opaqueNode(node, truncated);
+      }
+      const props = await readSpecProps(node, cache);
+      if (!props) {
+        opaqueCount++;
+        return opaqueNode(node, false);
+      }
+      const raw = { id: node.id, ...props };
+      if (raw.type === "frame") {
+        raw.children = [];
+        for (const child of node.children) raw.children.push(await build(child));
+      }
+      return raw;
+    };
+    const rawTree = await build(root);
+    const parent = root.parent;
+    const tree = normalizeSpecTree(rawTree, { layoutMode: parent && parent.type !== "PAGE" ? parent.layoutMode : void 0 });
+    if (commandId) await sendProgressUpdate(commandId, "export_spec", "completed", 100, total, done, `Read ${done} nodes`);
+    return {
+      fileKey,
+      fileName,
+      pageId: page.id,
+      rootId: root.id,
+      rootParentId: parent ? parent.id : null,
+      tree,
+      nodeCount: countNodes(tree),
+      opaqueCount,
+      truncated: result.truncated
+    };
   }
 
   // src/llm2figma_plugin/src/events.ts
@@ -8638,6 +9184,8 @@ ${detail}`);
         return await snapshotPositions(params);
       case "diff_positions":
         return await diffPositions(params);
+      case "export_spec":
+        return await exportSpec(params);
       case "delete_node":
         return await deleteNode(params);
       case "delete_multiple_nodes":

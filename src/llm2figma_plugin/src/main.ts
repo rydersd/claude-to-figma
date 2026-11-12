@@ -16,6 +16,7 @@ import { screenshotRegion, batchMutate, scanNodeStyles, introspectNode, setPrope
 import { formatError } from './utils';
 import { assertEditorAllowed } from './editor-gate';
 import { assertContained, snapshotPositions, diffPositions } from './verify';
+import { exportSpec } from './spec';
 import { startEventStreaming, stopEventStreaming, setPluginOperationGuard } from './events';
 
 // Plugin state
@@ -176,6 +177,8 @@ async function handleCommand(command: string, params: any) {
       return await snapshotPositions(params);
     case "diff_positions":
       return await diffPositions(params);
+    case "export_spec":
+      return await exportSpec(params);
     case "delete_node":
       return await deleteNode(params);
     case "delete_multiple_nodes":

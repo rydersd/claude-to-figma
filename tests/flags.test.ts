@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { FEATURES, isEnabled, registerWhenEnabled } from "../src/shared/flags";
-import { FLAG_ENV_KEYS, makeMcpConfig } from "../scripts/write-mcp-config";
+import { FLAG_ENV_KEYS, SETTING_ENV_KEYS, makeMcpConfig } from "../scripts/write-mcp-config";
 import { allowedEditors, assertEditorAllowed } from "../src/llm2figma_plugin/src/editor-gate";
 import { getDocumentInfo } from "../src/llm2figma_plugin/src/document";
 
@@ -38,7 +38,7 @@ describe("feature flags", () => {
 describe("launch paths", () => {
   test("write-mcp-config writes an L2F env reference for every flag", () => {
     const env = makeMcpConfig({}, "/bun", "/repo", {}).mcpServers.LLM2Figma.env;
-    for (const key of FLAG_ENV_KEYS) expect(env[key]).toBe(`\${${key}:-}`);
+    for (const key of [...FLAG_ENV_KEYS, ...SETTING_ENV_KEYS]) expect(env[key]).toBe(`\${${key}:-}`);
     expect(FLAG_ENV_KEYS).toContain("L2F_COMMENTS_WRITE");
   });
   test("write-mcp-config keeps values already set in the existing config", () => {
@@ -47,11 +47,12 @@ describe("launch paths", () => {
     expect(env.L2F_FLOWS).toBe("1");
     expect(env.OTHER).toBe("x");
   });
-  test("plugin.json passes every L2F flag through", () => {
+  test("plugin.json passes every L2F flag and setting through", () => {
     const manifest = JSON.parse(readFileSync("plugin/.claude-plugin/plugin.json", "utf8"));
     const env = manifest.mcpServers.LLM2Figma.env;
-    expect(Object.keys(env).sort()).toEqual([...FLAG_ENV_KEYS].sort());
-    for (const key of FLAG_ENV_KEYS) expect(env[key]).toBe(`\${${key}:-}`);
+    const keys = [...FLAG_ENV_KEYS, ...SETTING_ENV_KEYS];
+    expect(Object.keys(env).sort()).toEqual(keys.sort());
+    for (const key of keys) expect(env[key]).toBe(`\${${key}:-}`);
   });
   test("plugin manifest declares the private API and the slides and buzz editors", () => {
     const manifest = JSON.parse(readFileSync("src/llm2figma_plugin/manifest.json", "utf8"));

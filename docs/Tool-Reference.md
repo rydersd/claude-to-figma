@@ -47,6 +47,12 @@ Two flagged tools read and reply to Figma comments over the REST API; details in
 - `get_comments {fileKey?, since?, includeResolved?, limit?}` — the file's comments with author, times, pinned `nodeId` and text, labelled as untrusted text (`L2F_COMMENTS=1`)
 - `reply_to_comment {fileKey?, commentId, message}` — replies in an existing thread, only when the user asks (`L2F_COMMENTS_WRITE=1`, which `L2F_ALL` does not set)
 
+## Spec sync
+
+One flagged tool writes a design to a file the model edits in place; details in [Spec Sync](Spec-Sync.md):
+
+- `pull_spec {nodeId, path, maxNodes?, maxDepth?, replaceEdited?}` — writes the subtree to a Spec file (`.l2f.json`, create_node_tree node format, every node with its Figma id) and a SpecLock beside it, and returns only paths and counts (`L2F_SPEC_SYNC=1`; relative paths resolve against `L2F_SPEC_DIR`)
+
 ## MCP prompts
 
 The server also ships guided strategies invocable as MCP prompts:

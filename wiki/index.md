@@ -1,10 +1,11 @@
 # Wiki Index
 
-> Auto-maintained by Claude. Last updated: 2026-11-12. Articles: 3.
+> Auto-maintained by Claude. Last updated: 2026-11-12. Articles: 4.
 > Purpose: non-obvious knowledge about the llm2figma bridge — architecture decisions, patterns, and gotchas that wouldn't be obvious from reading code.
 
 ## Recent
 
+- 2026-11-12: [Spec sync](concepts/spec-sync.md) — Spec and SpecLock design, one normaliser for both sides, why absent paint means none, truncation vs deletion, the shared variable-index test trap. Tags: spec-sync, testing
 - 2026-11-12: [Geometry verification](concepts/geometry-verification.md) — silent `resize()`, why containment passes on misplaced section children, plugin-side snapshots. Tags: verification, figma
 - 2026-04-16: [Event Streaming](concepts/event-streaming.md) — Bidirectional events (selection/node/page) from Figma → Claude via poll tools. Tags: architecture, events, mcp
 - 2026-04-16: [SF Symbol Icon Extraction](concepts/sf-symbol-icon-extraction.md) — Exact SF Symbols → Figma via `NSSymbolImageRep.outlinePath`, never PDF. Tags: icons, figma, sf-symbols
@@ -13,6 +14,7 @@
 
 - [Event Streaming](concepts/event-streaming.md) — How `figma_events_subscribe` / `figma_events_poll` work; priority buffer, plugin operation guard, listener lifecycle, known limitations (undo/redo, DELETE nodeName, multiplayer REMOTE).
 - [Geometry verification](concepts/geometry-verification.md) — `L2F_VERIFY` gotchas: resize read-back causes, `absoluteBoundingBox` containment and its blind spot for section offsets, snapshot expiry.
+- [Spec sync](concepts/spec-sync.md) — `L2F_SPEC_SYNC` design: shared normaliser, SpecLock props equal Spec nodes, defaults that 11d must apply on create, variable refs that must resolve back, truncated OpaqueNodes.
 - [SF Symbol Icon Extraction](concepts/sf-symbol-icon-extraction.md) — Use `NSSymbolImageRep.outlinePath` for exact vector geometry. Do not route through PDF (Quartz flattens to image XObjects). Summary of llm-tooling pattern with forward link.
 
 ## References

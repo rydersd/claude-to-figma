@@ -342,6 +342,10 @@ The MCP server provides the following tools for interacting with Figma:
 - `snapshot_positions` (`L2F_VERIFY=1`) - Records id, name, parent and absolute box for a subtree in a bounded plugin-side store and returns a `snapshotId` (30-minute expiry, 64 snapshots, lost on plugin reload)
 - `diff_positions` (`L2F_VERIFY=1`) - Compares a snapshot with the document now: `missing` (deleted or absorbed), `added` (for example auto-generated wrappers) and `moved` (box changed or reparented). An unknown or expired id is an error, never an empty diff
 
+### Spec Sync (flagged)
+
+- `pull_spec` (`L2F_SPEC_SYNC=1`) - Writes a Figma subtree to a Spec file (`<name>.l2f.json`, create_node_tree node format, every node with its id) and a SpecLock beside it, so a design can be edited in place by editing the file. Defaults and layout-derived values are left out; groups, sections, rotated nodes and other shapes the format cannot express are OpaqueNodes; instances are leaves. Returns paths and counts only. Refuses to overwrite unapplied edits or a file that is not a Spec; paths resolve against `L2F_SPEC_DIR`. See [Spec Sync](docs/Spec-Sync.md)
+
 ### Query & Eval
 
 - `design_query` - Query nodes by type, name, component, or property values and optionally bulk-update all matches in one call — replaces the scan-introspect-mutate loop with selection filters, optional property updates, and optional introspect output per match
