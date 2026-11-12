@@ -33,6 +33,13 @@ export function migrateServerEntry(servers: any, bunPath: string, serverPath: st
   };
 }
 
+/** A server entry without the Figma token an earlier setup may have left in its env. */
+export function withoutToken(entry: any) {
+  if (!entry?.env || !("FIGMA_API_TOKEN" in entry.env)) return entry;
+  const { FIGMA_API_TOKEN: _dropped, ...env } = entry.env;
+  return { ...entry, env };
+}
+
 export function makeMcpConfig(previous: any, bunPath: string, repoRoot: string, stamp: any) {
   const servers = { ...(previous?.mcpServers || {}) };
   // Migrate the entry name while preserving credentials and unrelated servers.
@@ -56,8 +63,10 @@ if (import.meta.main) {
   } else if (mode === "--user-get") {
     // Print a user-scope server entry as JSON, or nothing when absent.
     const [claudeJson, name] = rest;
+    // The entry is used to restore a failed registration, so it goes back on a
+    // command line: the token is dropped here and never restored.
     const entry = (await readJson(claudeJson)).mcpServers?.[name];
-    if (entry) console.log(JSON.stringify(entry));
+    if (entry) console.log(JSON.stringify(withoutToken(entry)));
   } else {
     const [repoRoot, bunPath, hostname, user, generatedAt] = [mode, ...rest];
     const path = resolve(repoRoot, ".mcp.json");

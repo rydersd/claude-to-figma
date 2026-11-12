@@ -37,6 +37,21 @@ describe("getFigmaToken", () => {
     expect(fake.calls[0]).toEqual(["security", "find-generic-password", "-s", "llm2figma", "-a", "figma-api-token", "-w"]);
   });
 
+  test("surrounding whitespace is trimmed and a whitespace-only item counts as missing", async () => {
+    expect(await getFigmaToken({ spawn: fakeSpawn({ stdout: `  ${SENTINEL} \r\n\n` }).spawn, platform: "darwin" })).toBe(SENTINEL);
+    const error = await errorOf(getFigmaToken({ spawn: fakeSpawn({ stdout: "  \n" }).spawn, platform: "darwin" }));
+    expect(error.message).toMatch(/No Figma API token/);
+  });
+
+  test("a token with an inner line break or space is refused with fixed text", async () => {
+    for (const stdout of [`${SENTINEL}\n${SENTINEL}\n`, `${SENTINEL} x\n`, `${SENTINEL}\u00e9\n`]) {
+      const error = await errorOf(getFigmaToken({ spawn: fakeSpawn({ stdout }).spawn, platform: "darwin" }));
+      expect(error).toBeInstanceOf(FigmaTokenError);
+      expect(error.message).toMatch(/bun run token/);
+      expect(error.message).not.toContain("SENTINEL");
+    }
+  });
+
   test("reads the Keychain on every call (no caching)", async () => {
     const fake = fakeSpawn({ stdout: SENTINEL });
     await getFigmaToken({ spawn: fake.spawn, platform: "darwin" });

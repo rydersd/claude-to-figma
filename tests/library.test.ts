@@ -311,6 +311,17 @@ describe("loadLibraryIndex", () => {
       expect(error.message).not.toContain("figd_SENTINEL");
     } finally { restore(); }
   });
+
+  test("a thrown fetch error never carries the runtime's text, which can quote the header", async () => {
+    process.env.FIGMA_LIBRARY_FILE_KEYS = "KEY1";
+    clearLibraryCache();
+    globalThis.fetch = (async () => { throw new TypeError("Header 'X-Figma-Token' has invalid value: 'figd_SENTINEL'"); }) as any;
+    try {
+      const error = await loadLibraryIndex({ readToken: tokenReader("figd_SENTINEL") }).catch((e) => e);
+      expect(error.message).toMatch(/could not reach api\.figma\.com/);
+      expect(error.message).not.toContain("figd_SENTINEL");
+    } finally { restore(); }
+  });
 });
 
 describe("formatLibraryList", () => {

@@ -130,7 +130,7 @@ Or add it to a project's `.mcp.json`:
 
 Restart the MCP server after changing the file keys. Without them, or without the Keychain item, the library tools return setup instructions instead of a component list. `setup_status` reports `figmaTokenInKeychain` (whether the item exists, never its value).
 
-**Upgrading from an earlier setup:** delete any `export FIGMA_API_TOKEN=...` line from your shell profile (`~/.zshrc` and similar), open a new terminal, and revoke the old token in Figma. `bun setup` removes a `FIGMA_API_TOKEN` entry from `.mcp.json` when it rewrites it.
+**Upgrading from an earlier setup:** delete any `export FIGMA_API_TOKEN=...` line from your shell profile (`~/.zshrc` and similar), open a new terminal, and revoke the old token in Figma. `bun setup` removes a `FIGMA_API_TOKEN` entry from `.mcp.json` when it rewrites it. It does not clean other places: if you ever registered the server yourself (user or local scope, or under another name), search `~/.claude.json` for `FIGMA_API_TOKEN` and delete it; `bun setup` tells you when that file still mentions it.
 
 **macOS only.** On Linux or WSL there is no Keychain, so the library tools soft-fail with a message.
 

@@ -39,7 +39,7 @@ describe("makeMcpConfig keeps connection arguments (finding #7)", () => {
 
 // setup.sh --user, against a temp HOME. The fake `claude` keeps user-scope
 // servers in $HOME/.claude.json like the real CLI and logs each call.
-function runSetupUser(claudeJson: any, opts: { failAddJson?: boolean } = {}) {
+function runSetupUser(claudeJson: any, opts: { failAddJson?: boolean; failRemoveLegacy?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "llm2figma-setup-"));
   const repo = join(dir, "repo");
   const home = join(dir, "home");
@@ -75,6 +75,7 @@ if (cmd === "add-json") {
   if (cfg.mcpServers[name]) { console.error("exists"); process.exit(1); }
   cfg.mcpServers[name] = { type: "stdio", command: args[sep + 1], args: args.slice(sep + 2), env: {} };
 } else if (cmd === "remove") {
+  if (name === "ClaudeToFigma" && process.env.FAIL_REMOVE_LEGACY) process.exit(1);
   if (!cfg.mcpServers[name]) process.exit(1);
   delete cfg.mcpServers[name];
 } else if (cmd === "get") {
@@ -85,7 +86,7 @@ fs.writeFileSync(file, JSON.stringify(cfg));
 `, { mode: 0o755 });
   try {
     const result = Bun.spawnSync(["/bin/bash", join(repo, "scripts", "setup.sh"), "--user"], {
-      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, ...(opts.failAddJson ? { FAIL_ADD_JSON: "1" } : {}) },
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: home, ...(opts.failAddJson ? { FAIL_ADD_JSON: "1" } : {}), ...(opts.failRemoveLegacy ? { FAIL_REMOVE_LEGACY: "1" } : {}) },
     });
     const calls = existsSync(join(home, "claude-calls.log")) ? readFileSync(join(home, "claude-calls.log"), "utf8").trim().split("\n") : [];
     return {
@@ -120,6 +121,20 @@ describe("setup.sh --user migration (finding #6)", () => {
     const result = runSetupUser({ mcpServers: { ClaudeToFigma: legacy, LLM2Figma: current } }, { failAddJson: true });
     expect(result.exitCode).not.toBe(0);
     expect(result.config.mcpServers.ClaudeToFigma).toEqual(legacy);
-    expect(result.config.mcpServers.LLM2Figma).toEqual(current);
+    // The restored entry keeps its paths and flags but never gets the token back,
+    // and no token reaches a command line or the script's output.
+    expect(result.config.mcpServers.LLM2Figma).toEqual({ ...current, env: {} });
+    expect(result.calls.join("\n")).not.toContain("newer");
+    expect(result.stdout + result.stderr).not.toContain("newer");
+    expect(result.stdout + result.stderr).toContain(".claude.json still mentions FIGMA_API_TOKEN");
+  });
+
+  test("fails when the legacy entry cannot be removed, instead of reporting success", async () => {
+    const legacy = { command: "/old/bun", args: ["/old/server.ts"], env: { FIGMA_API_TOKEN: "secret" } };
+    const result = runSetupUser({ mcpServers: { ClaudeToFigma: legacy } }, { failRemoveLegacy: true });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("claude mcp remove --scope user ClaudeToFigma");
+    expect(result.stdout + result.stderr).not.toContain("secret");
+    expect(result.calls.join("\n")).not.toContain("secret");
   });
 });

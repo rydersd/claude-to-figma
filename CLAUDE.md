@@ -108,7 +108,7 @@ claude mcp add LLM2Figma -- bun /path-to-repo/src/llm2figma_mcp/server.ts
 - A Figma personal access token in the **macOS Keychain** (service `llm2figma`, account `figma-api-token`), stored with `bun run token` (`scripts/store-figma-token.sh`; hidden prompt, then a check against `/v1/me`). Scopes: `File content: read`, `Library content: read`, `file_comments:read`, `file_comments:write`. `src/llm2figma_mcp/keychain.ts` (`getFigmaToken()`) reads it at call time, uncached; it is never taken from env or `.mcp.json`, and must never appear in a log, tool result or error.
 - `FIGMA_LIBRARY_FILE_KEYS` — comma-separated file keys (from each library file's URL: `figma.com/design/<FILE_KEY>/...`) of the libraries to index, set in the `LLM2Figma` server's `env` block in `.mcp.json`, then restart the MCP server.
 
-Without them, the two library tools soft-fail with setup instructions instead of erroring. Keychain is macOS only; on Linux/WSL they soft-fail. `bun setup` drops any `FIGMA_API_TOKEN` left in `.mcp.json`; users upgrading should also delete an old `export FIGMA_API_TOKEN` from their shell profile and revoke that token.
+Without them, the two library tools soft-fail with setup instructions instead of erroring. Keychain is macOS only; on Linux/WSL they soft-fail. `bun setup` drops any `FIGMA_API_TOKEN` left in `.mcp.json` (and `bun setup --user` from the user-scope entry; other scopes in `~/.claude.json` are only reported, by file name); users upgrading should also delete an old `export FIGMA_API_TOKEN` from their shell profile and revoke that token.
 
 ## Claude Code plugin (`plugin/`)
 

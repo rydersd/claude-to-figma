@@ -35,12 +35,12 @@ fi
 status=$(
   { printf 'X-Figma-Token: '; security find-generic-password -s "$SERVICE" -a "$ACCOUNT" -w; } \
     | curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H @- https://api.figma.com/v1/me
-)
+) || true
 
 case "$status" in
   200) echo "Check passed: Figma accepted the token." ;;
   403) echo "Figma rejected the token (403). It may be revoked, expired or mistyped; run this script again." >&2; exit 1 ;;
-  000) echo "Could not reach api.figma.com to check the token." >&2; exit 1 ;;
+  000|"") echo "Could not reach api.figma.com to check the token." >&2; exit 1 ;;
   *)   echo "Unexpected response from Figma: HTTP $status." >&2; exit 1 ;;
 esac
 

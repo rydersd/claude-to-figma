@@ -74,7 +74,7 @@ export async function getFigmaToken(opts: KeychainOptions = {}): Promise<string>
         "unlock it and click Allow (or Always Allow), then retry."
     );
   }
-  const token = result.stdout.replace(/\r?\n$/, "");
+  const token = result.stdout.trim();
   if (result.code === 44 || (result.code === 0 && !token)) {
     throw new FigmaTokenError(`No Figma API token in the Keychain. ${TOKEN_SETUP_HELP}`);
   }
@@ -82,6 +82,14 @@ export async function getFigmaToken(opts: KeychainOptions = {}): Promise<string>
     throw new FigmaTokenError(
       `Could not read the Figma API token from the Keychain (security exited with code ${result.code}; ` +
         `the Keychain may be locked or access was denied). ${TOKEN_SETUP_HELP}`
+    );
+  }
+  // Anything but printable ASCII would be rejected as a header value, and the runtime's
+  // error for that quotes the value.
+  if (!/^[\x21-\x7e]+$/.test(token)) {
+    throw new FigmaTokenError(
+      "The Figma API token in the Keychain contains spaces, line breaks or other characters a token never has. " +
+        "Store it again with `bun run token`."
     );
   }
   return token;

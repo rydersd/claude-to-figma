@@ -18446,7 +18446,7 @@ function registerTools6(server, sendCommandToFigma2) {
       return { content: [{ type: "text", text: `Error getting local variables: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
-  server.tool("get_library_variables", "Get design tokens published by the team libraries enabled on this Figma file, organized by collection. Each variable includes a `ref` you can pass straight to $var: in create_node_tree. Unlike get_library_components this needs no FIGMA_API_TOKEN \u2014 it reads the libraries enabled on the file. Returns an empty collections list if no variable libraries are enabled.", {}, async () => {
+  server.tool("get_library_variables", "Get design tokens published by the team libraries enabled on this Figma file, organized by collection. Each variable includes a `ref` you can pass straight to $var: in create_node_tree. Unlike get_library_components this needs no Figma API token \u2014 it reads the libraries enabled on the file. Returns an empty collections list if no variable libraries are enabled.", {}, async () => {
     try {
       const result = await sendCommandToFigma2("get_library_variables");
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
@@ -19270,12 +19270,15 @@ async function getFigmaToken(opts = {}) {
   if (result.code === "timeout") {
     throw new FigmaTokenError("Timed out reading the Figma API token from the Keychain. If macOS asked for Keychain access, " + "unlock it and click Allow (or Always Allow), then retry.");
   }
-  const token = result.stdout.replace(/\r?\n$/, "");
+  const token = result.stdout.trim();
   if (result.code === 44 || result.code === 0 && !token) {
     throw new FigmaTokenError(`No Figma API token in the Keychain. ${TOKEN_SETUP_HELP}`);
   }
   if (result.code !== 0) {
     throw new FigmaTokenError(`Could not read the Figma API token from the Keychain (security exited with code ${result.code}; ` + `the Keychain may be locked or access was denied). ${TOKEN_SETUP_HELP}`);
+  }
+  if (!/^[\x21-\x7e]+$/.test(token)) {
+    throw new FigmaTokenError("The Figma API token in the Keychain contains spaces, line breaks or other characters a token never has. " + "Store it again with `bun run token`.");
   }
   return token;
 }
@@ -19429,10 +19432,16 @@ function getLibraryConfig(env = process.env) {
   };
 }
 async function figmaGet(path3, token) {
-  const response = await fetch(`${FIGMA_API_BASE}${path3}`, {
-    headers: { "X-Figma-Token": token },
-    signal: AbortSignal.timeout(15000)
-  });
+  let response;
+  try {
+    response = await fetch(`${FIGMA_API_BASE}${path3}`, {
+      headers: { "X-Figma-Token": token },
+      signal: AbortSignal.timeout(15000)
+    });
+  } catch (error) {
+    const why = error?.name === "TimeoutError" ? "timed out after 15s" : "could not reach api.figma.com";
+    throw new Error(`Figma API request for ${path3} failed: ${why}`);
+  }
   if (!response.ok) {
     const hint = response.status === 401 || response.status === 403 ? "check the Keychain token (re-store it with `bun run token`) and its scopes ('File content: read' + 'Library content: read')" : response.status === 404 ? "check the file key in FIGMA_LIBRARY_FILE_KEYS (from the library file's URL)" : response.status === 429 ? `rate limited \u2014 retry after ${response.headers.get("retry-after") || "a moment"}` : "unexpected Figma API error";
     throw new Error(`Figma API ${response.status} on ${path3}: ${hint}`);
