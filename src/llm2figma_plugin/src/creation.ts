@@ -4,6 +4,55 @@
 import { loadFontCached, appendOrInsertChild, hexToFigmaColor, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyImageFill } from './utils';
 import { setCharacters } from './text';
 
+// --- place_image: New rectangle with an image fill, sized to the image by default ---
+// Give width or height alone and the other follows the image's aspect ratio.
+// With neither, the natural size is used, scaled down to fit 4096px.
+export async function placeImage(params: any) {
+  const { image, x, y, width, height, name, parentId } = params || {};
+  if (!image || !image.base64) throw new Error("Missing image data");
+
+  const rect = figma.createRectangle();
+  let naturalWidth: number, naturalHeight: number;
+  try {
+    rect.name = name || "Reference Image";
+    const { imageHash } = applyImageFill(rect, image);
+    const size = await figma.getImageByHash(imageHash)!.getSizeAsync();
+    naturalWidth = size.width || 400;
+    naturalHeight = size.height || 400;
+
+    let w: number, h: number;
+    if (width && height) {
+      w = width; h = height;
+    } else if (width) {
+      w = width; h = Math.round((width / naturalWidth) * naturalHeight);
+    } else if (height) {
+      h = height; w = Math.round((height / naturalHeight) * naturalWidth);
+    } else {
+      const scale = Math.min(1, 4096 / Math.max(naturalWidth, naturalHeight));
+      w = Math.round(naturalWidth * scale); h = Math.round(naturalHeight * scale);
+    }
+    rect.resize(w, h);
+    if (x !== undefined) rect.x = x;
+    if (y !== undefined) rect.y = y;
+
+    await appendOrInsertChild(rect, parentId, params.insertAt);
+  } catch (error) {
+    rect.remove();
+    throw error;
+  }
+
+  return {
+    id: rect.id,
+    name: rect.name,
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    naturalWidth,
+    naturalHeight,
+  };
+}
+
 export async function createRectangle(params: any) {
   const {
     x = 0,

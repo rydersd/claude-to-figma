@@ -156,7 +156,8 @@ export type FigmaCommand =
   | "batch_set_reactions"
   | "undo"
   | "subscribe_events"
-  | "unsubscribe_events";
+  | "unsubscribe_events"
+  | "place_image";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -681,6 +682,15 @@ export type CommandParams = {
     parentId?: string;
     limit?: number;
     dryRun?: boolean;
+  };
+  place_image: {
+    image: { base64: string; scaleMode?: "FILL" | "FIT" | "CROP" | "TILE" };
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    name?: string;
+    parentId?: string;
   };
 };
 

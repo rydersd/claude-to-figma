@@ -6,7 +6,7 @@
 
 import { describe, test, expect } from "bun:test";
 import { customBase64Encode, customBase64Decode } from "../src/llm2figma_plugin/src/utils";
-import { resolveImageToBase64 } from "../src/llm2figma_mcp/tools/images";
+import { resolveImageToBase64, isPrivateAddress } from "../src/llm2figma_mcp/tools/images";
 
 describe("customBase64Decode", () => {
   test("roundtrips with customBase64Encode for all remainder lengths", () => {
@@ -86,4 +86,73 @@ describe("resolveImageToBase64", () => {
     }
   });
 
+});
+
+describe("isPrivateAddress", () => {
+  test("flags loopback, private, link-local, CGNAT, ULA and mapped addresses", () => {
+    for (const ip of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254",
+      "100.64.0.1", "0.0.0.0", "::1", "::", "fd00::1", "fe80::1", "[::1]", "::ffff:127.0.0.1"]) {
+      expect(isPrivateAddress(ip)).toBe(true);
+    }
+  });
+
+  test("allows public addresses", () => {
+    for (const ip of ["8.8.8.8", "172.32.0.1", "100.128.0.1", "2606:4700::1111"]) {
+      expect(isPrivateAddress(ip)).toBe(false);
+    }
+  });
+});
+
+describe("resolveImageToBase64 publicOnly", () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+  async function withFetch(impl: (url: URL, opts: any) => Response, run: (calls: string[]) => Promise<void>) {
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: any, opts: any) => { calls.push(String(url)); return impl(new URL(String(url)), opts); }) as any;
+    try { await run(calls); } finally { globalThis.fetch = originalFetch; }
+  }
+
+  test("refuses private literal hosts without fetching", async () => {
+    await withFetch(() => new Response(png), async (calls) => {
+      for (const host of ["localhost", "127.0.0.1", "169.254.169.254", "[::1]"]) {
+        await expect(resolveImageToBase64({ url: `https://${host}/a.png` }, { publicOnly: true })).rejects.toThrow(/private\/internal/);
+      }
+      expect(calls).toEqual([]);
+    });
+  });
+
+  test("refuses a redirect to a private address and does not follow it", async () => {
+    await withFetch((url, opts) => {
+      expect(opts.redirect).toBe("manual");
+      return new Response(null, { status: 302, headers: { location: "https://169.254.169.254/latest/meta-data" } });
+    }, async (calls) => {
+      await expect(resolveImageToBase64({ url: "https://8.8.8.8/a.png" }, { publicOnly: true })).rejects.toThrow(/private\/internal/);
+      expect(calls).toEqual(["https://8.8.8.8/a.png"]);
+    });
+  });
+
+  test("follows a redirect to a public address", async () => {
+    await withFetch((url) => url.pathname === "/a.png"
+      ? new Response(null, { status: 301, headers: { location: "/b.png" } })
+      : new Response(png, { headers: { "content-type": "image/png" } }),
+    async (calls) => {
+      const b64 = await resolveImageToBase64({ url: "https://8.8.8.8/a.png" }, { publicOnly: true });
+      expect(Buffer.from(b64, "base64")).toEqual(Buffer.from(png));
+      expect(calls).toEqual(["https://8.8.8.8/a.png", "https://8.8.8.8/b.png"]);
+    });
+  });
+
+  test("rejects content types outside the raster allowlist", async () => {
+    await withFetch(() => new Response("<svg/>", { headers: { "content-type": "image/svg+xml" } }), async () => {
+      await expect(resolveImageToBase64({ url: "https://8.8.8.8/a.svg" }, { publicOnly: true })).rejects.toThrow(/supported image/);
+    });
+  });
+
+  test("default mode still allows localhost (set_image_fill behaviour unchanged)", async () => {
+    await withFetch(() => new Response(png, { headers: { "content-type": "image/png" } }), async (calls) => {
+      await resolveImageToBase64({ url: "https://localhost/a.png" });
+      expect(calls).toEqual(["https://localhost/a.png"]);
+    });
+  });
 });

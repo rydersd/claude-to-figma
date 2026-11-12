@@ -10,6 +10,14 @@ const channels = new Map<string, Set<ServerWebSocket<any>>>();
 const roles = new WeakMap<ServerWebSocket<any>, "mcp" | "plugin">();
 const isPlugin = (ws: ServerWebSocket<any>) => roles.get(ws) !== "mcp";
 
+// JSON.stringify replacer for logging: shortens long strings (base64 image
+// data, SVG, eval code) so one message can't flood the terminal.
+function truncateLongStrings(_key: string, value: unknown) {
+  return typeof value === "string" && value.length > 500
+    ? `${value.slice(0, 80)}… <${(value.length / 1024).toFixed(0)}KB string>`
+    : value;
+}
+
 function handleConnection(ws: ServerWebSocket<any>) {
   // Don't add to clients immediately - wait for channel join
   console.log("New client connected");
@@ -89,7 +97,7 @@ const server = Bun.serve({
         } else if (data.message?.result) {
           console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
         }
-        console.log(`Full message:`, JSON.stringify(data, null, 2));
+        console.log(`Full message:`, JSON.stringify(data, truncateLongStrings, 2));
 
         if (data.type === "join") {
           const channelName = data.channel;
@@ -188,7 +196,7 @@ const server = Bun.serve({
                 channel: channelName
               };
               console.log(`\n=== Broadcasting to peer #${broadcastCount} ===`);
-              console.log(JSON.stringify(broadcastMessage, null, 2));
+              console.log(JSON.stringify(broadcastMessage, truncateLongStrings, 2));
               client.send(JSON.stringify(broadcastMessage));
             }
           });

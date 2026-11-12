@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
+import { resolveImageToBase64 } from "./images.js";
 
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
   // set_effects, set_opacity, set_blend_mode, and set_rotation are consolidated into
@@ -125,6 +126,32 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       return { content: [{ type: "text", text }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Error creating component set: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+
+  server.tool("place_image", "Place an image from a public URL as a new rectangle sized to the image (or to width/height; give one and the other keeps the aspect ratio). The server fetches it and refuses URLs that are, resolve to, or redirect to private/internal addresses. Supports PNG, JPEG, GIF, WebP, AVIF, BMP, TIFF. To fill an existing node, or to use a local file, use set_image_fill.", {
+    url: z.string().url().describe("Public HTTP(S) URL of the image"),
+    x: z.number().optional().describe("X position (default 0)"),
+    y: z.number().optional().describe("Y position (default 0)"),
+    width: z.number().positive().optional().describe("Width (default: the image's natural width, capped at 4096)"),
+    height: z.number().positive().optional().describe("Height (default: the image's natural height, capped at 4096)"),
+    name: z.string().optional().describe("Layer name (default: the file name from the URL)"),
+    parentId: z.string().optional().describe("Parent node ID to place the image into"),
+    scaleMode: z.enum(["FILL", "FIT", "CROP", "TILE"]).optional().describe("How the image fills the rectangle (default FILL)"),
+  }, async ({ url, x, y, width, height, name, parentId, scaleMode }: any) => {
+    try {
+      const base64 = await resolveImageToBase64({ url }, { publicOnly: true });
+      const derivedName = name || decodeURIComponent(new URL(url).pathname.split("/").pop() || "").slice(0, 100) || "Reference Image";
+      const result = await sendCommandToFigma("place_image", {
+        image: { base64, scaleMode },
+        x, y, width, height,
+        name: derivedName,
+        parentId,
+      }, 60000);
+      const r = result as { id: string; name: string; x: number; y: number; width: number; height: number };
+      return { content: [{ type: "text", text: `Placed image "${r.name}" (${r.id}) at (${r.x}, ${r.y}), size ${r.width}x${r.height}` }] };
+    } catch (error) {
+      return { content: [{ type: "text", text: `Error placing image: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
 }

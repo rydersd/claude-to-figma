@@ -4,7 +4,7 @@
 // Module imports
 import { getDocumentInfo, getSelection, getNodeInfo, getNodesInfo, readMyDesign, getAnnotations, setAnnotation, scanNodesByTypes, setMultipleAnnotations } from './document';
 import { setTextContent, scanTextNodes, setMultipleTextContents, setFontFamily, setTextAutoResize, setTextDecoration, setTextAlign, setTextFormat, setTextList, setRangeFormat } from './text';
-import { createRectangle, createFrame, createText, createEllipse, createSection, createSvg } from './creation';
+import { createRectangle, createFrame, createText, createEllipse, createSection, createSvg, placeImage } from './creation';
 import { setFillColor, batchSetFillColor, setStrokeColor, setCornerRadius, removeFill, setStrokeDash, setStrokeProperties, setClipsContent, setEffects, setOpacity, setBlendMode, setRotation, setConstraints, setMinMaxSize, setMask, setImageFill } from './styling';
 import { moveNode, resizeNode, deleteNode, deleteMultipleNodes, cloneNode, batchClone, renameNode, batchRename, groupNodes, batchReparent, insertChildAt, reorderChild, setLayoutPositioning } from './transforms';
 import { setLayoutMode, setPadding, setAxisAlign, setLayoutSizing, setItemSpacing } from './layout';
@@ -159,6 +159,8 @@ async function handleCommand(command: string, params: any) {
       return await setFillColor(params);
     case "set_image_fill":
       return await setImageFill(params);
+    case "place_image":
+      return await placeImage(params);
     case "set_stroke_color":
       return await setStrokeColor(params);
     case "move_node":

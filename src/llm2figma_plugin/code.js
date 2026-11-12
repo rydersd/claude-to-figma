@@ -2071,6 +2071,51 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   }
 
   // src/llm2figma_plugin/src/creation.ts
+  async function placeImage(params) {
+    const { image, x, y, width, height, name, parentId } = params || {};
+    if (!image || !image.base64) throw new Error("Missing image data");
+    const rect = figma.createRectangle();
+    let naturalWidth, naturalHeight;
+    try {
+      rect.name = name || "Reference Image";
+      const { imageHash } = applyImageFill(rect, image);
+      const size = await figma.getImageByHash(imageHash).getSizeAsync();
+      naturalWidth = size.width || 400;
+      naturalHeight = size.height || 400;
+      let w, h;
+      if (width && height) {
+        w = width;
+        h = height;
+      } else if (width) {
+        w = width;
+        h = Math.round(width / naturalWidth * naturalHeight);
+      } else if (height) {
+        h = height;
+        w = Math.round(height / naturalHeight * naturalWidth);
+      } else {
+        const scale = Math.min(1, 4096 / Math.max(naturalWidth, naturalHeight));
+        w = Math.round(naturalWidth * scale);
+        h = Math.round(naturalHeight * scale);
+      }
+      rect.resize(w, h);
+      if (x !== void 0) rect.x = x;
+      if (y !== void 0) rect.y = y;
+      await appendOrInsertChild(rect, parentId, params.insertAt);
+    } catch (error) {
+      rect.remove();
+      throw error;
+    }
+    return {
+      id: rect.id,
+      name: rect.name,
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      naturalWidth,
+      naturalHeight
+    };
+  }
   async function createRectangle(params) {
     const {
       x = 0,
@@ -8015,6 +8060,8 @@ ${detail}`);
         return await setFillColor(params);
       case "set_image_fill":
         return await setImageFill(params);
+      case "place_image":
+        return await placeImage(params);
       case "set_stroke_color":
         return await setStrokeColor(params);
       case "move_node":
