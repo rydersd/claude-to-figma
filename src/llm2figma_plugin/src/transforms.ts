@@ -2,6 +2,7 @@
 // `figma` is a global provided by the Figma plugin runtime — do NOT import it.
 
 import { sendProgressUpdate, generateCommandId, delay } from './utils';
+import { resizeWithReadBack } from './verify';
 
 export async function moveNode(params: any) {
   const { nodeId, x, y } = params || {};
@@ -54,17 +55,14 @@ export async function resizeNode(params: any) {
     throw new Error(`Node does not support resizing: ${nodeId}`);
   }
 
-  if ("resize" in node) {
-    (node as any).resize(width, height);
-  } else {
-    (node as any).resizeWithoutConstraints(width, height);
-  }
+  const readBack = resizeWithReadBack(node, width, height);
 
   return {
     id: node.id,
     name: node.name,
     width: (node as any).width,
     height: (node as any).height,
+    ...readBack,
   };
 }
 

@@ -29,6 +29,16 @@ Tools for understanding what's on the canvas before changing it: document and se
 
 These two close the loop in [[Design-Round-Trip]] — after a batch of mutations, export and look at the result instead of trusting the numbers.
 
+## Geometry verification (L2F_VERIFY)
+
+Registered only when the server runs with `L2F_VERIFY=1`. All three are reads and run in Dev Mode.
+
+- `assert_contained` — checks that each direct child of `parentId` sits inside the parent, comparing `absoluteBoundingBox` to `absoluteBoundingBox` with a 0.5px tolerance (shadows and other render bounds are ignored). A child with no box is reported `unmeasurable` and fails the check; rotated children are listed and checked by their axis-aligned box. Returns `contained`, `outside` (with per-side `overflow`), `unmeasurable`, `rotated`, and, when `expected` is given, `displaced`, `placementOk` and `parentGrewSinceSnapshot`
+- `snapshot_positions` — records `{id, name, parentId, box}` for a node and its descendants (default 2,000 nodes, depth 30, with `truncated`) and returns a `snapshotId`. Snapshots live in the plugin: 30-minute expiry, at most 64, lost when the plugin reloads
+- `diff_positions` — compares a snapshot with the document now. `missing` ids no longer exist, `added` ids are new in the subtree, `moved` entries changed box or parent (`reparented`, `boxChanged`). An unknown or expired `snapshotId` is an error, never an empty diff
+
+A bare containment pass does not prove placement. Section children are positioned relative to the section, so a child set to `sec.x + 160` instead of `160` lands one section-origin away, and the section auto-grows to contain it: every child is still inside. To catch that, pass `expected` to `assert_contained`, either a `snapshotId` taken before the change or a map of `{childId: {x, y}}` offsets from the parent's top-left. For a reparent, take a snapshot of a common ancestor first; `diff_positions` then shows the node as `reparented` with `boxChanged: false` when nothing drifted.
+
 ## Safety net
 
 - `undo` — reverse up to 50 steps of plugin-driven changes

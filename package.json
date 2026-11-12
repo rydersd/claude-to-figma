@@ -19,7 +19,7 @@
     "setup": "./scripts/setup.sh",
     "token": "./scripts/store-figma-token.sh",
     "typecheck": "tsc --noEmit",
-    "test:unit": "bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts tests/efficiency.test.ts tests/launcher.test.ts tests/flags.test.ts tests/keychain.test.ts tests/mcp-config.test.ts tests/plugin-runtime.test.ts tests/connection.test.ts tests/file-key.test.ts",
+    "test:unit": "bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts tests/efficiency.test.ts tests/launcher.test.ts tests/flags.test.ts tests/keychain.test.ts tests/mcp-config.test.ts tests/plugin-runtime.test.ts tests/connection.test.ts tests/file-key.test.ts tests/verify.test.ts",
     "build": "tsup && ./scripts/build-claude-plugin.sh",
     "build:plugin": "tsup --config tsup.config.ts -- src/llm2figma_plugin/src/main.ts",
     "build:watch": "tsup --watch",

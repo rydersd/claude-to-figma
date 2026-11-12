@@ -1,8 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
+import { isEnabled } from "../../shared/flags.js";
+import { describeReadBack, stripReadBack } from "./verify.js";
 
-export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
+export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn, env: Record<string, string | undefined> = process.env) {
+  // Read from the server environment only; no tool parameter can turn it on.
+  const verifyEnabled = isEnabled("VERIFY", env);
+
   server.tool("set_layout_mode", "Set the layout mode and wrap behavior of a frame in Figma", {
     nodeId: z.string().describe("The ID of the frame to modify"),
     layoutMode: z.enum(["NONE", "HORIZONTAL", "VERTICAL"]).describe("Layout mode for the frame"),
@@ -77,8 +82,10 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     height: z.number().positive().describe("New height"),
   }, async ({ nodeId, width, height }: any) => {
     try {
-      const result = await sendCommandToFigma("resize_node", { nodeId, width, height });
+      const result = stripReadBack(await sendCommandToFigma("resize_node", { nodeId, width, height }), verifyEnabled);
       const typedResult = result as { name: string };
+      const readBack = verifyEnabled ? describeReadBack(result as any) : null;
+      if (readBack) return { content: [{ type: "text", text: `Resized node "${typedResult.name}": ${readBack}` }] };
       return { content: [{ type: "text", text: `Resized node "${typedResult.name}" to width ${width} and height ${height}` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Error resizing node: ${error instanceof Error ? error.message : String(error)}` }] };
