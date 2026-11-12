@@ -159,7 +159,10 @@ export type FigmaCommand =
   | "undo"
   | "subscribe_events"
   | "unsubscribe_events"
-  | "place_image";
+  | "place_image"
+  | "assert_contained"
+  | "snapshot_positions"
+  | "diff_positions";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -508,6 +511,20 @@ export type CommandParams = {
   };
   batch_mutate: {
     operations: Array<{ op: string; nodeId: string; [key: string]: any }>;
+  };
+  assert_contained: {
+    parentId: string;
+    expected?: string | Record<string, { x: number; y: number }>;
+    tolerance?: number;
+  };
+  snapshot_positions: {
+    nodeId: string;
+    maxNodes?: number;
+    maxDepth?: number;
+  };
+  diff_positions: {
+    snapshotId: string;
+    tolerance?: number;
   };
   scan_node_styles: {
     nodeId: string;

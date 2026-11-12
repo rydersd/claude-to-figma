@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
+import { isEnabled } from "../../shared/flags.js";
+import { describeReadBack } from "./verify.js";
 
 const OperationSchema = z.discriminatedUnion("op", [
   z.object({
@@ -124,7 +126,9 @@ const OperationSchema = z.discriminatedUnion("op", [
   }),
 ]);
 
-export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
+export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn, env: Record<string, string | undefined> = process.env) {
+  // Read from the server environment only; no tool parameter can turn it on.
+  const verifyEnabled = isEnabled("VERIFY", env);
   server.tool(
     "batch_mutate",
     "Execute multiple mixed operations in a single round-trip — the primary tool for tweaking existing nodes. Supports: rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path, set_opacity, set_rotation, set_blend_mode, set_corner_radius, set_effects, set_padding, set_item_spacing, set_text_decoration. Operations run sequentially — later operations can depend on earlier ones. Dramatically reduces MCP call count for bulk updates.",
@@ -145,6 +149,16 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
         let responseText = `Batch mutate: ${typedResult.successCount}/${typedResult.totalOperations} succeeded`;
         if (failedResults.length > 0) {
           responseText += `\n\nFailed:\n${failedResults.map(r => `- ${r.op} ${r.nodeId}: ${r.error}`).join("\n")}`;
+        }
+        if (verifyEnabled) {
+          const resizes = typedResult.results.filter(r => r.success && r.op === "resize" && describeReadBack(r) !== null);
+          if (resizes.length > 0) {
+            const partial = resizes.filter(r => r.partial);
+            responseText += `\n\nResize read-back: ${resizes.length - partial.length}/${resizes.length} applied as requested`;
+            if (partial.length > 0) {
+              responseText += `\nPartial:\n${partial.map(r => `- ${r.nodeId} "${r.name}": ${describeReadBack(r)}`).join("\n")}`;
+            }
+          }
         }
 
         return {

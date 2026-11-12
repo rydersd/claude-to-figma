@@ -19,6 +19,8 @@ Tools that act on many nodes in one round-trip. On a 30-second command timeout, 
 
 `batch_mutate` executes a heterogeneous array of operations in a single round-trip: `rename`, `set_fill`, `set_stroke`, `move`, `resize`, `delete`, `set_text`, `set_visible`, `set_font`, `set_text_align`, `set_vector_path`, `set_opacity`, `set_rotation`, `set_blend_mode`, `set_corner_radius`, `set_effects`, `set_padding`, `set_item_spacing`, `set_text_decoration`. Each operation runs independently — one failure won't abort the others. This is the tool for "apply this list of 40 tweaks" moments.
 
+With `L2F_VERIFY=1`, each `resize` result also carries `requested`, `applied`, `partial` and `cause`, and the reply lists any resize Figma applied only in part. The existing `width` and `height` keys still hold the requested values. With the flag off the reply is unchanged. See [verification](Tools-Reading-and-Inspection.md#geometry-verification-l2f_verify).
+
 The last eight ops (`set_opacity` through `set_text_decoration`) were previously standalone tools. They were folded into `batch_mutate` to keep the top-level tool surface lean — fewer registered tools means less schema loaded into every session's context. See [[Roadmap#token-efficiency|token efficiency]] for the rationale.
 
 ## Query-then-update: design_query

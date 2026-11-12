@@ -1,6 +1,10 @@
 (function () {
   'use strict';
 
+  var __defProp = Object.defineProperty;
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
   // src/shared/inspection.ts
   function boundNodeTree(root, options = {}) {
     const maxNodes = Math.min(1e3, Math.max(1, options.maxNodes ?? 100));
@@ -2690,7 +2694,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
   async function setStrokeProperties(params) {
-    const { nodeId, weight, cap, join, align, dashPattern } = params || {};
+    const { nodeId, weight, cap: cap2, join, align, dashPattern } = params || {};
     if (!nodeId) {
       throw new Error("Missing nodeId parameter");
     }
@@ -2704,8 +2708,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (weight !== void 0) {
       node.strokeWeight = weight;
     }
-    if (cap !== void 0) {
-      node.strokeCap = cap;
+    if (cap2 !== void 0) {
+      node.strokeCap = cap2;
     }
     if (join !== void 0) {
       node.strokeJoin = join;
@@ -2875,6 +2879,345 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
+  // src/shared/walk.ts
+  var WALK_LIMITS = { defaultNodes: 2e3, maxNodes: 1e4, defaultDepth: 30, maxDepth: 100 };
+  function walkTree(root, visit, options = {}, getChildren = (node) => node && node.children) {
+    const maxNodes = Math.min(WALK_LIMITS.maxNodes, Math.max(1, Math.floor(options.maxNodes ?? WALK_LIMITS.defaultNodes)));
+    const maxDepth = Math.min(WALK_LIMITS.maxDepth, Math.max(0, Math.floor(options.maxDepth ?? WALK_LIMITS.defaultDepth)));
+    let visited = 0;
+    let truncated = false;
+    const cutOff = /* @__PURE__ */ new Set();
+    const stack = [{ node: root, depth: 0, parent: null }];
+    while (stack.length) {
+      if (visited >= maxNodes) {
+        truncated = true;
+        for (const pending of stack) if (pending.parent !== null) cutOff.add(pending.parent);
+        break;
+      }
+      const { node, depth, parent } = stack.pop();
+      visited++;
+      if (visit(node, depth, parent) === false) continue;
+      const children = getChildren(node);
+      if (!children || !children.length) continue;
+      if (depth >= maxDepth) {
+        truncated = true;
+        cutOff.add(node);
+        continue;
+      }
+      for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], depth: depth + 1, parent: node });
+    }
+    return { visited, truncated, truncatedParents: [...cutOff], maxNodes, maxDepth };
+  }
+
+  // src/shared/verify.ts
+  var CONTAINMENT_TOLERANCE = 0.5;
+  var SIZE_EPSILON = 0.01;
+  function toBox(value) {
+    if (!value || typeof value !== "object") return null;
+    const { x, y, width, height } = value;
+    return [x, y, width, height].every((n) => typeof n === "number" && isFinite(n)) ? { x, y, width, height } : null;
+  }
+  function boxOverflow(parent, child, tolerance = CONTAINMENT_TOLERANCE) {
+    const overflow = {
+      left: parent.x - child.x,
+      top: parent.y - child.y,
+      right: child.x + child.width - (parent.x + parent.width),
+      bottom: child.y + child.height - (parent.y + parent.height)
+    };
+    return Object.values(overflow).some((v) => v > tolerance) ? overflow : null;
+  }
+  function axisCause(axis, requested, applied, s) {
+    const horizontal = axis === "width";
+    const sizing = horizontal ? s.layoutSizingHorizontal : s.layoutSizingVertical;
+    const min = horizontal ? s.minWidth : s.minHeight;
+    const max = horizontal ? s.maxWidth : s.maxHeight;
+    const minName = horizontal ? "minWidth" : "minHeight";
+    const maxName = horizontal ? "maxWidth" : "maxHeight";
+    if (sizing === "HUG" || sizing === "FILL") return `${axis}: ${horizontal ? "layoutSizingHorizontal" : "layoutSizingVertical"} is ${sizing}`;
+    if (typeof min === "number" && requested < min - SIZE_EPSILON) return `${axis}: ${minName} is ${min}`;
+    if (typeof max === "number" && requested > max + SIZE_EPSILON) return `${axis}: ${maxName} is ${max}`;
+    if (s.type === "TEXT" && (s.textAutoResize === "WIDTH_AND_HEIGHT" || !horizontal && s.textAutoResize === "HEIGHT")) {
+      return `${axis}: textAutoResize is ${s.textAutoResize}`;
+    }
+    return `${axis}: unexplained (requested ${requested}, Figma applied ${applied}; no sizing mode, min/max or text auto-resize accounts for it)`;
+  }
+  function resizeReadBack(requested, applied, state2) {
+    const causes = [];
+    if (Math.abs(applied.width - requested.width) > SIZE_EPSILON) causes.push(axisCause("width", requested.width, applied.width, state2));
+    if (Math.abs(applied.height - requested.height) > SIZE_EPSILON) causes.push(axisCause("height", requested.height, applied.height, state2));
+    return {
+      requested: { width: requested.width, height: requested.height },
+      applied: { width: applied.width, height: applied.height },
+      partial: causes.length > 0,
+      cause: causes.length ? causes.join("; ") : null
+    };
+  }
+  function boxMoved(a, b, tolerance) {
+    if (!a || !b) return a !== b;
+    return Math.abs(a.x - b.x) > tolerance || Math.abs(a.y - b.y) > tolerance || Math.abs(a.width - b.width) > tolerance || Math.abs(a.height - b.height) > tolerance;
+  }
+  function diffPositionEntries(before, after, tolerance = CONTAINMENT_TOLERANCE) {
+    const now = new Map(after.map((e) => [e.id, e]));
+    const then = new Set(before.map((e) => e.id));
+    const missing = [];
+    const moved = [];
+    for (const old of before) {
+      const cur = now.get(old.id);
+      if (!cur) {
+        missing.push(old.id);
+        continue;
+      }
+      const reparented = old.parentId !== cur.parentId;
+      const boxChanged = boxMoved(old.box, cur.box, tolerance);
+      if (reparented || boxChanged) {
+        moved.push({ id: old.id, name: cur.name, reparented, boxChanged, from: { parentId: old.parentId, box: old.box }, to: { parentId: cur.parentId, box: cur.box } });
+      }
+    }
+    const added = after.filter((e) => !then.has(e.id)).map((e) => e.id);
+    return { missing, added, moved };
+  }
+
+  // src/llm2figma_plugin/src/verify.ts
+  function resizeWithReadBack(node, width, height) {
+    if ("resize" in node) node.resize(width, height);
+    else node.resizeWithoutConstraints(width, height);
+    return resizeReadBack({ width, height }, { width: node.width, height: node.height }, {
+      type: node.type,
+      layoutSizingHorizontal: node.layoutSizingHorizontal,
+      layoutSizingVertical: node.layoutSizingVertical,
+      minWidth: node.minWidth,
+      maxWidth: node.maxWidth,
+      minHeight: node.minHeight,
+      maxHeight: node.maxHeight,
+      textAutoResize: node.textAutoResize
+    });
+  }
+  function positionEntry(node) {
+    return {
+      id: node.id,
+      name: node.name,
+      parentId: node.parent ? node.parent.id : null,
+      box: "absoluteBoundingBox" in node ? toBox(node.absoluteBoundingBox) : null
+    };
+  }
+  var _PositionSnapshotStore = class _PositionSnapshotStore {
+    constructor(now = Date.now) {
+      this.now = now;
+      __publicField(this, "entries", /* @__PURE__ */ new Map());
+      __publicField(this, "counter", 0);
+    }
+    purge() {
+      for (const [id, s] of this.entries) if (s.expiresAt <= this.now()) this.entries.delete(id);
+    }
+    add(rootId, entries, truncated, walk, truncatedParentIds = []) {
+      this.purge();
+      if (this.entries.size >= _PositionSnapshotStore.MAX_ENTRIES) this.entries.delete(this.entries.keys().next().value);
+      const snapshotId = `snap-${++this.counter}-${this.now().toString(36)}`;
+      const expiresAt = this.now() + _PositionSnapshotStore.TTL_MS;
+      this.entries.set(snapshotId, { rootId, entries, truncated, truncatedParentIds, expiresAt, walk });
+      return { snapshotId, expiresAt };
+    }
+    get(snapshotId) {
+      this.purge();
+      const snapshot = this.entries.get(snapshotId);
+      if (!snapshot) {
+        throw new Error(`Snapshot expired: ${snapshotId} is unknown or older than 30 minutes (snapshots are lost when the plugin reloads). Take a new snapshot with snapshot_positions.`);
+      }
+      return snapshot;
+    }
+  };
+  __publicField(_PositionSnapshotStore, "TTL_MS", 30 * 60 * 1e3);
+  __publicField(_PositionSnapshotStore, "MAX_ENTRIES", 64);
+  var PositionSnapshotStore = _PositionSnapshotStore;
+  var snapshotStore = new PositionSnapshotStore();
+  var LIST_CAP = 100;
+  var cap = (list) => list.slice(0, LIST_CAP);
+  async function requireNode(nodeId) {
+    if (!nodeId) throw new Error("Missing nodeId parameter");
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+    return node;
+  }
+  function readSubtree(root, walk) {
+    const entries = [];
+    const result = walkTree(root, (node) => {
+      entries.push(positionEntry(node));
+    }, walk);
+    return { entries, truncated: result.truncated, truncatedParentIds: result.truncatedParents.map((n) => n.id) };
+  }
+  async function snapshotPositions(params) {
+    const { nodeId, maxNodes, maxDepth } = params || {};
+    const root = await requireNode(nodeId);
+    const walk = { maxNodes, maxDepth };
+    const { entries, truncated, truncatedParentIds } = readSubtree(root, walk);
+    const { snapshotId, expiresAt } = snapshotStore.add(root.id, entries, truncated, walk, truncatedParentIds);
+    return { snapshotId, rootId: root.id, count: entries.length, truncated, expiresAt };
+  }
+  function unseenBySnapshot(entry, nowById, snapshotIds, cutOff) {
+    let parentId = entry.parentId;
+    const guard = /* @__PURE__ */ new Set();
+    while (parentId && !snapshotIds.has(parentId) && !guard.has(parentId)) {
+      guard.add(parentId);
+      const parent = nowById.get(parentId);
+      if (!parent) return true;
+      parentId = parent.parentId;
+    }
+    return !parentId || !snapshotIds.has(parentId) || cutOff.has(parentId);
+  }
+  async function diffPositions(params) {
+    const { snapshotId, tolerance = CONTAINMENT_TOLERANCE } = params || {};
+    if (!snapshotId) throw new Error("Missing snapshotId parameter");
+    const snapshot = snapshotStore.get(snapshotId);
+    const root = await figma.getNodeByIdAsync(snapshot.rootId);
+    const after = [];
+    let rewalkTruncated = false;
+    if (root) {
+      const now = readSubtree(root, snapshot.walk);
+      after.push(...now.entries);
+      rewalkTruncated = now.truncated;
+    }
+    const seen = new Set(after.map((e) => e.id));
+    for (const old of snapshot.entries) {
+      if (seen.has(old.id)) continue;
+      const node = await figma.getNodeByIdAsync(old.id);
+      if (node && !node.removed) after.push(positionEntry(node));
+    }
+    const diff = diffPositionEntries(snapshot.entries, after, tolerance);
+    let added = diff.added;
+    const unsnapshotted = [];
+    if (snapshot.truncated) {
+      const nowById = new Map(after.map((e) => [e.id, e]));
+      const snapshotIds = new Set(snapshot.entries.map((e) => e.id));
+      const cutOff = new Set(snapshot.truncatedParentIds);
+      added = [];
+      for (const id of diff.added) {
+        if (unseenBySnapshot(nowById.get(id), nowById, snapshotIds, cutOff)) unsnapshotted.push(id);
+        else added.push(id);
+      }
+    }
+    const notes = [];
+    if (snapshot.truncated) notes.push("The snapshot was truncated: nodes under a parent whose children it did not finish reading are listed as unsnapshotted, not added, because they may have existed then.");
+    if (rewalkTruncated) notes.push("The re-walk hit its budget: snapshot nodes it did not reach were looked up by id (so missing still means gone), but new nodes past the budget are not listed in added.");
+    return {
+      snapshotId,
+      rootId: snapshot.rootId,
+      rootMissing: !root,
+      counts: { missing: diff.missing.length, added: added.length, moved: diff.moved.length, unsnapshotted: unsnapshotted.length },
+      missing: cap(diff.missing),
+      added: cap(added),
+      moved: cap(diff.moved),
+      unsnapshotted: cap(unsnapshotted),
+      listsTruncated: [diff.missing, added, diff.moved, unsnapshotted].some((l) => l.length > LIST_CAP),
+      truncated: snapshot.truncated || rewalkTruncated,
+      snapshotTruncated: snapshot.truncated,
+      rewalkTruncated,
+      ...notes.length ? { note: notes.join(" ") } : {}
+    };
+  }
+  var isRotated = (node) => typeof node.rotation === "number" && Math.abs(node.rotation) > 0.01;
+  async function assertContained(params) {
+    const { parentId, expected, tolerance = CONTAINMENT_TOLERANCE } = params || {};
+    const parent = await requireNode(parentId);
+    if (!("children" in parent) || !Array.isArray(parent.children)) throw new Error(`Node has no children: ${parentId}`);
+    const parentBox = toBox(parent.absoluteBoundingBox);
+    const parentRotated = isRotated(parent);
+    let expectedOffsets = null;
+    let parentGrewSinceSnapshot = null;
+    let snapshotTruncated = null;
+    let snapshotCutChildren = false;
+    const fromSnapshot = typeof expected === "string";
+    if (fromSnapshot) {
+      const snapshot = snapshotStore.get(expected);
+      const byId = new Map(snapshot.entries.map((e) => [e.id, e]));
+      const parentThen = byId.get(parent.id);
+      if (!parentThen || !parentThen.box) throw new Error(`Snapshot ${expected} does not hold a measurable box for parent ${parent.id}`);
+      snapshotTruncated = snapshot.truncated;
+      snapshotCutChildren = snapshot.truncatedParentIds.includes(parent.id);
+      expectedOffsets = {};
+      for (const entry of snapshot.entries) {
+        if (entry.parentId === parent.id && entry.box) {
+          expectedOffsets[entry.id] = { x: entry.box.x - parentThen.box.x, y: entry.box.y - parentThen.box.y };
+        }
+      }
+      parentGrewSinceSnapshot = parentBox ? parentBox.width > parentThen.box.width + tolerance || parentBox.height > parentThen.box.height + tolerance : null;
+    } else if (expected && typeof expected === "object") {
+      expectedOffsets = expected;
+    }
+    const outside = [];
+    const unmeasurable = [];
+    const rotated = [];
+    const displaced = [];
+    const notInExpected = [];
+    const placementUnchecked = [];
+    const childIds = /* @__PURE__ */ new Set();
+    for (const child of parent.children) {
+      childIds.add(child.id);
+      const box = toBox(child.absoluteBoundingBox);
+      const childRotated = isRotated(child);
+      if (childRotated) rotated.push({ id: child.id, name: child.name, rotation: child.rotation });
+      const want = expectedOffsets ? expectedOffsets[child.id] : void 0;
+      if (expectedOffsets && !want) notInExpected.push(child.id);
+      if (!box || !parentBox) {
+        unmeasurable.push({ id: child.id, name: child.name });
+        if (want && parentBox) displaced.push({ id: child.id, name: child.name, expected: want, actual: null });
+        continue;
+      }
+      const overflow = boxOverflow(parentBox, box, tolerance);
+      if (overflow) outside.push({ id: child.id, name: child.name, box, overflow });
+      if (!want) continue;
+      if (childRotated || parentRotated) {
+        placementUnchecked.push(child.id);
+        continue;
+      }
+      const actual = { x: box.x - parentBox.x, y: box.y - parentBox.y };
+      if (Math.abs(actual.x - want.x) > tolerance || Math.abs(actual.y - want.y) > tolerance) {
+        displaced.push({ id: child.id, name: child.name, expected: want, actual });
+      }
+    }
+    const expectedNotFound = expectedOffsets ? Object.keys(expectedOffsets).filter((id) => !childIds.has(id)) : [];
+    const placementChecked = expectedOffsets !== null;
+    let placementOk = null;
+    if (placementChecked && parentBox) {
+      if (displaced.length || expectedNotFound.length) placementOk = false;
+      else if (fromSnapshot && notInExpected.length) placementOk = snapshotCutChildren ? null : false;
+      else if (placementUnchecked.length) placementOk = null;
+      else placementOk = true;
+    }
+    const anyFailure = outside.length > 0 || unmeasurable.length > 0;
+    const contained = !parentBox ? false : anyFailure ? false : parentRotated ? null : true;
+    const notes = [];
+    if (!parentBox) notes.push("The parent has no absoluteBoundingBox, so nothing could be measured.");
+    else if (!placementChecked) notes.push("Containment alone does not prove placement: a section auto-grows around displaced children. Pass expected (a snapshot id or an offset map) to check positions.");
+    else notes.push("Offsets are absoluteBoundingBox origin minus the parent's (shadows and other render bounds ignored), never node x/y: a GROUP's children are positioned relative to the group's parent.");
+    if (parentRotated) notes.push("The parent is rotated: containment is only known to fail, and placement is not compared.");
+    if (placementUnchecked.length && !parentRotated) notes.push("Rotated children are listed in placementUnchecked and not compared.");
+    if (fromSnapshot && snapshotCutChildren && notInExpected.length) notes.push("The snapshot did not read all of this parent's children, so children not in it may have existed then; placement is unknown.");
+    else if (fromSnapshot && notInExpected.length) notes.push("Children not in the snapshot were added since it was taken; their placement was never checked.");
+    return {
+      parentId: parent.id,
+      parentName: parent.name,
+      parentBox,
+      parentRotated,
+      tolerance,
+      childCount: parent.children.length,
+      contained,
+      placementChecked,
+      placementOk,
+      parentGrewSinceSnapshot,
+      ...fromSnapshot ? { snapshotTruncated } : {},
+      counts: { outside: outside.length, unmeasurable: unmeasurable.length, rotated: rotated.length, displaced: displaced.length, notInExpected: notInExpected.length, expectedNotFound: expectedNotFound.length, placementUnchecked: placementUnchecked.length },
+      outside: cap(outside),
+      unmeasurable: cap(unmeasurable),
+      rotated: cap(rotated),
+      displaced: cap(displaced),
+      notInExpected: cap(notInExpected),
+      expectedNotFound: cap(expectedNotFound),
+      placementUnchecked: cap(placementUnchecked),
+      listsTruncated: [outside, unmeasurable, rotated, displaced, notInExpected, expectedNotFound, placementUnchecked].some((l) => l.length > LIST_CAP),
+      note: notes.join(" ")
+    };
+  }
+
   // src/llm2figma_plugin/src/transforms.ts
   async function moveNode(params) {
     const { nodeId, x, y } = params || {};
@@ -2915,16 +3258,13 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!("resize" in node) && !("resizeWithoutConstraints" in node)) {
       throw new Error(`Node does not support resizing: ${nodeId}`);
     }
-    if ("resize" in node) {
-      node.resize(width, height);
-    } else {
-      node.resizeWithoutConstraints(width, height);
-    }
+    const readBack = resizeWithReadBack(node, width, height);
     return {
       id: node.id,
       name: node.name,
       width: node.width,
-      height: node.height
+      height: node.height,
+      ...readBack
     };
   }
   async function deleteNode(params) {
@@ -5771,6 +6111,600 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
     return str;
   }
+  var COLOR_FIELDS = {
+    fillColor: "fills",
+    strokeColor: "strokes",
+    fontColor: "fills"
+    // text fill color
+  };
+  function createNodeTreeContext(options) {
+    return {
+      counters: { created: 0, updated: 0, unchanged: 0, pruned: 0, errors: 0 },
+      errors: [],
+      nodes: [],
+      nodeTypeCounts: {},
+      maxDepthSeen: 0,
+      totalNodes: options.totalNodes,
+      firstOnTop: options.firstOnTop === void 0 ? true : !!options.firstOnTop,
+      commandId: options.commandId,
+      prune: options.prune,
+      progressLabel: options.progressLabel || "create_node_tree",
+      progressEvery: options.progressEvery && options.progressEvery > 0 ? options.progressEvery : 5
+    };
+  }
+  async function resolveAndBind(props, only) {
+    const resolved = Object.assign({}, props);
+    const bindings = [];
+    for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
+      if (resolved[colorProp] != null) {
+        const colorValue = resolveColorValue(resolved[colorProp]);
+        if (colorValue.varRef) {
+          const variable = await getVariableByName(colorValue.varRef);
+          if (variable && variable.resolvedType === "COLOR") {
+            const modeIds = Object.keys(variable.valuesByMode);
+            if (modeIds.length > 0) {
+              const val = variable.valuesByMode[modeIds[0]];
+              if (val && typeof val === "object" && "r" in val) {
+                resolved[colorProp] = val;
+              } else {
+                delete resolved[colorProp];
+              }
+            } else {
+              delete resolved[colorProp];
+            }
+          } else {
+            delete resolved[colorProp];
+          }
+          bindings.push({ colorProp, figmaField, varRef: colorValue.varRef });
+        } else if (colorValue.color) {
+          resolved[colorProp] = colorValue.color;
+        }
+      }
+    }
+    return {
+      resolved,
+      bindings,
+      async bind(node) {
+        for (const binding of bindings) {
+          await bindVariableToColor(node, binding.figmaField, binding.varRef);
+        }
+      }
+    };
+  }
+  var TEXT_FONT_DEPENDENT = [
+    "text",
+    "fontSize",
+    "lineHeight",
+    "letterSpacing",
+    "textCase",
+    "textAlignHorizontal",
+    "width",
+    "textAutoResize",
+    "layoutSizingHorizontal",
+    "layoutSizingVertical"
+  ];
+  async function updateNodeProperties(existingNode, spec, only) {
+    const changedProps = [];
+    const type = existingNode.type.toLowerCase();
+    const consumed = /* @__PURE__ */ new Set();
+    const want = (key) => {
+      return true;
+    };
+    const wantAny = (...keys) => keys.map(want).some(Boolean);
+    if (want() && spec.name !== void 0 && existingNode.name !== spec.name) {
+      existingNode.name = spec.name;
+      changedProps.push("name");
+    }
+    if (want() && spec.x !== void 0 && existingNode.x !== spec.x) {
+      existingNode.x = spec.x;
+      changedProps.push("x");
+    }
+    if (want() && spec.y !== void 0 && existingNode.y !== spec.y) {
+      existingNode.y = spec.y;
+      changedProps.push("y");
+    }
+    if (want() && spec.opacity !== void 0 && existingNode.opacity !== spec.opacity) {
+      existingNode.opacity = spec.opacity;
+      changedProps.push("opacity");
+    }
+    if ("effects" in existingNode && want() && spec.effects !== void 0) {
+      existingNode.effects = buildFigmaEffects(spec.effects);
+      changedProps.push("effects");
+    }
+    if ("strokeAlign" in existingNode && want() && spec.strokeAlign !== void 0 && existingNode.strokeAlign !== spec.strokeAlign) {
+      existingNode.strokeAlign = spec.strokeAlign;
+      changedProps.push("strokeAlign");
+    }
+    if ("layoutPositioning" in existingNode && want() && spec.layoutPositioning !== void 0 && existingNode.layoutPositioning !== spec.layoutPositioning) {
+      applyLayoutPositioning(existingNode, spec);
+      changedProps.push("layoutPositioning");
+    }
+    if (type === "frame") {
+      if (wantAny("width", "height") && spec.width !== void 0 && spec.height !== void 0) {
+        if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
+          existingNode.resize(spec.width, spec.height);
+          changedProps.push("size");
+        }
+      }
+      if (want() && spec.fillColor !== void 0) {
+        applyColorPaint(existingNode, "fills", spec.fillColor);
+        changedProps.push("fillColor");
+      }
+      if (want() && spec.strokeColor !== void 0) {
+        applyColorPaint(existingNode, "strokes", spec.strokeColor);
+        changedProps.push("strokeColor");
+      }
+      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+        existingNode.strokeWeight = spec.strokeWeight;
+        changedProps.push("strokeWeight");
+      }
+      if (want() && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
+        existingNode.cornerRadius = spec.cornerRadius;
+        changedProps.push("cornerRadius");
+      }
+      if (want() && spec.clipsContent !== void 0 && existingNode.clipsContent !== !!spec.clipsContent) {
+        existingNode.clipsContent = !!spec.clipsContent;
+        changedProps.push("clipsContent");
+      }
+      if (want() && spec.layoutMode !== void 0 && existingNode.layoutMode !== spec.layoutMode) {
+        existingNode.layoutMode = spec.layoutMode;
+        changedProps.push("layoutMode");
+      }
+      if (want() && spec.layoutWrap !== void 0 && existingNode.layoutWrap !== spec.layoutWrap) {
+        existingNode.layoutWrap = spec.layoutWrap;
+        changedProps.push("layoutWrap");
+      }
+      if (want() && spec.paddingTop !== void 0 && existingNode.paddingTop !== spec.paddingTop) {
+        existingNode.paddingTop = spec.paddingTop;
+        changedProps.push("paddingTop");
+      }
+      if (want() && spec.paddingRight !== void 0 && existingNode.paddingRight !== spec.paddingRight) {
+        existingNode.paddingRight = spec.paddingRight;
+        changedProps.push("paddingRight");
+      }
+      if (want() && spec.paddingBottom !== void 0 && existingNode.paddingBottom !== spec.paddingBottom) {
+        existingNode.paddingBottom = spec.paddingBottom;
+        changedProps.push("paddingBottom");
+      }
+      if (want() && spec.paddingLeft !== void 0 && existingNode.paddingLeft !== spec.paddingLeft) {
+        existingNode.paddingLeft = spec.paddingLeft;
+        changedProps.push("paddingLeft");
+      }
+      if (want() && spec.primaryAxisAlignItems !== void 0 && existingNode.primaryAxisAlignItems !== spec.primaryAxisAlignItems) {
+        existingNode.primaryAxisAlignItems = spec.primaryAxisAlignItems;
+        changedProps.push("primaryAxisAlignItems");
+      }
+      if (want() && spec.counterAxisAlignItems !== void 0 && existingNode.counterAxisAlignItems !== spec.counterAxisAlignItems) {
+        existingNode.counterAxisAlignItems = spec.counterAxisAlignItems;
+        changedProps.push("counterAxisAlignItems");
+      }
+      if (want() && spec.itemSpacing !== void 0 && existingNode.itemSpacing !== spec.itemSpacing) {
+        existingNode.itemSpacing = spec.itemSpacing;
+        changedProps.push("itemSpacing");
+      }
+      if (want() && spec.counterAxisSpacing !== void 0 && existingNode.counterAxisSpacing !== spec.counterAxisSpacing) {
+        existingNode.counterAxisSpacing = spec.counterAxisSpacing;
+        changedProps.push("counterAxisSpacing");
+      }
+      if (want() && spec.itemReverseZIndex !== void 0 && existingNode.itemReverseZIndex !== !!spec.itemReverseZIndex) {
+        existingNode.itemReverseZIndex = !!spec.itemReverseZIndex;
+        changedProps.push("itemReverseZIndex");
+      }
+      if (spec.layoutSizingHorizontal !== "FILL" && want() && spec.layoutSizingHorizontal !== void 0) {
+        if (existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
+          existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
+          changedProps.push("layoutSizingHorizontal");
+        }
+      }
+      if (spec.layoutSizingVertical !== "FILL" && want() && spec.layoutSizingVertical !== void 0) {
+        if (existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
+          existingNode.layoutSizingVertical = spec.layoutSizingVertical;
+          changedProps.push("layoutSizingVertical");
+        }
+      }
+    }
+    if (type === "text") {
+      if (wantAny("fontFamily", "fontStyle", "fontWeight")) {
+        const currentFontName = existingNode.fontName;
+        let userFontFamily = spec.fontFamily || "Inter";
+        let userFontStyle = spec.fontStyle || fontWeightToStyle(spec.fontWeight || 400);
+        if (!currentFontName || typeof currentFontName === "symbol" || currentFontName.family !== userFontFamily || currentFontName.style !== userFontStyle) {
+          try {
+            await loadFontCached({ family: userFontFamily, style: userFontStyle });
+            existingNode.fontName = { family: userFontFamily, style: userFontStyle };
+            changedProps.push("fontName");
+          } catch (err) {
+            try {
+              await loadFontCached({ family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) });
+              existingNode.fontName = { family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) };
+              changedProps.push("fontName");
+            } catch (e2) {
+            }
+          }
+        } else {
+          try {
+            await loadFontCached({ family: userFontFamily, style: userFontStyle });
+          } catch (e) {
+          }
+        }
+      } else if (TEXT_FONT_DEPENDENT.some((key) => only.has(key))) {
+        await loadAllFonts(existingNode);
+      }
+      if (want() && spec.text !== void 0 && existingNode.characters !== spec.text) {
+        await setCharacters(existingNode, spec.text);
+        changedProps.push("characters");
+      }
+      if (want() && spec.fontSize !== void 0 && existingNode.fontSize !== parseInt(spec.fontSize)) {
+        existingNode.fontSize = parseInt(spec.fontSize);
+        changedProps.push("fontSize");
+      }
+      if (want() && spec.fontColor !== void 0) {
+        applyColorPaint(existingNode, "fills", spec.fontColor);
+        changedProps.push("fontColor");
+      }
+      if (want() && spec.textAlignHorizontal !== void 0 && existingNode.textAlignHorizontal !== spec.textAlignHorizontal) {
+        existingNode.textAlignHorizontal = spec.textAlignHorizontal;
+        changedProps.push("textAlignHorizontal");
+      }
+      if (want() && spec.lineHeight !== void 0) {
+        existingNode.lineHeight = { value: spec.lineHeight, unit: "PIXELS" };
+        changedProps.push("lineHeight");
+      }
+      if (want() && spec.letterSpacing !== void 0) {
+        existingNode.letterSpacing = { value: spec.letterSpacing, unit: "PIXELS" };
+        changedProps.push("letterSpacing");
+      }
+      if (want() && spec.textCase !== void 0 && existingNode.textCase !== spec.textCase) {
+        existingNode.textCase = spec.textCase;
+        changedProps.push("textCase");
+      }
+      if (want() && spec.width !== void 0) {
+        existingNode.resize(spec.width, existingNode.height);
+        existingNode.textAutoResize = "HEIGHT";
+        changedProps.push("width");
+      }
+    }
+    if (type === "rectangle") {
+      if (wantAny("width", "height") && spec.width !== void 0 && spec.height !== void 0) {
+        if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
+          existingNode.resize(spec.width, spec.height);
+          changedProps.push("size");
+        }
+      }
+      if (want() && spec.fillColor !== void 0) {
+        applyColorPaint(existingNode, "fills", spec.fillColor);
+        changedProps.push("fillColor");
+      }
+      if (want() && spec.strokeColor !== void 0) {
+        applyColorPaint(existingNode, "strokes", spec.strokeColor);
+        changedProps.push("strokeColor");
+      }
+      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+        existingNode.strokeWeight = spec.strokeWeight;
+        changedProps.push("strokeWeight");
+      }
+      if (want() && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
+        existingNode.cornerRadius = spec.cornerRadius;
+        changedProps.push("cornerRadius");
+      }
+    }
+    if (type === "vector") {
+      if (wantAny("width", "height") && spec.width !== void 0 && spec.height !== void 0) {
+        if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
+          existingNode.resize(spec.width, spec.height);
+          changedProps.push("size");
+        }
+      }
+      if (want() && spec.fillColor !== void 0) {
+        applyColorPaint(existingNode, "fills", spec.fillColor);
+        changedProps.push("fillColor");
+      }
+      if (want() && spec.strokeColor !== void 0) {
+        applyColorPaint(existingNode, "strokes", spec.strokeColor);
+        changedProps.push("strokeColor");
+      }
+      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+        existingNode.strokeWeight = spec.strokeWeight;
+        changedProps.push("strokeWeight");
+      }
+      if (want() && spec.pathData !== void 0) {
+        existingNode.vectorPaths = [{ windingRule: "NONZERO", data: normalizeSvgPath(spec.pathData) }];
+        changedProps.push("pathData");
+      }
+      if (want() && spec.strokeCap !== void 0) {
+        var network = existingNode.vectorNetwork;
+        if (network && network.vertices) {
+          var updatedVertices = network.vertices.map(function(v) {
+            return Object.assign({}, v, { strokeCap: spec.strokeCap });
+          });
+          existingNode.vectorNetwork = Object.assign({}, network, { vertices: updatedVertices });
+          changedProps.push("strokeCap");
+        }
+      }
+    }
+    if (type === "instance") {
+      if (want() && spec.componentKey) {
+        const mainComponent = await existingNode.getMainComponentAsync();
+        if (!mainComponent || mainComponent.key !== spec.componentKey) {
+          const component = await figma.importComponentByKeyAsync(spec.componentKey);
+          existingNode.swapComponent(component);
+          changedProps.push("componentKey");
+        }
+      }
+      if (want() && spec.properties !== void 0) {
+        existingNode.setProperties(spec.properties);
+        changedProps.push("properties");
+      }
+      if (want() && spec.textOverrides !== void 0) {
+        await applyTextOverrides(existingNode, spec.textOverrides);
+        changedProps.push("textOverrides");
+      }
+      if (want() && spec.layoutSizingHorizontal !== void 0 && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
+        try {
+          existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
+          changedProps.push("layoutSizingHorizontal");
+        } catch (e) {
+          console.error("Error setting layoutSizingHorizontal during sync:", e);
+        }
+      }
+      if (want() && spec.layoutSizingVertical !== void 0 && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
+        try {
+          existingNode.layoutSizingVertical = spec.layoutSizingVertical;
+          changedProps.push("layoutSizingVertical");
+        } catch (e) {
+          console.error("Error setting layoutSizingVertical during sync:", e);
+        }
+      }
+    }
+    var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
+    for (var ci = 0; ci < cornerProps.length; ci++) {
+      var cp = cornerProps[ci];
+      if (cp in existingNode && want() && spec[cp] !== void 0 && existingNode[cp] !== spec[cp]) {
+        existingNode[cp] = spec[cp];
+        changedProps.push(cp);
+      }
+    }
+    if ("fills" in existingNode && want() && spec.fillImage && spec.fillImage.base64) {
+      applyImageFill(existingNode, spec.fillImage);
+      changedProps.push("fillImage");
+    }
+    const unhandled = only ? Array.from(only).filter((key) => !consumed.has(key)) : [];
+    return { changed: changedProps.length > 0, changedProps, unhandled };
+  }
+  function applyDeferredFill(node, spec, only) {
+    const applied = [];
+    if (node.type !== "FRAME" || !node.layoutMode || node.layoutMode === "NONE") return applied;
+    for (const key of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
+      if (spec[key] === "FILL") {
+        try {
+          node[key] = "FILL";
+          applied.push(key);
+        } catch (e) {
+        }
+      }
+    }
+    return applied;
+  }
+  async function syncNode(spec, existingNode, depth, ctx) {
+    depth = depth || 0;
+    if (depth > ctx.maxDepthSeen) ctx.maxDepthSeen = depth;
+    var type = spec.type;
+    ctx.nodeTypeCounts[type] = (ctx.nodeTypeCounts[type] || 0) + 1;
+    if (existingNode.type.toLowerCase() !== type) {
+      ctx.counters.errors++;
+      ctx.errors.push({
+        type,
+        name: spec.name || "(unnamed)",
+        error: "Type mismatch: spec=" + type + " existing=" + existingNode.type.toLowerCase()
+      });
+      return;
+    }
+    var props = Object.assign({}, spec);
+    delete props.type;
+    delete props.children;
+    var colors;
+    try {
+      colors = await resolveAndBind(props);
+      var result = await updateNodeProperties(existingNode, colors.resolved);
+      if (result.changed) {
+        ctx.counters.updated++;
+      } else {
+        ctx.counters.unchanged++;
+      }
+    } catch (err) {
+      ctx.counters.errors++;
+      ctx.errors.push({
+        type,
+        name: spec.name || "(unnamed)",
+        error: "Update failed: " + (err.message || String(err))
+      });
+      return;
+    }
+    if (colors.bindings.length > 0) {
+      try {
+        await colors.bind(existingNode);
+      } catch (err) {
+        ctx.counters.errors++;
+        ctx.errors.push({
+          type,
+          name: spec.name || "(unnamed)",
+          nodeId: existingNode.id,
+          error: "Variable binding failed: " + (err.message || String(err))
+        });
+        return;
+      }
+    }
+    ctx.nodes.push({
+      id: existingNode.id,
+      name: existingNode.name,
+      type,
+      parentId: existingNode.parent ? existingNode.parent.id : null
+    });
+    var specChildren = spec.children;
+    if (specChildren && Array.isArray(specChildren) && type === "frame") {
+      var existingChildren = [];
+      for (var i = 0; i < existingNode.children.length; i++) {
+        existingChildren.push(existingNode.children[i]);
+      }
+      var matchMap = {};
+      for (var child of existingChildren) {
+        var key = (child.name || "") + "::" + child.type.toLowerCase();
+        if (!matchMap[key]) matchMap[key] = [];
+        matchMap[key].push(child);
+      }
+      var matchedExistingIds = /* @__PURE__ */ new Set();
+      for (var specChild of specChildren) {
+        var specName = specChild.name || "";
+        var specType = specChild.type;
+        var matchKey = specName + "::" + specType;
+        if (matchMap[matchKey] && matchMap[matchKey].length > 0) {
+          var matchedNode = matchMap[matchKey].shift();
+          matchedExistingIds.add(matchedNode.id);
+          await syncNode(specChild, matchedNode, depth + 1, ctx);
+        } else {
+          await createNode(specChild, existingNode.id, depth + 1, ctx);
+        }
+      }
+      if (ctx.prune) {
+        for (var existChild of existingChildren) {
+          if (!matchedExistingIds.has(existChild.id)) {
+            existChild.remove();
+            ctx.counters.pruned++;
+          }
+        }
+      }
+    }
+    applyDeferredFill(existingNode, spec);
+    var processedCount = ctx.counters.updated + ctx.counters.unchanged + ctx.counters.created;
+    if (ctx.commandId && processedCount % ctx.progressEvery === 0) {
+      var progress = Math.round(processedCount / ctx.totalNodes * 100);
+      await sendProgressUpdate(
+        ctx.commandId,
+        ctx.progressLabel,
+        "in_progress",
+        progress,
+        ctx.totalNodes,
+        processedCount,
+        "Synced " + processedCount + "/" + ctx.totalNodes + " nodes"
+      );
+    }
+  }
+  async function createNode(spec, parentNodeId, depth, ctx, options = {}) {
+    if (options.onBindFailure !== void 0 && options.onBindFailure !== "remove" && options.onBindFailure !== "keep") {
+      throw new Error('onBindFailure must be "remove" or "keep", got ' + JSON.stringify(options.onBindFailure));
+    }
+    return createNodeAt(spec, parentNodeId, depth, ctx, options.onBindFailure || "remove", options.path || [], options.path !== void 0);
+  }
+  function reportSkippedChildren(children, path, ctx) {
+    if (!children || !Array.isArray(children)) return;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i] || {};
+      const childPath = path.concat(i);
+      ctx.counters.errors++;
+      ctx.errors.push({ type: child.type, name: child.name || "(unnamed)", path: childPath, error: "skipped: parent failed" });
+      reportSkippedChildren(child.children, childPath, ctx);
+    }
+  }
+  async function createNodeAt(spec, parentNodeId, depth, ctx, onBindFailure, path, reportPaths) {
+    const created = [];
+    const withPath = (entry) => reportPaths ? Object.assign(entry, { path }) : entry;
+    depth = depth || 0;
+    if (depth > ctx.maxDepthSeen) ctx.maxDepthSeen = depth;
+    var type = spec.type;
+    ctx.nodeTypeCounts[type] = (ctx.nodeTypeCounts[type] || 0) + 1;
+    var children = spec.children;
+    var props = Object.assign({}, spec);
+    delete props.type;
+    delete props.children;
+    let colors;
+    let result;
+    try {
+      colors = await resolveAndBind(Object.assign({}, props, { parentId: parentNodeId }));
+      const createParams = colors.resolved;
+      if (createParams.x === void 0) createParams.x = 0;
+      if (createParams.y === void 0) createParams.y = 0;
+      switch (type) {
+        case "frame":
+          result = await createFrame(createParams, ctx.firstOnTop);
+          break;
+        case "text":
+          result = await createText(createParams);
+          break;
+        case "rectangle":
+          result = await createRectangle(createParams);
+          break;
+        case "vector":
+          result = await createVector(createParams);
+          break;
+        case "instance":
+          result = await createComponentInstance(createParams);
+          break;
+        default:
+          throw new Error(`Unknown node type: ${type}`);
+      }
+    } catch (err) {
+      ctx.counters.errors++;
+      ctx.errors.push(withPath({
+        type,
+        name: props.name || "(unnamed)",
+        error: err.message || String(err)
+      }));
+      if (onBindFailure === "keep") reportSkippedChildren(children, path, ctx);
+      return created;
+    }
+    if (colors.bindings.length > 0) {
+      try {
+        const node = await figma.getNodeByIdAsync(result.id);
+        if (node) await colors.bind(node);
+      } catch (err) {
+        ctx.counters.errors++;
+        ctx.errors.push(withPath({
+          type,
+          name: props.name || "(unnamed)",
+          nodeId: result.id,
+          error: "Variable binding failed: " + (err.message || String(err))
+        }));
+        const failedNode = await figma.getNodeByIdAsync(result.id);
+        if (onBindFailure === "keep") {
+          if (failedNode) {
+            failedNode.name = failedNode.name + " (failed)";
+            created.push({ path, id: result.id, failed: true });
+          }
+          reportSkippedChildren(children, path, ctx);
+        } else if (failedNode) {
+          failedNode.remove();
+        }
+        return created;
+      }
+    }
+    ctx.counters.created++;
+    created.push({ path, id: result.id });
+    ctx.nodes.push({
+      id: result.id,
+      name: result.name,
+      type,
+      parentId: parentNodeId || null
+    });
+    if (ctx.commandId && ctx.counters.created % ctx.progressEvery === 0) {
+      const progress = Math.round(ctx.counters.created / ctx.totalNodes * 100);
+      await sendProgressUpdate(
+        ctx.commandId,
+        ctx.progressLabel,
+        "in_progress",
+        progress,
+        ctx.totalNodes,
+        ctx.counters.created,
+        `Created ${ctx.counters.created}/${ctx.totalNodes} nodes`
+      );
+    }
+    if (children && Array.isArray(children)) {
+      for (let i = 0; i < children.length; i++) {
+        const childCreated = await createNodeAt(children[i], result.id, depth + 1, ctx, onBindFailure, path.concat(i), reportPaths);
+        for (const entry of childCreated) created.push(entry);
+      }
+    }
+    return created;
+  }
   async function createNodeTree(params, firstOnTop = true) {
     const { tree: rawTree, parentId, rootId, prune, commandId } = params || {};
     if (!rawTree) {
@@ -5778,8 +6712,6 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
     const tree = expandRepeats(rawTree);
     const startTime = Date.now();
-    let maxDepthSeen = 0;
-    const nodeTypeCounts = {};
     function warnRepeatWithoutAutoLayout(node, hadRepeat) {
       if (!node || typeof node !== "object") return;
       if (node.children && Array.isArray(node.children)) {
@@ -5814,557 +6746,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       return count;
     }
     const totalNodes = countNodes(tree);
-    let createdCount = 0;
-    let errorCount = 0;
-    const nodes = [];
-    const errors = [];
-    const COLOR_FIELDS = {
-      fillColor: "fills",
-      strokeColor: "strokes",
-      fontColor: "fills"
-      // text fill color
-    };
-    async function updateNodeProperties(existingNode, spec) {
-      const changedProps = [];
-      const type = existingNode.type.toLowerCase();
-      if (spec.name !== void 0 && existingNode.name !== spec.name) {
-        existingNode.name = spec.name;
-        changedProps.push("name");
-      }
-      if (spec.x !== void 0 && existingNode.x !== spec.x) {
-        existingNode.x = spec.x;
-        changedProps.push("x");
-      }
-      if (spec.y !== void 0 && existingNode.y !== spec.y) {
-        existingNode.y = spec.y;
-        changedProps.push("y");
-      }
-      if (spec.opacity !== void 0 && existingNode.opacity !== spec.opacity) {
-        existingNode.opacity = spec.opacity;
-        changedProps.push("opacity");
-      }
-      if (spec.effects !== void 0 && "effects" in existingNode) {
-        existingNode.effects = buildFigmaEffects(spec.effects);
-        changedProps.push("effects");
-      }
-      if (spec.strokeAlign !== void 0 && "strokeAlign" in existingNode && existingNode.strokeAlign !== spec.strokeAlign) {
-        existingNode.strokeAlign = spec.strokeAlign;
-        changedProps.push("strokeAlign");
-      }
-      if (spec.layoutPositioning !== void 0 && "layoutPositioning" in existingNode && existingNode.layoutPositioning !== spec.layoutPositioning) {
-        applyLayoutPositioning(existingNode, spec);
-        changedProps.push("layoutPositioning");
-      }
-      if (type === "frame") {
-        if (spec.width !== void 0 && spec.height !== void 0) {
-          if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
-            existingNode.resize(spec.width, spec.height);
-            changedProps.push("size");
-          }
-        }
-        if (spec.fillColor !== void 0) {
-          applyColorPaint(existingNode, "fills", spec.fillColor);
-          changedProps.push("fillColor");
-        }
-        if (spec.strokeColor !== void 0) {
-          applyColorPaint(existingNode, "strokes", spec.strokeColor);
-          changedProps.push("strokeColor");
-        }
-        if (spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
-          existingNode.strokeWeight = spec.strokeWeight;
-          changedProps.push("strokeWeight");
-        }
-        if (spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
-          existingNode.cornerRadius = spec.cornerRadius;
-          changedProps.push("cornerRadius");
-        }
-        if (spec.clipsContent !== void 0 && existingNode.clipsContent !== !!spec.clipsContent) {
-          existingNode.clipsContent = !!spec.clipsContent;
-          changedProps.push("clipsContent");
-        }
-        if (spec.layoutMode !== void 0 && existingNode.layoutMode !== spec.layoutMode) {
-          existingNode.layoutMode = spec.layoutMode;
-          changedProps.push("layoutMode");
-        }
-        if (spec.layoutWrap !== void 0 && existingNode.layoutWrap !== spec.layoutWrap) {
-          existingNode.layoutWrap = spec.layoutWrap;
-          changedProps.push("layoutWrap");
-        }
-        if (spec.paddingTop !== void 0 && existingNode.paddingTop !== spec.paddingTop) {
-          existingNode.paddingTop = spec.paddingTop;
-          changedProps.push("paddingTop");
-        }
-        if (spec.paddingRight !== void 0 && existingNode.paddingRight !== spec.paddingRight) {
-          existingNode.paddingRight = spec.paddingRight;
-          changedProps.push("paddingRight");
-        }
-        if (spec.paddingBottom !== void 0 && existingNode.paddingBottom !== spec.paddingBottom) {
-          existingNode.paddingBottom = spec.paddingBottom;
-          changedProps.push("paddingBottom");
-        }
-        if (spec.paddingLeft !== void 0 && existingNode.paddingLeft !== spec.paddingLeft) {
-          existingNode.paddingLeft = spec.paddingLeft;
-          changedProps.push("paddingLeft");
-        }
-        if (spec.primaryAxisAlignItems !== void 0 && existingNode.primaryAxisAlignItems !== spec.primaryAxisAlignItems) {
-          existingNode.primaryAxisAlignItems = spec.primaryAxisAlignItems;
-          changedProps.push("primaryAxisAlignItems");
-        }
-        if (spec.counterAxisAlignItems !== void 0 && existingNode.counterAxisAlignItems !== spec.counterAxisAlignItems) {
-          existingNode.counterAxisAlignItems = spec.counterAxisAlignItems;
-          changedProps.push("counterAxisAlignItems");
-        }
-        if (spec.itemSpacing !== void 0 && existingNode.itemSpacing !== spec.itemSpacing) {
-          existingNode.itemSpacing = spec.itemSpacing;
-          changedProps.push("itemSpacing");
-        }
-        if (spec.counterAxisSpacing !== void 0 && existingNode.counterAxisSpacing !== spec.counterAxisSpacing) {
-          existingNode.counterAxisSpacing = spec.counterAxisSpacing;
-          changedProps.push("counterAxisSpacing");
-        }
-        if (spec.itemReverseZIndex !== void 0 && existingNode.itemReverseZIndex !== !!spec.itemReverseZIndex) {
-          existingNode.itemReverseZIndex = !!spec.itemReverseZIndex;
-          changedProps.push("itemReverseZIndex");
-        }
-        if (spec.layoutSizingHorizontal !== void 0 && spec.layoutSizingHorizontal !== "FILL") {
-          if (existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
-            existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
-            changedProps.push("layoutSizingHorizontal");
-          }
-        }
-        if (spec.layoutSizingVertical !== void 0 && spec.layoutSizingVertical !== "FILL") {
-          if (existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
-            existingNode.layoutSizingVertical = spec.layoutSizingVertical;
-            changedProps.push("layoutSizingVertical");
-          }
-        }
-      }
-      if (type === "text") {
-        const userFontFamily = spec.fontFamily || "Inter";
-        const userFontStyle = spec.fontStyle || fontWeightToStyle(spec.fontWeight || 400);
-        const currentFontName = existingNode.fontName;
-        if (!currentFontName || typeof currentFontName === "symbol" || currentFontName.family !== userFontFamily || currentFontName.style !== userFontStyle) {
-          try {
-            await loadFontCached({ family: userFontFamily, style: userFontStyle });
-            existingNode.fontName = { family: userFontFamily, style: userFontStyle };
-            changedProps.push("fontName");
-          } catch (err) {
-            try {
-              await loadFontCached({ family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) });
-              existingNode.fontName = { family: "Inter", style: fontWeightToStyle(spec.fontWeight || 400) };
-              changedProps.push("fontName");
-            } catch (e2) {
-            }
-          }
-        } else {
-          try {
-            await loadFontCached({ family: userFontFamily, style: userFontStyle });
-          } catch (e) {
-          }
-        }
-        if (spec.text !== void 0 && existingNode.characters !== spec.text) {
-          await setCharacters(existingNode, spec.text);
-          changedProps.push("characters");
-        }
-        if (spec.fontSize !== void 0 && existingNode.fontSize !== parseInt(spec.fontSize)) {
-          existingNode.fontSize = parseInt(spec.fontSize);
-          changedProps.push("fontSize");
-        }
-        if (spec.fontColor !== void 0) {
-          applyColorPaint(existingNode, "fills", spec.fontColor);
-          changedProps.push("fontColor");
-        }
-        if (spec.textAlignHorizontal !== void 0 && existingNode.textAlignHorizontal !== spec.textAlignHorizontal) {
-          existingNode.textAlignHorizontal = spec.textAlignHorizontal;
-          changedProps.push("textAlignHorizontal");
-        }
-        if (spec.lineHeight !== void 0) {
-          existingNode.lineHeight = { value: spec.lineHeight, unit: "PIXELS" };
-          changedProps.push("lineHeight");
-        }
-        if (spec.letterSpacing !== void 0) {
-          existingNode.letterSpacing = { value: spec.letterSpacing, unit: "PIXELS" };
-          changedProps.push("letterSpacing");
-        }
-        if (spec.textCase !== void 0 && existingNode.textCase !== spec.textCase) {
-          existingNode.textCase = spec.textCase;
-          changedProps.push("textCase");
-        }
-        if (spec.width !== void 0) {
-          existingNode.resize(spec.width, existingNode.height);
-          existingNode.textAutoResize = "HEIGHT";
-          changedProps.push("width");
-        }
-      }
-      if (type === "rectangle") {
-        if (spec.width !== void 0 && spec.height !== void 0) {
-          if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
-            existingNode.resize(spec.width, spec.height);
-            changedProps.push("size");
-          }
-        }
-        if (spec.fillColor !== void 0) {
-          applyColorPaint(existingNode, "fills", spec.fillColor);
-          changedProps.push("fillColor");
-        }
-        if (spec.strokeColor !== void 0) {
-          applyColorPaint(existingNode, "strokes", spec.strokeColor);
-          changedProps.push("strokeColor");
-        }
-        if (spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
-          existingNode.strokeWeight = spec.strokeWeight;
-          changedProps.push("strokeWeight");
-        }
-        if (spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
-          existingNode.cornerRadius = spec.cornerRadius;
-          changedProps.push("cornerRadius");
-        }
-      }
-      if (type === "vector") {
-        if (spec.width !== void 0 && spec.height !== void 0) {
-          if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
-            existingNode.resize(spec.width, spec.height);
-            changedProps.push("size");
-          }
-        }
-        if (spec.fillColor !== void 0) {
-          applyColorPaint(existingNode, "fills", spec.fillColor);
-          changedProps.push("fillColor");
-        }
-        if (spec.strokeColor !== void 0) {
-          applyColorPaint(existingNode, "strokes", spec.strokeColor);
-          changedProps.push("strokeColor");
-        }
-        if (spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
-          existingNode.strokeWeight = spec.strokeWeight;
-          changedProps.push("strokeWeight");
-        }
-        if (spec.pathData !== void 0) {
-          existingNode.vectorPaths = [{ windingRule: "NONZERO", data: normalizeSvgPath(spec.pathData) }];
-          changedProps.push("pathData");
-        }
-        if (spec.strokeCap !== void 0) {
-          var network = existingNode.vectorNetwork;
-          if (network && network.vertices) {
-            var updatedVertices = network.vertices.map(function(v) {
-              return Object.assign({}, v, { strokeCap: spec.strokeCap });
-            });
-            existingNode.vectorNetwork = Object.assign({}, network, { vertices: updatedVertices });
-            changedProps.push("strokeCap");
-          }
-        }
-      }
-      if (type === "instance") {
-        if (spec.componentKey) {
-          const mainComponent = await existingNode.getMainComponentAsync();
-          if (!mainComponent || mainComponent.key !== spec.componentKey) {
-            const component = await figma.importComponentByKeyAsync(spec.componentKey);
-            existingNode.swapComponent(component);
-            changedProps.push("componentKey");
-          }
-        }
-        if (spec.properties !== void 0) {
-          existingNode.setProperties(spec.properties);
-          changedProps.push("properties");
-        }
-        if (spec.textOverrides !== void 0) {
-          await applyTextOverrides(existingNode, spec.textOverrides);
-          changedProps.push("textOverrides");
-        }
-        if (spec.layoutSizingHorizontal !== void 0 && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
-          try {
-            existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
-            changedProps.push("layoutSizingHorizontal");
-          } catch (e) {
-            console.error("Error setting layoutSizingHorizontal during sync:", e);
-          }
-        }
-        if (spec.layoutSizingVertical !== void 0 && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
-          try {
-            existingNode.layoutSizingVertical = spec.layoutSizingVertical;
-            changedProps.push("layoutSizingVertical");
-          } catch (e) {
-            console.error("Error setting layoutSizingVertical during sync:", e);
-          }
-        }
-      }
-      var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
-      for (var ci = 0; ci < cornerProps.length; ci++) {
-        var cp = cornerProps[ci];
-        if (spec[cp] !== void 0 && cp in existingNode && existingNode[cp] !== spec[cp]) {
-          existingNode[cp] = spec[cp];
-          changedProps.push(cp);
-        }
-      }
-      if (spec.fillImage && spec.fillImage.base64 && "fills" in existingNode) {
-        applyImageFill(existingNode, spec.fillImage);
-        changedProps.push("fillImage");
-      }
-      return { changed: changedProps.length > 0, changedProps };
-    }
-    let updatedCount = 0;
-    let unchangedCount = 0;
-    let prunedCount = 0;
-    async function syncNode(spec, existingNode, depth) {
-      depth = depth || 0;
-      if (depth > maxDepthSeen) maxDepthSeen = depth;
-      var type = spec.type;
-      nodeTypeCounts[type] = (nodeTypeCounts[type] || 0) + 1;
-      if (existingNode.type.toLowerCase() !== type) {
-        errorCount++;
-        errors.push({
-          type,
-          name: spec.name || "(unnamed)",
-          error: "Type mismatch: spec=" + type + " existing=" + existingNode.type.toLowerCase()
-        });
-        return;
-      }
-      var resolvedSpec = Object.assign({}, spec);
-      delete resolvedSpec.type;
-      delete resolvedSpec.children;
-      var pendingVarBindings = [];
-      try {
-        for (var _ref of Object.entries(COLOR_FIELDS)) {
-          var colorProp = _ref[0], figmaField = _ref[1];
-          if (resolvedSpec[colorProp] != null) {
-            var resolved = resolveColorValue(resolvedSpec[colorProp]);
-            if (resolved.varRef) {
-              var variable = await getVariableByName(resolved.varRef);
-              if (variable && variable.resolvedType === "COLOR") {
-                var modeIds = Object.keys(variable.valuesByMode);
-                if (modeIds.length > 0) {
-                  var val = variable.valuesByMode[modeIds[0]];
-                  if (val && typeof val === "object" && "r" in val) {
-                    resolvedSpec[colorProp] = val;
-                  } else {
-                    delete resolvedSpec[colorProp];
-                  }
-                } else {
-                  delete resolvedSpec[colorProp];
-                }
-              } else {
-                delete resolvedSpec[colorProp];
-              }
-              pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
-            } else if (resolved.color) {
-              resolvedSpec[colorProp] = resolved.color;
-            }
-          }
-        }
-        var result = await updateNodeProperties(existingNode, resolvedSpec);
-        if (result.changed) {
-          updatedCount++;
-        } else {
-          unchangedCount++;
-        }
-      } catch (err) {
-        errorCount++;
-        errors.push({
-          type,
-          name: spec.name || "(unnamed)",
-          error: "Update failed: " + (err.message || String(err))
-        });
-        return;
-      }
-      if (pendingVarBindings.length > 0) {
-        try {
-          for (var binding of pendingVarBindings) {
-            await bindVariableToColor(existingNode, binding.figmaField, binding.varRef);
-          }
-        } catch (err) {
-          errorCount++;
-          errors.push({
-            type,
-            name: spec.name || "(unnamed)",
-            nodeId: existingNode.id,
-            error: "Variable binding failed: " + (err.message || String(err))
-          });
-          return;
-        }
-      }
-      nodes.push({
-        id: existingNode.id,
-        name: existingNode.name,
-        type,
-        parentId: existingNode.parent ? existingNode.parent.id : null
-      });
-      var specChildren = spec.children;
-      if (specChildren && Array.isArray(specChildren) && type === "frame") {
-        var existingChildren = [];
-        for (var i = 0; i < existingNode.children.length; i++) {
-          existingChildren.push(existingNode.children[i]);
-        }
-        var matchMap = {};
-        for (var child of existingChildren) {
-          var key = (child.name || "") + "::" + child.type.toLowerCase();
-          if (!matchMap[key]) matchMap[key] = [];
-          matchMap[key].push(child);
-        }
-        var matchedExistingIds = /* @__PURE__ */ new Set();
-        for (var specChild of specChildren) {
-          var specName = specChild.name || "";
-          var specType = specChild.type;
-          var matchKey = specName + "::" + specType;
-          if (matchMap[matchKey] && matchMap[matchKey].length > 0) {
-            var matchedNode = matchMap[matchKey].shift();
-            matchedExistingIds.add(matchedNode.id);
-            await syncNode(specChild, matchedNode, depth + 1);
-          } else {
-            await createNode(specChild, existingNode.id, depth + 1);
-          }
-        }
-        if (prune) {
-          for (var existChild of existingChildren) {
-            if (!matchedExistingIds.has(existChild.id)) {
-              existChild.remove();
-              prunedCount++;
-            }
-          }
-        }
-      }
-      if (type === "frame" && existingNode.layoutMode && existingNode.layoutMode !== "NONE") {
-        if (spec.layoutSizingHorizontal === "FILL") {
-          try {
-            existingNode.layoutSizingHorizontal = "FILL";
-          } catch (e) {
-          }
-        }
-        if (spec.layoutSizingVertical === "FILL") {
-          try {
-            existingNode.layoutSizingVertical = "FILL";
-          } catch (e) {
-          }
-        }
-      }
-      var processedCount = updatedCount + unchangedCount + createdCount;
-      if (commandId && processedCount % 5 === 0) {
-        var progress = Math.round(processedCount / totalNodes * 100);
-        await sendProgressUpdate(
-          commandId,
-          "create_node_tree",
-          "in_progress",
-          progress,
-          totalNodes,
-          processedCount,
-          "Synced " + processedCount + "/" + totalNodes + " nodes"
-        );
-      }
-    }
-    async function createNode(spec, parentNodeId, depth) {
-      depth = depth || 0;
-      if (depth > maxDepthSeen) maxDepthSeen = depth;
-      var type = spec.type;
-      nodeTypeCounts[type] = (nodeTypeCounts[type] || 0) + 1;
-      var children = spec.children;
-      var props = Object.assign({}, spec);
-      delete props.type;
-      delete props.children;
-      const pendingVarBindings = [];
-      const createParams = Object.assign({}, props, { parentId: parentNodeId });
-      let result;
-      try {
-        for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
-          if (createParams[colorProp] != null) {
-            const resolved = resolveColorValue(createParams[colorProp]);
-            if (resolved.varRef) {
-              const variable = await getVariableByName(resolved.varRef);
-              if (variable && variable.resolvedType === "COLOR") {
-                const modeIds = Object.keys(variable.valuesByMode);
-                if (modeIds.length > 0) {
-                  const val = variable.valuesByMode[modeIds[0]];
-                  if (val && typeof val === "object" && "r" in val) {
-                    createParams[colorProp] = val;
-                  } else {
-                    delete createParams[colorProp];
-                  }
-                } else {
-                  delete createParams[colorProp];
-                }
-              } else {
-                delete createParams[colorProp];
-              }
-              pendingVarBindings.push({ colorProp, figmaField, varRef: resolved.varRef });
-            } else if (resolved.color) {
-              createParams[colorProp] = resolved.color;
-            }
-          }
-        }
-        if (createParams.x === void 0) createParams.x = 0;
-        if (createParams.y === void 0) createParams.y = 0;
-        switch (type) {
-          case "frame":
-            result = await createFrame(createParams, firstOnTop);
-            break;
-          case "text":
-            result = await createText(createParams);
-            break;
-          case "rectangle":
-            result = await createRectangle(createParams);
-            break;
-          case "vector":
-            result = await createVector(createParams);
-            break;
-          case "instance":
-            result = await createComponentInstance(createParams);
-            break;
-          default:
-            throw new Error(`Unknown node type: ${type}`);
-        }
-      } catch (err) {
-        errorCount++;
-        errors.push({
-          type,
-          name: props.name || "(unnamed)",
-          error: err.message || String(err)
-        });
-        return;
-      }
-      if (pendingVarBindings.length > 0) {
-        try {
-          const node = await figma.getNodeByIdAsync(result.id);
-          if (node) {
-            for (const binding of pendingVarBindings) {
-              await bindVariableToColor(node, binding.figmaField, binding.varRef);
-            }
-          }
-        } catch (err) {
-          errorCount++;
-          errors.push({
-            type,
-            name: props.name || "(unnamed)",
-            nodeId: result.id,
-            error: "Variable binding failed: " + (err.message || String(err))
-          });
-          const failedNode = await figma.getNodeByIdAsync(result.id);
-          if (failedNode) failedNode.remove();
-          return;
-        }
-      }
-      createdCount++;
-      nodes.push({
-        id: result.id,
-        name: result.name,
-        type,
-        parentId: parentNodeId || null
-      });
-      if (commandId && createdCount % 5 === 0) {
-        const progress = Math.round(createdCount / totalNodes * 100);
-        await sendProgressUpdate(
-          commandId,
-          "create_node_tree",
-          "in_progress",
-          progress,
-          totalNodes,
-          createdCount,
-          `Created ${createdCount}/${totalNodes} nodes`
-        );
-      }
-      if (children && Array.isArray(children)) {
-        for (const child of children) {
-          await createNode(child, result.id, depth + 1);
-        }
-      }
-    }
+    const ctx = createNodeTreeContext({ totalNodes, firstOnTop, commandId, prune });
     if (commandId) {
       await sendProgressUpdate(
         commandId,
@@ -6379,10 +6761,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (rootId) {
       const rootNode = await figma.getNodeByIdAsync(rootId);
       if (!rootNode) throw new Error("Root node not found: " + rootId);
-      await syncNode(tree, rootNode, 0);
+      await syncNode(tree, rootNode, 0, ctx);
     } else {
-      await createNode(tree, parentId || null, 0);
+      await createNode(tree, parentId || null, 0, ctx);
     }
+    const { created: createdCount, updated: updatedCount, unchanged: unchangedCount, pruned: prunedCount, errors: errorCount } = ctx.counters;
     if (commandId) {
       var processedTotal = rootId ? updatedCount + unchangedCount + createdCount : createdCount;
       var modeLabel = rootId ? "sync" : "create";
@@ -6405,12 +6788,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       unchangedCount,
       prunedCount,
       errorCount,
-      nodes,
-      errors: errors.length > 0 ? errors : void 0,
+      nodes: ctx.nodes,
+      errors: ctx.errors.length > 0 ? ctx.errors : void 0,
       stats: {
         durationMs: Date.now() - startTime,
-        maxDepth: maxDepthSeen,
-        nodesByType: nodeTypeCounts
+        maxDepth: ctx.maxDepthSeen,
+        nodesByType: ctx.nodeTypeCounts
       }
     };
   }
@@ -6553,12 +6936,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             var resizeNode2 = await figma.getNodeByIdAsync(op.nodeId);
             if (!resizeNode2) throw new Error("Node not found: " + op.nodeId);
             if (!("resize" in resizeNode2) && !("resizeWithoutConstraints" in resizeNode2)) throw new Error("Node does not support resize: " + op.nodeId);
-            if ("resize" in resizeNode2) {
-              resizeNode2.resize(op.width, op.height);
-            } else {
-              resizeNode2.resizeWithoutConstraints(op.width, op.height);
-            }
-            result = { op: "resize", nodeId: op.nodeId, name: resizeNode2.name, width: op.width, height: op.height };
+            var resizeCheck = resizeWithReadBack(resizeNode2, op.width, op.height);
+            result = { op: "resize", nodeId: op.nodeId, name: resizeNode2.name, width: op.width, height: op.height, ...resizeCheck };
             break;
           case "delete":
             var deleteNode2 = await figma.getNodeByIdAsync(op.nodeId);
@@ -7313,7 +7692,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     var totalScanned = 0;
     var startTime = Date.now();
     var TIMEOUT_MS = 12e4;
-    async function walkTree(node, depth) {
+    async function walkTree2(node, depth) {
       if (depth > maxDepth) return;
       if (limit && matches.length >= limit) return;
       if (Date.now() - startTime > TIMEOUT_MS) return;
@@ -7388,11 +7767,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       if ("children" in node && node.children) {
         for (var i = 0; i < node.children.length; i++) {
           if (limit && matches.length >= limit) break;
-          await walkTree(node.children[i], depth + 1);
+          await walkTree2(node.children[i], depth + 1);
         }
       }
     }
-    await walkTree(rootNode, 0);
+    await walkTree2(rootNode, 0);
     var results = [];
     var updatedCount = 0;
     var failedCount = 0;
@@ -7964,7 +8343,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     "subscribe_events",
     "unsubscribe_events",
     "set_focus",
-    "set_selections"
+    "set_selections",
+    // L2F_VERIFY: snapshots live in a plugin-side store, never in the document.
+    "assert_contained",
+    "snapshot_positions",
+    "diff_positions"
   ]);
   var COMMAND_EDITORS = {};
   function allowedEditors(command) {
@@ -8249,6 +8632,12 @@ ${detail}`);
         return await moveNode(params);
       case "resize_node":
         return await resizeNode(params);
+      case "assert_contained":
+        return await assertContained(params);
+      case "snapshot_positions":
+        return await snapshotPositions(params);
+      case "diff_positions":
+        return await diffPositions(params);
       case "delete_node":
         return await deleteNode(params);
       case "delete_multiple_nodes":
