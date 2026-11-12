@@ -18,6 +18,16 @@ Tools for wiring interactive prototypes (reactions, triggers, transitions), visu
 
 For transition types, easing, and Smart Animate specifics, see [[Animation-and-Prototyping]].
 
+## Flows and prototype links
+
+Available only when the server runs with `L2F_FLOWS=1` (or `L2F_ALL=1`). A flow is a named starting point on a page.
+
+- `get_flows` — every flow on a page: name, starting frame id and name, the top-level section it sits in, and the page's prototype background, as hex (`background`) and as the raw paints (`backgroundPaints`). Both are `null` when the background is a gradient, an image or several paints, and `backgroundPaintTypes` lists what it is. A flow whose starting frame no longer exists is listed with `missing: true` rather than dropped.
+- `set_flows` — replace all flows on a page. The list is assigned whole, so the same call twice gives the same page and `flows: []` clears them. Every node must be a top-level frame on that page (directly on the page, or inside sections only), and every flow name must be unique (names are trimmed); otherwise nothing is written and the bad ones are listed. A flow whose starting frame does not exist is refused too, unless `dropMissing: true`, which leaves it out and lists it in `dropped`. The background is either `background`, one solid colour as `#RRGGBB` or `#RRGGBBAA`, or `backgroundPaints`, `[]` or one solid paint exactly as `get_flows` returns it; both together are refused unless they are the same colour. `null` or omitted leaves the background alone. Refused in Dev Mode.
+- `get_prototype_links` — one link per flow, optionally only the flows in one top-level section (`sectionId`; an id that is not a top-level section of the page is an error). Needs the file key: the plugin reports it, or pass `fileKey` to `join_channel` (a development plugin does not report one; that key is used only with `L2F_FILE_KEY=1`). The link format, `https://www.figma.com/proto/<key>/<file name>?node-id=<id>&starting-point-node-id=<id>`, is unconfirmed: compare it with a link copied from Figma before relying on it.
+
+The prototype device is not in the plugin API, so it is still set by hand. `set_flows` accepts `get_flows` output unchanged. Feeding it back is a no-op when every flow's starting frame exists and the flow names are unique with no leading or trailing spaces. The background never changes on the way: an empty or one-solid-paint background is written back as the same paints, and a gradient, image or multi-paint background reads as `null` and is left alone. With a missing starting frame the call is refused, or with `dropMissing: true` that flow is removed. See [File key](plans/2026-11-12-figma-api-catch-up.md#pr-2-file-key) for where the key comes from.
+
 ## Flow visualization (FigJam connectors)
 
 - `set_default_connector` — copy a FigJam connector's appearance as the template for subsequent connections

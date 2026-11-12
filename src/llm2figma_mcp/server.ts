@@ -25,7 +25,7 @@ import { registerTools as registerIntrospectTools } from "./tools/introspect.js"
 import { registerTools as registerVisualTools } from "./tools/visual.js";
 import { registerTools as registerEvalTools } from "./tools/eval.js";
 import { registerTools as registerMigrationTools } from "./tools/migration.js";
-import { registerTools as registerPrototypingTools } from "./tools/prototyping.js";
+import { registerTools as registerPrototypingTools, registerFlowTools } from "./tools/prototyping.js";
 import { registerTools as registerWireframeParserTools } from "./tools/wireframe-parser.js";
 import { registerTools as registerPageCompilerTools } from "./tools/page-compiler.js";
 import { registerTools as registerImageTools } from "./tools/images.js";
@@ -82,6 +82,7 @@ registerFeature("COMMENTS", registerCommentReadTools);
 registerFeature("COMMENTS_WRITE", registerCommentWriteTools);
 registerReferenceCacheTools(server);
 registerSetupTools(server);
+registerFeature("FLOWS", registerFlowTools);
 
 // Register prompts
 registerPrompts(server);
