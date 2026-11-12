@@ -2,7 +2,7 @@ node_modules/
 .cursor/
 .env
 dist/
-docs/
+docs/.obsidian/
 .DS_Store
 .claude/tsc-cache/
 
