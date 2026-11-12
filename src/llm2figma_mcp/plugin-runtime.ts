@@ -57,24 +57,179 @@ async function relayVersion(port: number): Promise<string | null> {
   }
 }
 
-// Stop a relay this plugin started earlier (its pid file points at a live
-// process running a plugin relay.js). Never touches a relay started by hand.
-async function stopOwnRelay(pidFile: string, port: number): Promise<boolean> {
-  let pid: number;
+// Everything relay replacement touches outside this module, injectable so the
+// ownership and locking rules can be tested without real processes.
+export interface RelayHost {
+  pluginRoot: string;
+  pluginData: string;
+  port: number;
+  hasBun: boolean;
+  /** The relay's protocol version, "" for one too old to report it, null when nothing answers. */
+  version(): Promise<string | null>;
+  isListening(): Promise<boolean>;
+  /** Run a command (no shell) and return stdout; throws when it fails. */
+  run(file: string, args: string[]): string;
+  kill(pid: number): void;
+  /** Start the bundled relay detached; it writes its own pid to pidFile once it holds the port. */
+  spawnRelay(pidFile: string, logPath: string): void;
+  sleep(ms: number): Promise<void>;
+}
+
+// Per-port records, so sessions sharing CLAUDE_PLUGIN_DATA on different relay
+// ports never act on each other's relay.
+export const relayPidFile = (dataDir: string, port: number) => path.join(dataDir, `relay-${port}.pid`);
+export const relayLockFile = (dataDir: string, port: number) => path.join(dataDir, `relay-${port}.lock`);
+
+// A relay this plugin started runs <plugin cache>/<plugin>/<version>/server/relay.js.
+// The version directory changes on every plugin update and the relay being
+// replaced is usually the previous version's, so match any version of this
+// plugin, not only the running one.
+function isPluginRelayCommand(command: string, pluginRoot: string): boolean {
+  const installDir = path.dirname(path.resolve(pluginRoot)) + path.sep;
+  const script = path.sep + path.join("server", "relay.js");
+  const at = command.indexOf(installDir);
+  return at >= 0 && command.indexOf(script, at + installDir.length) > at;
+}
+
+// Stop the relay on host.port only when it provably is one this plugin
+// started: the per-port pid file names a live process running this plugin's
+// relay.js, and that same process is the one listening on the port. Anything
+// short of that proof leaves the process alone.
+export async function stopOwnRelay(host: RelayHost): Promise<boolean> {
   try {
-    pid = Number(fs.readFileSync(pidFile, "utf-8").trim());
-    const command = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf-8" });
-    if (!command.includes(path.join("server", "relay.js"))) return false;
-    process.kill(pid, "SIGTERM");
+    const pid = Number(fs.readFileSync(relayPidFile(host.pluginData, host.port), "utf-8").trim());
+    if (!Number.isInteger(pid) || pid <= 1) return false;
+    const command = host.run("ps", ["-p", String(pid), "-o", "command="]);
+    if (!isPluginRelayCommand(command.trim(), host.pluginRoot)) return false;
+    const listeners = host.run("lsof", ["-nP", `-iTCP:${host.port}`, "-sTCP:LISTEN", "-t"])
+      .split(/\s+/).filter(Boolean);
+    if (!listeners.includes(String(pid))) return false;
+    host.kill(pid);
   } catch {
     return false;
   }
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
-    if (!(await isRelayListening(port))) return true;
-    await new Promise((r) => setTimeout(r, 100));
+    if (!(await host.isListening())) return true;
+    await host.sleep(100);
   }
   return false;
+}
+
+const LOCK_STALE_MS = 10_000;
+const LOCK_WAIT_MS = 15_000;
+
+// Cross-process lock on one port's relay, so two sessions can't both decide to
+// replace it (the second would kill the first one's replacement). A lock whose
+// mtime is older than LOCK_STALE_MS belongs to a crashed holder and is broken;
+// a live holder touches it while it works. Returns the release function, or
+// null when the lock could not be taken in time.
+export async function acquireRelayLock(host: RelayHost): Promise<(() => void) | null> {
+  const lockPath = relayLockFile(host.pluginData, host.port);
+  fs.mkdirSync(host.pluginData, { recursive: true });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      fs.writeSync(fd, String(process.pid));
+      fs.closeSync(fd);
+      const keepAlive = setInterval(() => {
+        try { const now = new Date(); fs.utimesSync(lockPath, now, now); } catch {}
+      }, 2000);
+      keepAlive.unref?.();
+      return () => {
+        clearInterval(keepAlive);
+        try { fs.unlinkSync(lockPath); } catch {}
+      };
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    try {
+      if (Date.now() - fs.statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
+        fs.unlinkSync(lockPath);
+        continue;
+      }
+    } catch {
+      continue; // released between our open and stat: try again
+    }
+    if (Date.now() >= deadline) return null;
+    await host.sleep(100);
+  }
+}
+
+/**
+ * Make sure a current relay listens on host.port: start one if the port is
+ * free, replace an older one this plugin started, and leave anything else
+ * alone. Replacement is serialized across processes by a per-port lock and
+ * the version is re-checked under it.
+ */
+export async function startOrReplaceRelay(host: RelayHost): Promise<boolean> {
+  if ((await host.version()) === RELAY_PROTOCOL_VERSION) return true;
+  const release = await acquireRelayLock(host);
+  if (!release) {
+    logger.warn(`Another session is still starting the relay on port ${host.port}; not touching it.`);
+    return host.isListening();
+  }
+  try {
+    // Another session may have replaced or started it while we waited.
+    const version = await host.version();
+    if (version === RELAY_PROTOCOL_VERSION) return true;
+    if (version !== null) {
+      // An older relay holds the port. Replace it if we started it;
+      // otherwise leave it and let the caller report it.
+      if (!(await stopOwnRelay(host))) {
+        logger.warn(`An older relay (protocol "${version}") is running on port ${host.port} and wasn't started by this plugin.`);
+        return true;
+      }
+      logger.info("Replaced an older relay started by this plugin");
+    }
+    if (!host.hasBun) {
+      logger.error("The relay needs Bun. Install it: curl -fsSL https://bun.sh/install | bash");
+      return false;
+    }
+
+    const logPath = path.join(host.pluginData, "relay.log");
+    host.spawnRelay(relayPidFile(host.pluginData, host.port), logPath);
+    logger.info(`Starting relay; log: ${logPath}`);
+
+    // Another session may have won the race for the port; either way, wait
+    // until something answers.
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (await host.isListening()) return true;
+      await host.sleep(150);
+    }
+    logger.error(`The relay did not start; see ${logPath}`);
+    return false;
+  } finally {
+    release();
+  }
+}
+
+function defaultRelayHost(pluginRoot: string, pluginData: string, port: number): RelayHost {
+  return {
+    pluginRoot,
+    pluginData,
+    port,
+    hasBun: Boolean(process.versions.bun),
+    version: () => relayVersion(port),
+    isListening: () => isRelayListening(port),
+    run: (file, args) => execFileSync(file, args, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }),
+    kill: (pid) => process.kill(pid, "SIGTERM"),
+    spawnRelay: (pidFile, logPath) => {
+      fs.mkdirSync(pluginData, { recursive: true });
+      // Start each relay with a fresh log so it can't grow without bound.
+      const log = fs.openSync(logPath, "w");
+      const child = spawn(process.execPath, [path.join(pluginRoot, "server", "relay.js")], {
+        detached: true,
+        stdio: ["ignore", log, log],
+        env: { ...process.env, L2F_RELAY_PORT: String(port), L2F_RELAY_PID_FILE: pidFile },
+      });
+      child.unref();
+      fs.closeSync(log);
+    },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  };
 }
 
 let relayStart: Promise<boolean> | null = null;
@@ -85,49 +240,7 @@ let relayStart: Promise<boolean> | null = null;
 export function ensureRelay(port: number): Promise<boolean> {
   if (!PLUGIN_ROOT || !PLUGIN_DATA) return isRelayListening(port);
   if (!relayStart) {
-    relayStart = (async () => {
-      const pidFile = path.join(PLUGIN_DATA, "relay.pid");
-      const version = await relayVersion(port);
-      if (version === RELAY_PROTOCOL_VERSION) return true;
-      if (version !== null) {
-        // An older relay holds the port. Replace it if we started it;
-        // otherwise leave it and let the caller report it.
-        if (!(await stopOwnRelay(pidFile, port))) {
-          logger.warn(`An older relay (protocol "${version}") is running on port ${port} and wasn't started by this plugin.`);
-          return true;
-        }
-        logger.info("Replaced an older relay started by this plugin");
-      }
-      if (!process.versions.bun) {
-        logger.error("The relay needs Bun. Install it: curl -fsSL https://bun.sh/install | bash");
-        return false;
-      }
-
-      const relayScript = path.join(PLUGIN_ROOT, "server", "relay.js");
-      const logPath = path.join(PLUGIN_DATA, "relay.log");
-      fs.mkdirSync(PLUGIN_DATA, { recursive: true });
-      // Start each relay with a fresh log so it can't grow without bound. The
-      // relay writes its own pid once it holds the port.
-      const log = fs.openSync(logPath, "w");
-      const child = spawn(process.execPath, [relayScript], {
-        detached: true,
-        stdio: ["ignore", log, log],
-        env: { ...process.env, L2F_RELAY_PID_FILE: pidFile },
-      });
-      child.unref();
-      fs.closeSync(log);
-      logger.info(`Starting relay; log: ${logPath}`);
-
-      // Another session may have won the race for the port; either way, wait
-      // until something answers.
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        if (await isRelayListening(port)) return true;
-        await new Promise((r) => setTimeout(r, 150));
-      }
-      logger.error(`The relay did not start; see ${logPath}`);
-      return false;
-    })().finally(() => {
+    relayStart = startOrReplaceRelay(defaultRelayHost(PLUGIN_ROOT, PLUGIN_DATA, port)).finally(() => {
       relayStart = null;
     });
   }
