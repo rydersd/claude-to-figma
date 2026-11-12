@@ -2,18 +2,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
 
-// Keys the plugin adds to resize results (resize_node, batch_mutate "resize").
-// Removed server-side when L2F_VERIFY is off, so those tools' output is
-// unchanged; existing keys are never touched.
-const READ_BACK_KEYS = ["requested", "applied", "partial", "cause"] as const;
-
-export function stripReadBack<T>(result: T, enabled: boolean): T {
-  if (enabled || !result || typeof result !== "object" || Array.isArray(result)) return result;
-  const copy: Record<string, unknown> = { ...(result as Record<string, unknown>) };
-  for (const key of READ_BACK_KEYS) delete copy[key];
-  return copy as T;
-}
-
+// The plugin adds {requested, applied, partial, cause} to resize results
+// (resize_node, batch_mutate "resize"). Those tools return text only, never the
+// plugin result, so with L2F_VERIFY off the new keys never leave the server;
+// with it on, describeReadBack turns them into the extra text.
 interface ReadBack {
   requested?: { width: number; height: number };
   applied?: { width: number; height: number };
@@ -37,7 +29,7 @@ const Offset = z.object({ x: z.number(), y: z.number() });
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
   server.tool(
     "assert_contained",
-    "Check that every direct child of a node sits inside the parent, comparing each child's absoluteBoundingBox to the parent's (0.5px tolerance by default; shadows and other render bounds are ignored). A child with no box is reported unmeasurable, never passed; rotated children are listed. A bare containment pass does NOT prove placement: a section auto-grows around children that were placed at the wrong offset (for example sec.x + 160 instead of 160, since section children are positioned relative to the section). Pass `expected` to check positions too: a snapshotId from snapshot_positions (taken on the parent or an ancestor; also reports parentGrewSinceSnapshot) or a map of child id to {x, y} offset from the parent's top-left.",
+    "Check that every direct child of a node sits inside the parent, comparing each child's absoluteBoundingBox to the parent's (0.5px tolerance by default; shadows and other render bounds are ignored). A child with no box is reported unmeasurable, never passed. A bare containment pass does NOT prove placement: a section auto-grows around children that were placed at the wrong offset (for example sec.x + 160 instead of 160, since section children are positioned relative to the section). Pass `expected` to check positions too: a snapshotId from snapshot_positions (taken on the parent or an ancestor; also reports parentGrewSinceSnapshot and snapshotTruncated) or a map of child id to {x, y} offset of the child's absoluteBoundingBox from the parent's. Offsets are always box minus box, never node x/y (a GROUP's children have x/y relative to the group's parent). placementOk is true only when every expected child was measured and matched and, for a snapshot, no child is missing from it; it is null when nothing could be decided (no parent box, a snapshot that did not read all of this parent's children, or rotated nodes, which are listed in rotated / placementUnchecked and not compared). A rotated parent makes contained null unless a child is clearly outside. Lists are capped at 100; counts are full.",
     {
       parentId: z.string().describe("The node whose direct children are checked"),
       expected: z.union([z.string(), z.record(Offset)]).optional()
@@ -74,7 +66,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
 
   server.tool(
     "diff_positions",
-    "Compare a snapshot from snapshot_positions with the document now. Returns missing ids (no longer exist: deleted, or absorbed into a wrapper by suggest-auto-layout), added ids (new in the subtree, such as auto-generated wrapper frames), and moved nodes (absoluteBoundingBox changed beyond the tolerance, or reparented; a reparent with boxChanged false is a zero-drift move). Pass the explicit snapshotId; an unknown or expired id is an error, never an empty diff.",
+    "Compare a snapshot from snapshot_positions with the document now. Returns missing ids (no longer exist: deleted, or absorbed into a wrapper by suggest-auto-layout), added ids (new in the subtree, such as auto-generated wrapper frames), and moved nodes (absoluteBoundingBox changed beyond the tolerance, or reparented; a reparent with boxChanged false is a zero-drift move). After a truncated snapshot, nodes under a parent whose children the snapshot did not finish reading are listed as unsnapshotted, not added. Snapshot nodes the re-walk does not reach are looked up by id, so missing always means gone. Every list is capped at 100 (listsTruncated); counts are full. Pass the explicit snapshotId; an unknown or expired id is an error, never an empty diff.",
     {
       snapshotId: z.string().describe("The id snapshot_positions returned"),
       tolerance: z.number().min(0).max(10).optional().describe("Box change ignored below this many px (default 0.5)"),

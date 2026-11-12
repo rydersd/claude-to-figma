@@ -2694,7 +2694,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
   async function setStrokeProperties(params) {
-    const { nodeId, weight, cap, join, align, dashPattern } = params || {};
+    const { nodeId, weight, cap: cap2, join, align, dashPattern } = params || {};
     if (!nodeId) {
       throw new Error("Missing nodeId parameter");
     }
@@ -2708,8 +2708,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (weight !== void 0) {
       node.strokeWeight = weight;
     }
-    if (cap !== void 0) {
-      node.strokeCap = cap;
+    if (cap2 !== void 0) {
+      node.strokeCap = cap2;
     }
     if (join !== void 0) {
       node.strokeJoin = join;
@@ -2886,10 +2886,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const maxDepth = Math.min(WALK_LIMITS.maxDepth, Math.max(0, Math.floor(options.maxDepth ?? WALK_LIMITS.defaultDepth)));
     let visited = 0;
     let truncated = false;
+    const cutOff = /* @__PURE__ */ new Set();
     const stack = [{ node: root, depth: 0, parent: null }];
     while (stack.length) {
       if (visited >= maxNodes) {
         truncated = true;
+        for (const pending of stack) if (pending.parent !== null) cutOff.add(pending.parent);
         break;
       }
       const { node, depth, parent } = stack.pop();
@@ -2899,11 +2901,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       if (!children || !children.length) continue;
       if (depth >= maxDepth) {
         truncated = true;
+        cutOff.add(node);
         continue;
       }
       for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], depth: depth + 1, parent: node });
     }
-    return { visited, truncated, maxNodes, maxDepth };
+    return { visited, truncated, truncatedParents: [...cutOff], maxNodes, maxDepth };
   }
 
   // src/shared/verify.ts
@@ -3006,12 +3009,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     purge() {
       for (const [id, s] of this.entries) if (s.expiresAt <= this.now()) this.entries.delete(id);
     }
-    add(rootId, entries, truncated, walk) {
+    add(rootId, entries, truncated, walk, truncatedParentIds = []) {
       this.purge();
       if (this.entries.size >= _PositionSnapshotStore.MAX_ENTRIES) this.entries.delete(this.entries.keys().next().value);
       const snapshotId = `snap-${++this.counter}-${this.now().toString(36)}`;
       const expiresAt = this.now() + _PositionSnapshotStore.TTL_MS;
-      this.entries.set(snapshotId, { rootId, entries, truncated, expiresAt, walk });
+      this.entries.set(snapshotId, { rootId, entries, truncated, truncatedParentIds, expiresAt, walk });
       return { snapshotId, expiresAt };
     }
     get(snapshotId) {
@@ -3027,6 +3030,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   __publicField(_PositionSnapshotStore, "MAX_ENTRIES", 64);
   var PositionSnapshotStore = _PositionSnapshotStore;
   var snapshotStore = new PositionSnapshotStore();
+  var LIST_CAP = 100;
+  var cap = (list) => list.slice(0, LIST_CAP);
   async function requireNode(nodeId) {
     if (!nodeId) throw new Error("Missing nodeId parameter");
     const node = await figma.getNodeByIdAsync(nodeId);
@@ -3038,15 +3043,26 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const result = walkTree(root, (node) => {
       entries.push(positionEntry(node));
     }, walk);
-    return { entries, truncated: result.truncated };
+    return { entries, truncated: result.truncated, truncatedParentIds: result.truncatedParents.map((n) => n.id) };
   }
   async function snapshotPositions(params) {
     const { nodeId, maxNodes, maxDepth } = params || {};
     const root = await requireNode(nodeId);
     const walk = { maxNodes, maxDepth };
-    const { entries, truncated } = readSubtree(root, walk);
-    const { snapshotId, expiresAt } = snapshotStore.add(root.id, entries, truncated, walk);
+    const { entries, truncated, truncatedParentIds } = readSubtree(root, walk);
+    const { snapshotId, expiresAt } = snapshotStore.add(root.id, entries, truncated, walk, truncatedParentIds);
     return { snapshotId, rootId: root.id, count: entries.length, truncated, expiresAt };
+  }
+  function unseenBySnapshot(entry, nowById, snapshotIds, cutOff) {
+    let parentId = entry.parentId;
+    const guard = /* @__PURE__ */ new Set();
+    while (parentId && !snapshotIds.has(parentId) && !guard.has(parentId)) {
+      guard.add(parentId);
+      const parent = nowById.get(parentId);
+      if (!parent) return true;
+      parentId = parent.parentId;
+    }
+    return !parentId || !snapshotIds.has(parentId) || cutOff.has(parentId);
   }
   async function diffPositions(params) {
     const { snapshotId, tolerance = CONTAINMENT_TOLERANCE } = params || {};
@@ -3054,11 +3070,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const snapshot = snapshotStore.get(snapshotId);
     const root = await figma.getNodeByIdAsync(snapshot.rootId);
     const after = [];
-    let truncated = snapshot.truncated;
+    let rewalkTruncated = false;
     if (root) {
       const now = readSubtree(root, snapshot.walk);
       after.push(...now.entries);
-      truncated = truncated || now.truncated;
+      rewalkTruncated = now.truncated;
     }
     const seen = new Set(after.map((e) => e.id));
     for (const old of snapshot.entries) {
@@ -3067,28 +3083,56 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       if (node && !node.removed) after.push(positionEntry(node));
     }
     const diff = diffPositionEntries(snapshot.entries, after, tolerance);
+    let added = diff.added;
+    const unsnapshotted = [];
+    if (snapshot.truncated) {
+      const nowById = new Map(after.map((e) => [e.id, e]));
+      const snapshotIds = new Set(snapshot.entries.map((e) => e.id));
+      const cutOff = new Set(snapshot.truncatedParentIds);
+      added = [];
+      for (const id of diff.added) {
+        if (unseenBySnapshot(nowById.get(id), nowById, snapshotIds, cutOff)) unsnapshotted.push(id);
+        else added.push(id);
+      }
+    }
+    const notes = [];
+    if (snapshot.truncated) notes.push("The snapshot was truncated: nodes under a parent whose children it did not finish reading are listed as unsnapshotted, not added, because they may have existed then.");
+    if (rewalkTruncated) notes.push("The re-walk hit its budget: snapshot nodes it did not reach were looked up by id (so missing still means gone), but new nodes past the budget are not listed in added.");
     return {
       snapshotId,
       rootId: snapshot.rootId,
       rootMissing: !root,
-      counts: { missing: diff.missing.length, added: diff.added.length, moved: diff.moved.length },
-      ...diff,
-      truncated
+      counts: { missing: diff.missing.length, added: added.length, moved: diff.moved.length, unsnapshotted: unsnapshotted.length },
+      missing: cap(diff.missing),
+      added: cap(added),
+      moved: cap(diff.moved),
+      unsnapshotted: cap(unsnapshotted),
+      listsTruncated: [diff.missing, added, diff.moved, unsnapshotted].some((l) => l.length > LIST_CAP),
+      truncated: snapshot.truncated || rewalkTruncated,
+      snapshotTruncated: snapshot.truncated,
+      rewalkTruncated,
+      ...notes.length ? { note: notes.join(" ") } : {}
     };
   }
-  var LIST_CAP = 100;
+  var isRotated = (node) => typeof node.rotation === "number" && Math.abs(node.rotation) > 0.01;
   async function assertContained(params) {
     const { parentId, expected, tolerance = CONTAINMENT_TOLERANCE } = params || {};
     const parent = await requireNode(parentId);
     if (!("children" in parent) || !Array.isArray(parent.children)) throw new Error(`Node has no children: ${parentId}`);
     const parentBox = toBox(parent.absoluteBoundingBox);
+    const parentRotated = isRotated(parent);
     let expectedOffsets = null;
     let parentGrewSinceSnapshot = null;
-    if (typeof expected === "string") {
+    let snapshotTruncated = null;
+    let snapshotCutChildren = false;
+    const fromSnapshot = typeof expected === "string";
+    if (fromSnapshot) {
       const snapshot = snapshotStore.get(expected);
       const byId = new Map(snapshot.entries.map((e) => [e.id, e]));
       const parentThen = byId.get(parent.id);
       if (!parentThen || !parentThen.box) throw new Error(`Snapshot ${expected} does not hold a measurable box for parent ${parent.id}`);
+      snapshotTruncated = snapshot.truncated;
+      snapshotCutChildren = snapshot.truncatedParentIds.includes(parent.id);
       expectedOffsets = {};
       for (const entry of snapshot.entries) {
         if (entry.parentId === parent.id && entry.box) {
@@ -3104,50 +3148,73 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const rotated = [];
     const displaced = [];
     const notInExpected = [];
+    const placementUnchecked = [];
     const childIds = /* @__PURE__ */ new Set();
     for (const child of parent.children) {
       childIds.add(child.id);
       const box = toBox(child.absoluteBoundingBox);
-      if (typeof child.rotation === "number" && Math.abs(child.rotation) > 0.01) {
-        rotated.push({ id: child.id, name: child.name, rotation: child.rotation });
-      }
+      const childRotated = isRotated(child);
+      if (childRotated) rotated.push({ id: child.id, name: child.name, rotation: child.rotation });
+      const want = expectedOffsets ? expectedOffsets[child.id] : void 0;
+      if (expectedOffsets && !want) notInExpected.push(child.id);
       if (!box || !parentBox) {
         unmeasurable.push({ id: child.id, name: child.name });
+        if (want && parentBox) displaced.push({ id: child.id, name: child.name, expected: want, actual: null });
         continue;
       }
       const overflow = boxOverflow(parentBox, box, tolerance);
       if (overflow) outside.push({ id: child.id, name: child.name, box, overflow });
-      if (expectedOffsets) {
-        const want = expectedOffsets[child.id];
-        const actual = { x: box.x - parentBox.x, y: box.y - parentBox.y };
-        if (!want) notInExpected.push(child.id);
-        else if (Math.abs(actual.x - want.x) > tolerance || Math.abs(actual.y - want.y) > tolerance) {
-          displaced.push({ id: child.id, name: child.name, expected: want, actual });
-        }
+      if (!want) continue;
+      if (childRotated || parentRotated) {
+        placementUnchecked.push(child.id);
+        continue;
+      }
+      const actual = { x: box.x - parentBox.x, y: box.y - parentBox.y };
+      if (Math.abs(actual.x - want.x) > tolerance || Math.abs(actual.y - want.y) > tolerance) {
+        displaced.push({ id: child.id, name: child.name, expected: want, actual });
       }
     }
     const expectedNotFound = expectedOffsets ? Object.keys(expectedOffsets).filter((id) => !childIds.has(id)) : [];
-    const cap = (list) => list.slice(0, LIST_CAP);
     const placementChecked = expectedOffsets !== null;
+    let placementOk = null;
+    if (placementChecked && parentBox) {
+      if (displaced.length || expectedNotFound.length) placementOk = false;
+      else if (fromSnapshot && notInExpected.length) placementOk = snapshotCutChildren ? null : false;
+      else if (placementUnchecked.length) placementOk = null;
+      else placementOk = true;
+    }
+    const anyFailure = outside.length > 0 || unmeasurable.length > 0;
+    const contained = !parentBox ? false : anyFailure ? false : parentRotated ? null : true;
+    const notes = [];
+    if (!parentBox) notes.push("The parent has no absoluteBoundingBox, so nothing could be measured.");
+    else if (!placementChecked) notes.push("Containment alone does not prove placement: a section auto-grows around displaced children. Pass expected (a snapshot id or an offset map) to check positions.");
+    else notes.push("Offsets are absoluteBoundingBox origin minus the parent's (shadows and other render bounds ignored), never node x/y: a GROUP's children are positioned relative to the group's parent.");
+    if (parentRotated) notes.push("The parent is rotated: containment is only known to fail, and placement is not compared.");
+    if (placementUnchecked.length && !parentRotated) notes.push("Rotated children are listed in placementUnchecked and not compared.");
+    if (fromSnapshot && snapshotCutChildren && notInExpected.length) notes.push("The snapshot did not read all of this parent's children, so children not in it may have existed then; placement is unknown.");
+    else if (fromSnapshot && notInExpected.length) notes.push("Children not in the snapshot were added since it was taken; their placement was never checked.");
     return {
       parentId: parent.id,
       parentName: parent.name,
       parentBox,
+      parentRotated,
       tolerance,
       childCount: parent.children.length,
-      contained: !!parentBox && outside.length === 0 && unmeasurable.length === 0,
+      contained,
       placementChecked,
-      placementOk: placementChecked ? displaced.length === 0 && expectedNotFound.length === 0 : null,
+      placementOk,
       parentGrewSinceSnapshot,
-      counts: { outside: outside.length, unmeasurable: unmeasurable.length, rotated: rotated.length, displaced: displaced.length },
+      ...fromSnapshot ? { snapshotTruncated } : {},
+      counts: { outside: outside.length, unmeasurable: unmeasurable.length, rotated: rotated.length, displaced: displaced.length, notInExpected: notInExpected.length, expectedNotFound: expectedNotFound.length, placementUnchecked: placementUnchecked.length },
       outside: cap(outside),
       unmeasurable: cap(unmeasurable),
       rotated: cap(rotated),
       displaced: cap(displaced),
       notInExpected: cap(notInExpected),
       expectedNotFound: cap(expectedNotFound),
-      listsTruncated: [outside, unmeasurable, rotated, displaced, notInExpected, expectedNotFound].some((l) => l.length > LIST_CAP),
-      note: !parentBox ? "The parent has no absoluteBoundingBox, so nothing could be measured." : placementChecked ? "Boxes are absoluteBoundingBox (shadows and other render bounds ignored); a rotated child is checked by its axis-aligned box." : "Containment alone does not prove placement: a section auto-grows around displaced children. Pass expected (a snapshot id or an offset map) to check positions."
+      placementUnchecked: cap(placementUnchecked),
+      listsTruncated: [outside, unmeasurable, rotated, displaced, notInExpected, expectedNotFound, placementUnchecked].some((l) => l.length > LIST_CAP),
+      note: notes.join(" ")
     };
   }
 

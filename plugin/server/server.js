@@ -18154,15 +18154,6 @@ function registerTools3(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/verify.ts
-var READ_BACK_KEYS = ["requested", "applied", "partial", "cause"];
-function stripReadBack(result, enabled) {
-  if (enabled || !result || typeof result !== "object" || Array.isArray(result))
-    return result;
-  const copy = { ...result };
-  for (const key of READ_BACK_KEYS)
-    delete copy[key];
-  return copy;
-}
 var size = (s) => `${s.width}x${s.height}`;
 function describeReadBack(r) {
   if (!r.requested || !r.applied || typeof r.partial !== "boolean")
@@ -18171,7 +18162,7 @@ function describeReadBack(r) {
 }
 var Offset = z2.object({ x: z2.number(), y: z2.number() });
 function registerTools4(server, sendCommandToFigma2) {
-  server.tool("assert_contained", "Check that every direct child of a node sits inside the parent, comparing each child's absoluteBoundingBox to the parent's (0.5px tolerance by default; shadows and other render bounds are ignored). A child with no box is reported unmeasurable, never passed; rotated children are listed. A bare containment pass does NOT prove placement: a section auto-grows around children that were placed at the wrong offset (for example sec.x + 160 instead of 160, since section children are positioned relative to the section). Pass `expected` to check positions too: a snapshotId from snapshot_positions (taken on the parent or an ancestor; also reports parentGrewSinceSnapshot) or a map of child id to {x, y} offset from the parent's top-left.", {
+  server.tool("assert_contained", "Check that every direct child of a node sits inside the parent, comparing each child's absoluteBoundingBox to the parent's (0.5px tolerance by default; shadows and other render bounds are ignored). A child with no box is reported unmeasurable, never passed. A bare containment pass does NOT prove placement: a section auto-grows around children that were placed at the wrong offset (for example sec.x + 160 instead of 160, since section children are positioned relative to the section). Pass `expected` to check positions too: a snapshotId from snapshot_positions (taken on the parent or an ancestor; also reports parentGrewSinceSnapshot and snapshotTruncated) or a map of child id to {x, y} offset of the child's absoluteBoundingBox from the parent's. Offsets are always box minus box, never node x/y (a GROUP's children have x/y relative to the group's parent). placementOk is true only when every expected child was measured and matched and, for a snapshot, no child is missing from it; it is null when nothing could be decided (no parent box, a snapshot that did not read all of this parent's children, or rotated nodes, which are listed in rotated / placementUnchecked and not compared). A rotated parent makes contained null unless a child is clearly outside. Lists are capped at 100; counts are full.", {
     parentId: z2.string().describe("The node whose direct children are checked"),
     expected: z2.union([z2.string(), z2.record(Offset)]).optional().describe("A snapshotId, or {childId: {x, y}} offsets from the parent's top-left"),
     tolerance: z2.number().min(0).max(10).optional().describe("Allowed overshoot in px (default 0.5)")
@@ -18195,7 +18186,7 @@ function registerTools4(server, sendCommandToFigma2) {
       return { isError: true, content: [{ type: "text", text: `Error taking snapshot: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
-  server.tool("diff_positions", "Compare a snapshot from snapshot_positions with the document now. Returns missing ids (no longer exist: deleted, or absorbed into a wrapper by suggest-auto-layout), added ids (new in the subtree, such as auto-generated wrapper frames), and moved nodes (absoluteBoundingBox changed beyond the tolerance, or reparented; a reparent with boxChanged false is a zero-drift move). Pass the explicit snapshotId; an unknown or expired id is an error, never an empty diff.", {
+  server.tool("diff_positions", "Compare a snapshot from snapshot_positions with the document now. Returns missing ids (no longer exist: deleted, or absorbed into a wrapper by suggest-auto-layout), added ids (new in the subtree, such as auto-generated wrapper frames), and moved nodes (absoluteBoundingBox changed beyond the tolerance, or reparented; a reparent with boxChanged false is a zero-drift move). After a truncated snapshot, nodes under a parent whose children the snapshot did not finish reading are listed as unsnapshotted, not added. Snapshot nodes the re-walk does not reach are looked up by id, so missing always means gone. Every list is capped at 100 (listsTruncated); counts are full. Pass the explicit snapshotId; an unknown or expired id is an error, never an empty diff.", {
     snapshotId: z2.string().describe("The id snapshot_positions returned"),
     tolerance: z2.number().min(0).max(10).optional().describe("Box change ignored below this many px (default 0.5)")
   }, async ({ snapshotId, tolerance }) => {
@@ -18282,7 +18273,7 @@ function registerTools5(server, sendCommandToFigma2, env = process.env) {
     height: z2.number().positive().describe("New height")
   }, async ({ nodeId, width, height }) => {
     try {
-      const result = stripReadBack(await sendCommandToFigma2("resize_node", { nodeId, width, height }), verifyEnabled);
+      const result = await sendCommandToFigma2("resize_node", { nodeId, width, height });
       const typedResult = result;
       const readBack = verifyEnabled ? describeReadBack(result) : null;
       if (readBack)
@@ -20268,7 +20259,6 @@ function registerTools17(server, sendCommandToFigma2, env = process.env) {
     try {
       const result = await sendCommandToFigma2("batch_mutate", { operations }, 60000);
       const typedResult = result;
-      typedResult.results = typedResult.results.map((r) => r.op === "resize" ? stripReadBack(r, verifyEnabled) : r);
       const failedResults = typedResult.results.filter((r) => !r.success);
       let responseText = `Batch mutate: ${typedResult.successCount}/${typedResult.totalOperations} succeeded`;
       if (failedResults.length > 0) {

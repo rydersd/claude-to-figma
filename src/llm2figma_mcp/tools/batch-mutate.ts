@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
 import { isEnabled } from "../../shared/flags.js";
-import { describeReadBack, stripReadBack } from "./verify.js";
+import { describeReadBack } from "./verify.js";
 
 const OperationSchema = z.discriminatedUnion("op", [
   z.object({
@@ -145,7 +145,6 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
           results: Array<{ success: boolean; op: string; nodeId: string; error?: string; [key: string]: any }>;
         };
 
-        typedResult.results = typedResult.results.map(r => (r.op === "resize" ? stripReadBack(r, verifyEnabled) : r));
         const failedResults = typedResult.results.filter(r => !r.success);
         let responseText = `Batch mutate: ${typedResult.successCount}/${typedResult.totalOperations} succeeded`;
         if (failedResults.length > 0) {

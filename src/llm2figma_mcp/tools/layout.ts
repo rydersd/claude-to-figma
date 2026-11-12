@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
 import { isEnabled } from "../../shared/flags.js";
-import { describeReadBack, stripReadBack } from "./verify.js";
+import { describeReadBack } from "./verify.js";
 
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn, env: Record<string, string | undefined> = process.env) {
   // Read from the server environment only; no tool parameter can turn it on.
@@ -82,7 +82,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     height: z.number().positive().describe("New height"),
   }, async ({ nodeId, width, height }: any) => {
     try {
-      const result = stripReadBack(await sendCommandToFigma("resize_node", { nodeId, width, height }), verifyEnabled);
+      const result = await sendCommandToFigma("resize_node", { nodeId, width, height });
       const typedResult = result as { name: string };
       const readBack = verifyEnabled ? describeReadBack(result as any) : null;
       if (readBack) return { content: [{ type: "text", text: `Resized node "${typedResult.name}": ${readBack}` }] };

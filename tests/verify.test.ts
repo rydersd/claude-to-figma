@@ -11,7 +11,7 @@ import { resizeNode } from "../src/llm2figma_plugin/src/transforms";
 import { batchMutate } from "../src/llm2figma_plugin/src/analysis";
 import { allowedEditors, assertEditorAllowed } from "../src/llm2figma_plugin/src/editor-gate";
 import { registerWhenEnabled } from "../src/shared/flags";
-import { registerTools as registerVerifyTools, stripReadBack } from "../src/llm2figma_mcp/tools/verify";
+import { registerTools as registerVerifyTools } from "../src/llm2figma_mcp/tools/verify";
 import { registerTools as registerLayoutTools } from "../src/llm2figma_mcp/tools/layout";
 import { registerTools as registerBatchMutateTools } from "../src/llm2figma_mcp/tools/batch-mutate";
 
@@ -37,6 +37,7 @@ function makeNode(type: string, geometry: { x?: number; y?: number; width?: numb
       child.parent = this;
       this.children.push(child);
     },
+    insertChild(index: number, child: any) { child.parent = this; this.children.splice(index, 0, child); },
     remove() { nodes.delete(this.id); if (this.parent) this.parent.children = this.parent.children.filter((c: any) => c !== this); },
   };
   Object.defineProperty(node, "absoluteBoundingBox", {
@@ -77,6 +78,16 @@ describe("walkTree", () => {
   test("the node budget and depth limit set truncated", () => {
     expect(walkTree(tree, () => {}, { maxNodes: 2 })).toMatchObject({ visited: 2, truncated: true });
     expect(walkTree(tree, () => {}, { maxDepth: 1 })).toMatchObject({ visited: 3, truncated: true });
+  });
+  test("truncatedParents names each node whose child list was cut off", () => {
+    const ids = (r: any) => r.truncatedParents.map((n: any) => n.id);
+    expect(ids(walkTree<any>(tree, () => {}))).toEqual([]);
+    // Budget 2 visits a and b: c (under b) and d (under a) are still queued.
+    expect(ids(walkTree<any>(tree, () => {}, { maxNodes: 2 })).sort()).toEqual(["a", "b"]);
+    // Depth 1 stops below b, which has a child; d has none, so it is not cut off.
+    expect(ids(walkTree<any>(tree, () => {}, { maxDepth: 1 }))).toEqual(["b"]);
+    // A visit returning false is a choice, not a truncation.
+    expect(ids(walkTree<any>(tree, n => n.id !== "b"))).toEqual([]);
   });
   test("a visit returning false skips children without truncating", () => {
     expect(walkTree<any>(tree, n => n.id !== "b")).toMatchObject({ visited: 3, truncated: false });
@@ -142,15 +153,12 @@ describe("resize read-back", () => {
 describe("resize read-back on the server", () => {
   const partial = { id: "1:1", name: "Card", width: 300, height: 200, requested: { width: 300, height: 80 }, applied: { width: 300, height: 200 }, partial: true, cause: "height: minHeight is 200" };
 
-  test("stripReadBack removes only the new keys when VERIFY is off", () => {
-    expect(stripReadBack(partial, false)).toEqual({ id: "1:1", name: "Card", width: 300, height: 200 });
-    expect(stripReadBack(partial, true)).toEqual(partial);
-  });
-
   test("resize_node output is unchanged with VERIFY off and reports the partial with it on", async () => {
     const send = async () => partial;
     const off = capture(server => registerLayoutTools(server, send as any, {}));
-    expect(text(await off.resize_node.run({ nodeId: "1:1", width: 300, height: 80 }))).toBe('Resized node "Card" to width 300 and height 80');
+    // The whole tool result is what leaves the server: no read-back key or text when off.
+    expect(await off.resize_node.run({ nodeId: "1:1", width: 300, height: 80 }))
+      .toEqual({ content: [{ type: "text", text: 'Resized node "Card" to width 300 and height 80' }] });
     const on = capture(server => registerLayoutTools(server, send as any, ON));
     expect(text(await on.resize_node.run({ nodeId: "1:1", width: 300, height: 80 })))
       .toBe('Resized node "Card": requested 300x80, Figma applied 300x200 (partial: height: minHeight is 200)');
@@ -161,7 +169,7 @@ describe("resize read-back on the server", () => {
     const send = async () => ({ totalOperations: 1, successCount: 1, failureCount: 0, results: [{ success: true, op: "resize", nodeId: "1:1", ...partial }] });
     const off = capture(server => registerBatchMutateTools(server, send as any, {}));
     const ops = { operations: [{ op: "resize", nodeId: "1:1", width: 300, height: 80 }] };
-    expect(text(await off.batch_mutate.run(ops))).toBe("Batch mutate: 1/1 succeeded");
+    expect(await off.batch_mutate.run(ops)).toEqual({ content: [{ type: "text", text: "Batch mutate: 1/1 succeeded" }] });
     const on = capture(server => registerBatchMutateTools(server, send as any, ON));
     expect(text(await on.batch_mutate.run(ops))).toBe(
       'Batch mutate: 1/1 succeeded\n\nResize read-back: 0/1 applied as requested\nPartial:\n- 1:1 "Card": requested 300x80, Figma applied 300x200 (partial: height: minHeight is 200)',
@@ -249,6 +257,105 @@ describe("assert_contained", () => {
     expect(result.displaced.map((d: any) => d.id)).toEqual([b.id]);
     expect(result.displaced.some((d: any) => d.id === a.id)).toBe(false);
   });
+
+  test("a parent with no box gives placementOk null, never true", async () => {
+    const page = makeNode("PAGE");
+    page.noBox = true;
+    const child = makeNode("FRAME", { x: 2160, y: 40 }, page);
+    const result: any = await assertContained({ parentId: page.id, expected: { [child.id]: { x: 160, y: 40 } } });
+    expect(result).toMatchObject({ contained: false, placementChecked: true, placementOk: null });
+    expect(result.counts.unmeasurable).toBe(1);
+  });
+
+  test("an expected child with no box fails placement and is listed", async () => {
+    const parent = makeNode("FRAME", { width: 400, height: 400 });
+    const group = makeNode("GROUP", { x: 300 }, parent);
+    group.noBox = true;
+    const result: any = await assertContained({ parentId: parent.id, expected: { [group.id]: { x: 0, y: 0 } } });
+    expect(result.placementOk).toBe(false);
+    expect(result.displaced).toEqual([{ id: group.id, name: group.name, expected: { x: 0, y: 0 }, actual: null }]);
+  });
+
+  test("with a snapshot, a child added since (sec.x + 160, section grown) fails placement", async () => {
+    const section = makeNode("SECTION", { x: 2000, width: 1000, height: 600 });
+    makeNode("FRAME", { x: 10, y: 10, width: 10, height: 10 }, section);
+    const { snapshotId } = await snapshotPositions({ nodeId: section.id });
+    const bad = makeNode("FRAME", { x: 2160, y: 40, width: 100, height: 100 }, section);
+    section.width = 2400;
+    const result: any = await assertContained({ parentId: section.id, expected: snapshotId });
+    expect(result).toMatchObject({ contained: true, placementOk: false, parentGrewSinceSnapshot: true, snapshotTruncated: false });
+    expect(result.notInExpected).toEqual([bad.id]);
+  });
+
+  test("a snapshot that cut off the parent's children makes placement unknown and says so", async () => {
+    const section = makeNode("SECTION", { width: 1000, height: 600 });
+    const kids = Array.from({ length: 5 }, (_, i) => makeNode("FRAME", { x: i * 50, width: 10, height: 10 }, section));
+    const { snapshotId, truncated } = await snapshotPositions({ nodeId: section.id, maxNodes: 2 });
+    expect(truncated).toBe(true);
+    kids[4].x = 900;
+    kids[4].y = 500;
+    const result: any = await assertContained({ parentId: section.id, expected: snapshotId });
+    expect(result).toMatchObject({ placementOk: null, snapshotTruncated: true });
+    expect(result.counts.notInExpected).toBe(4);
+    expect(result.note).toContain("did not read all of this parent's children");
+  });
+
+  test("a snapshot truncated elsewhere still decides placement for a parent it read fully", async () => {
+    const root = makeNode("FRAME", { width: 2000, height: 2000 });
+    const section = makeNode("SECTION", { width: 1000, height: 600 }, root);
+    makeNode("FRAME", { x: 10, y: 10, width: 10, height: 10 }, section);
+    const other = makeNode("FRAME", { x: 1200 }, root);
+    for (let i = 0; i < 3; i++) makeNode("RECTANGLE", { width: 1, height: 1 }, other);
+    // Budget 4: root, section, a, other; other's children are cut off, section's are not.
+    const { snapshotId, truncated } = await snapshotPositions({ nodeId: root.id, maxNodes: 4 });
+    expect(truncated).toBe(true);
+    expect((await assertContained({ parentId: section.id, expected: snapshotId })).placementOk).toBe(true);
+    const added = makeNode("FRAME", { x: 20, y: 20, width: 10, height: 10 }, section);
+    const result: any = await assertContained({ parentId: section.id, expected: snapshotId });
+    expect(result).toMatchObject({ placementOk: false, snapshotTruncated: true, notInExpected: [added.id] });
+  });
+
+  test("a rotated child is flagged, not compared, and placement is unknown", async () => {
+    const parent = makeNode("FRAME", { width: 400, height: 400 });
+    const child = makeNode("RECTANGLE", { x: 10, y: 10, width: 20, height: 20 }, parent);
+    child.rotation = 30;
+    const result: any = await assertContained({ parentId: parent.id, expected: { [child.id]: { x: 999, y: 999 } } });
+    expect(result).toMatchObject({ placementOk: null, displaced: [], placementUnchecked: [child.id] });
+    expect(result.rotated).toEqual([{ id: child.id, name: child.name, rotation: 30 }]);
+  });
+
+  test("a rotated parent makes containment unknown unless a child is clearly outside", async () => {
+    const parent = makeNode("FRAME", { width: 400, height: 400 });
+    parent.rotation = 15;
+    const inside = makeNode("RECTANGLE", { x: 10, y: 10, width: 20, height: 20 }, parent);
+    let result: any = await assertContained({ parentId: parent.id, expected: { [inside.id]: { x: 10, y: 10 } } });
+    expect(result).toMatchObject({ parentRotated: true, contained: null, placementOk: null, placementUnchecked: [inside.id] });
+    makeNode("RECTANGLE", { x: 500, y: 10, width: 20, height: 20 }, parent);
+    result = await assertContained({ parentId: parent.id });
+    expect(result.contained).toBe(false);
+  });
+
+  test("offsets come from absolute boxes, so a GROUP's children (x/y relative to the group's parent) compare correctly", async () => {
+    const frame = makeNode("FRAME", { x: 100, y: 100, width: 800, height: 800 });
+    const group = makeNode("GROUP", { x: 200, y: 200, width: 300, height: 300 }, frame);
+    const child = makeNode("RECTANGLE", { x: 250, y: 260, width: 10, height: 10 }, frame);
+    // Group child: its x/y are in the frame's space, as Figma reports them.
+    group.children.push(child);
+    frame.children = frame.children.filter((c: any) => c !== child);
+    Object.defineProperty(child, "absoluteBoundingBox", { get: () => ({ x: 100 + 250, y: 100 + 260, width: 10, height: 10 }) });
+    // Box offset from the group's box (300, 300) is (50, 60); x/y would give (250, 260).
+    expect((await assertContained({ parentId: group.id, expected: { [child.id]: { x: 50, y: 60 } } })).placementOk).toBe(true);
+    expect((await assertContained({ parentId: group.id, expected: { [child.id]: { x: 250, y: 260 } } })).placementOk).toBe(false);
+  });
+
+  test("every list is capped with full counts", async () => {
+    const parent = makeNode("FRAME", { width: 10, height: 10 });
+    for (let i = 0; i < 150; i++) makeNode("RECTANGLE", { x: 100 }, parent);
+    const result: any = await assertContained({ parentId: parent.id });
+    expect(result.outside).toHaveLength(100);
+    expect(result.counts.outside).toBe(150);
+    expect(result.listsTruncated).toBe(true);
+  });
 });
 
 describe("snapshot_positions and diff_positions", () => {
@@ -283,7 +390,7 @@ describe("snapshot_positions and diff_positions", () => {
     const root = makeNode("FRAME");
     makeNode("RECTANGLE", {}, root);
     const { snapshotId } = await snapshotPositions({ nodeId: root.id });
-    expect(await diffPositions({ snapshotId })).toMatchObject({ counts: { missing: 0, added: 0, moved: 0 }, truncated: false, rootMissing: false });
+    expect(await diffPositions({ snapshotId })).toMatchObject({ counts: { missing: 0, added: 0, moved: 0, unsnapshotted: 0 }, truncated: false, rootMissing: false, listsTruncated: false });
   });
 
   test("a reparent with zero drift is moved with boxChanged false", async () => {
@@ -322,7 +429,64 @@ describe("snapshot_positions and diff_positions", () => {
     const diff: any = await diffPositions({ snapshotId });
     expect(diff.missing).toEqual([bus.id]);
     expect(diff.added).toEqual([wrapper.id]);
-    expect(diff.counts).toEqual({ missing: 1, added: 1, moved: 0 });
+    expect(diff.counts).toEqual({ missing: 1, added: 1, moved: 0, unsnapshotted: 0 });
+  });
+
+  test("after a truncated snapshot, a pre-existing node is unsnapshotted, not added", async () => {
+    const root = makeNode("FRAME", { width: 1000, height: 1000 });
+    const kids = Array.from({ length: 5 }, (_, i) => makeNode("RECTANGLE", { x: i * 10, width: 5, height: 5 }, root));
+    const { snapshotId } = await snapshotPositions({ nodeId: root.id, maxNodes: 3 });
+    kids[0].remove();
+    const diff: any = await diffPositions({ snapshotId });
+    expect(diff.missing).toEqual([kids[0].id]);
+    expect(diff.added).toEqual([]);
+    expect(diff.unsnapshotted).toEqual([kids[2].id]);
+    expect(diff).toMatchObject({ snapshotTruncated: true, truncated: true });
+    expect(diff.note).toContain("unsnapshotted");
+  });
+
+  test("after a truncated snapshot, a new child of a fully read parent is still added", async () => {
+    const root = makeNode("FRAME", { width: 1000, height: 1000 });
+    const full = makeNode("FRAME", {}, root);
+    makeNode("RECTANGLE", {}, full);
+    const cut = makeNode("FRAME", {}, root);
+    for (let i = 0; i < 3; i++) makeNode("RECTANGLE", {}, cut);
+    // Budget 4: root, full, its child, cut; cut's children are not read.
+    const { snapshotId } = await snapshotPositions({ nodeId: root.id, maxNodes: 4 });
+    const wrapper = makeNode("FRAME", {}, full);
+    makeNode("RECTANGLE", {}, wrapper);
+    // The re-walk (same budget) reads root, full, its old child and the new wrapper.
+    const diff: any = await diffPositions({ snapshotId });
+    expect(diff.added).toEqual([wrapper.id]);
+    expect(diff.unsnapshotted).toEqual([]);
+    expect(diff.missing).toEqual([]);
+  });
+
+  test("a snapshot node the re-walk no longer reaches is not missing", async () => {
+    const root = makeNode("FRAME", { width: 1000, height: 1000 });
+    for (let i = 0; i < 5; i++) makeNode("RECTANGLE", { x: i * 10, width: 5, height: 5 }, root);
+    const { snapshotId } = await snapshotPositions({ nodeId: root.id, maxNodes: 3 });
+    // Two new first children use up the re-walk's budget before kids[0] and kids[1].
+    root.insertChild(0, makeNode("RECTANGLE", { width: 5, height: 5 }));
+    root.insertChild(0, makeNode("RECTANGLE", { width: 5, height: 5 }));
+    const diff: any = await diffPositions({ snapshotId });
+    expect(diff.missing).toEqual([]);
+    expect(diff.moved).toEqual([]);
+    expect(diff.added).toEqual([]);
+    expect(diff.counts.unsnapshotted).toBe(2);
+    expect(diff.rewalkTruncated).toBe(true);
+  });
+
+  test("diff output is bounded: every list capped, counts full", async () => {
+    const root = makeNode("FRAME", { width: 5000, height: 5000 });
+    for (let i = 0; i < 9999; i++) makeNode("RECTANGLE", { x: i % 100, y: Math.floor(i / 100), width: 1, height: 1 }, root);
+    const { snapshotId } = await snapshotPositions({ nodeId: root.id, maxNodes: 10000 });
+    root.x += 10;
+    const diff: any = await diffPositions({ snapshotId });
+    expect(diff.counts.moved).toBe(10000);
+    expect(diff.moved).toHaveLength(100);
+    expect(diff.listsTruncated).toBe(true);
+    expect(JSON.stringify(diff).length).toBeLessThan(50000);
   });
 
   test("diffPositionEntries compares boxes within the tolerance", () => {
