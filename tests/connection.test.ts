@@ -90,4 +90,15 @@ describe("stalled relay handshake", () => {
       expect(snapshot).toEqual({ connections: 2, closed: 1 });
     } finally { await relay.close(); }
   }, 30_000);
+
+  // Review M1 (PR 11d): apply_spec clears pendingApply only for a command that
+  // provably never reached Figma, told apart by delivery stage, not message.
+  test("a command sent with no relay connection is rejected as not_sent", async () => {
+    const relay = await stalledServer();
+    try {
+      const { out } = await runChild(relay.port, `
+        try { await c.sendCommandToFigma("apply_spec_ops", {}); } catch (e) { console.log("delivery", c.commandDelivery(e)); }`, relay.seen);
+      expect(out).toContain("delivery not_sent");
+    } finally { await relay.close(); }
+  }, 30_000);
 });

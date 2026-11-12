@@ -353,6 +353,7 @@ Maps Figma components to the components of a code repository you name on every c
 
 - `pull_spec` (`L2F_SPEC_SYNC=1`) - Writes a Figma subtree to a Spec file (`<name>.l2f.json`, create_node_tree node format, every node with its id) and a SpecLock beside it, so a design can be edited in place by editing the file. Defaults and layout-derived values are left out; groups, sections, rotated nodes and other shapes the format cannot express are OpaqueNodes; instances are leaves. Returns paths and counts only. Refuses to overwrite unapplied edits or a file that is not a Spec; paths resolve against `L2F_SPEC_DIR`. See [Spec Sync](docs/Spec-Sync.md)
 - `plan_spec` (`L2F_SPEC_SYNC=1`) - Compares an edited Spec, its SpecLock and live Figma property by property (Spec changed = update, Figma changed = drift, both = conflict; plus creates, moves and removes) and returns counts and capped lists under an explicit `planId`; the full Plan stays on the server for 30 minutes. Writes nothing. See [Spec Sync](docs/Spec-Sync.md)
+- `apply_spec` (`L2F_SPEC_SYNC=1`) - Carries out one Plan from `plan_spec` by node id: creates, updates of only the listed properties, moves that keep hand-added nodes in place, and (with `allowRemovals`) removals moved into a hidden `l2f/superseded` frame, never deleted. Refuses, writing nothing, if anything it touches changed since the plan; reads the subtree back, writes created ids into the Spec and rewrites the SpecLock. One undo in Figma reverts it. See [Spec Sync](docs/Spec-Sync.md)
 
 ### Query & Eval
 

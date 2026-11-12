@@ -84,8 +84,22 @@ export interface PlanCounts {
   liveNodes: number;
 }
 
+// A property conflict the Spec side would win with apply_spec's onConflict:
+// "spec": the values to set (the Spec's, or the default for a deleted key), the
+// live state the plan saw, and the live size for pairing width with height.
+// Never applied unless that option is passed; keys in $unread never appear.
+export interface ConflictOverwrite {
+  id: string;
+  name: string;
+  nodeType: SpecType;
+  set: Record<string, unknown>;
+  expected: ExpectedNode;
+  size?: { width: number; height: number };
+}
+
 export interface PlanBody {
   operations: PlanOperation[];
+  overwrites: ConflictOverwrite[];
   expectedHashes: Record<string, ExpectedNode>;
   drift: PlanIssue[];
   conflicts: PlanIssue[];
@@ -314,6 +328,7 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
   const drift: PlanIssue[] = [];
   const conflicts: PlanIssue[] = [];
   const expected: Record<string, ExpectedNode> = {};
+  const overwrites: ConflictOverwrite[] = [];
   let converged = 0;
 
   const liveNodes = live.nodes;
@@ -379,6 +394,7 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
     const set: Record<string, unknown> = {};
     const drifted: string[] = [];
     const conflicted: string[] = [];
+    const overwrite: Record<string, unknown> = {};
     // Keys Figma holds a value for that the Spec cannot express: setting one
     // is a conflict, never an update (the Spec never saw what it replaces).
     const unexpressed: string[] = [];
@@ -409,6 +425,7 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
         if (result.set) set.properties = result.set;
         drifted.push(...result.drifted);
         conflicted.push(...result.conflicted);
+        if (result.conflictSet) overwrite.properties = result.conflictSet;
         converged += result.converged;
         continue;
       }
@@ -445,10 +462,19 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
         converged++;
       } else {
         conflicted.push(key);
+        // Never over a value Figma holds unexpressed ($unread).
+        if (value !== undefined && value !== UNREADABLE && b !== UNREADABLE && l !== UNREADABLE) {
+          if (key === "pathHash") overwrite.pathData = want.props.pathData;
+          else overwrite[key] = value;
+        }
       }
     }
     if (drifted.length) drift.push({ id, name: label(id), kind: "property", keys: drifted });
     if (conflicted.length) conflicts.push({ id, name: label(id), kind: "property", keys: conflicted });
+    if (Object.keys(overwrite).length) {
+      const { propsHash, parentId, children } = liveNodes[id];
+      overwrites.push({ id, name: label(id), nodeType: type, set: overwrite, expected: { propsHash, parentId, children }, ...(liveNodes[id].size ? { size: liveNodes[id].size } : {}) });
+    }
     if (unexpressed.length) {
       conflicts.push({
         id, name: label(id), kind: "property", keys: unexpressed,
@@ -598,6 +624,7 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
   const ordered = [...operations.create, ...operations.update, ...operations.move, ...operations.remove];
   return {
     operations: ordered,
+    overwrites,
     expectedHashes: expected,
     drift,
     conflicts,
@@ -626,7 +653,7 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
 function compareProperties(base: unknown, desired: unknown, live: unknown) {
   const b = record(base);
   const l = record(live);
-  const out = { set: undefined as Record<string, unknown> | undefined, drifted: [] as string[], conflicted: [] as string[], converged: 0, removed: "" };
+  const out = { set: undefined as Record<string, unknown> | undefined, conflictSet: undefined as Record<string, unknown> | undefined, drifted: [] as string[], conflicted: [] as string[], converged: 0, removed: "" };
   if (desired === undefined) {
     if (Object.keys(b).length) out.removed = "properties";
     return out;
@@ -642,7 +669,10 @@ function compareProperties(base: unknown, desired: unknown, live: unknown) {
     if (desiredChanged && !liveChanged) set[key] = d[key];
     else if (!desiredChanged) out.drifted.push(`properties.${key}`);
     else if (same(d[key], l[key])) out.converged++;
-    else out.conflicted.push(`properties.${key}`);
+    else {
+      out.conflicted.push(`properties.${key}`);
+      if (d[key] !== undefined) out.conflictSet = { ...out.conflictSet, [key]: d[key] };
+    }
   }
   if (Object.keys(set).length) out.set = set;
   return out;

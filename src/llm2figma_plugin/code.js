@@ -6578,6 +6578,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const resolved = Object.assign({}, props);
     const bindings = [];
     for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
+      if (only && !only.has(colorProp)) continue;
       if (resolved[colorProp] != null) {
         const varPaint = isVarPaint(resolved[colorProp]) ? resolved[colorProp] : null;
         const colorValue = varPaint ? { color: null, varRef: varPaint.$var.startsWith("$var:") ? varPaint.$var.slice(5) : varPaint.$var } : resolveColorValue(resolved[colorProp]);
@@ -6637,39 +6638,52 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const type = existingNode.type.toLowerCase();
     const consumed = /* @__PURE__ */ new Set();
     const want = (key) => {
+      if (!only) return true;
+      if (!only.has(key)) return false;
+      consumed.add(key);
       return true;
     };
     const wantAny = (...keys) => keys.map(want).some(Boolean);
-    if (want() && spec.name !== void 0 && existingNode.name !== spec.name) {
+    const setSizing = (key) => {
+      if (only && want(key) && spec[key] !== void 0 && existingNode[key] !== spec[key]) {
+        try {
+          existingNode[key] = spec[key];
+          changedProps.push(key);
+        } catch (e) {
+          console.error("Error setting " + key + " during update:", e);
+        }
+      }
+    };
+    if (want("name") && spec.name !== void 0 && existingNode.name !== spec.name) {
       existingNode.name = spec.name;
       changedProps.push("name");
     }
-    if (want() && spec.x !== void 0 && existingNode.x !== spec.x) {
+    if (want("x") && spec.x !== void 0 && existingNode.x !== spec.x) {
       existingNode.x = spec.x;
       changedProps.push("x");
     }
-    if (want() && spec.y !== void 0 && existingNode.y !== spec.y) {
+    if (want("y") && spec.y !== void 0 && existingNode.y !== spec.y) {
       existingNode.y = spec.y;
       changedProps.push("y");
     }
-    if (want() && spec.opacity !== void 0 && existingNode.opacity !== spec.opacity) {
+    if (want("opacity") && spec.opacity !== void 0 && existingNode.opacity !== spec.opacity) {
       existingNode.opacity = spec.opacity;
       changedProps.push("opacity");
     }
-    if (want() && spec.visible !== void 0 && existingNode.visible !== !!spec.visible) {
+    if (want("visible") && spec.visible !== void 0 && existingNode.visible !== !!spec.visible) {
       existingNode.visible = !!spec.visible;
       changedProps.push("visible");
     }
-    if ("effects" in existingNode && want() && spec.effects !== void 0) {
+    if ("effects" in existingNode && want("effects") && spec.effects !== void 0) {
       existingNode.effects = buildFigmaEffects(spec.effects);
       changedProps.push("effects");
     }
-    if ("strokeAlign" in existingNode && want() && spec.strokeAlign !== void 0 && existingNode.strokeAlign !== spec.strokeAlign) {
+    if ("strokeAlign" in existingNode && want("strokeAlign") && spec.strokeAlign !== void 0 && existingNode.strokeAlign !== spec.strokeAlign) {
       existingNode.strokeAlign = spec.strokeAlign;
       changedProps.push("strokeAlign");
     }
-    if ("layoutPositioning" in existingNode && want() && spec.layoutPositioning !== void 0 && existingNode.layoutPositioning !== spec.layoutPositioning) {
-      applyLayoutPositioning(existingNode, spec);
+    if ("layoutPositioning" in existingNode && want("layoutPositioning") && spec.layoutPositioning !== void 0 && existingNode.layoutPositioning !== spec.layoutPositioning) {
+      applyLayoutPositioning(existingNode, only ? { layoutPositioning: spec.layoutPositioning, x: want("x") ? spec.x : void 0, y: want("y") ? spec.y : void 0 } : spec);
       changedProps.push("layoutPositioning");
     }
     if (type === "frame") {
@@ -6679,77 +6693,77 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push("size");
         }
       }
-      if (want() && spec.fillColor !== void 0) {
+      if (want("fillColor") && spec.fillColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fillColor);
         changedProps.push("fillColor");
       }
-      if (want() && spec.strokeColor !== void 0) {
+      if (want("strokeColor") && spec.strokeColor !== void 0) {
         applyColorPaint(existingNode, "strokes", spec.strokeColor);
         changedProps.push("strokeColor");
       }
-      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+      if (want("strokeWeight") && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
         existingNode.strokeWeight = spec.strokeWeight;
         changedProps.push("strokeWeight");
       }
-      if (want() && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
+      if (want("cornerRadius") && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
         existingNode.cornerRadius = spec.cornerRadius;
         changedProps.push("cornerRadius");
       }
-      if (want() && spec.clipsContent !== void 0 && existingNode.clipsContent !== !!spec.clipsContent) {
+      if (want("clipsContent") && spec.clipsContent !== void 0 && existingNode.clipsContent !== !!spec.clipsContent) {
         existingNode.clipsContent = !!spec.clipsContent;
         changedProps.push("clipsContent");
       }
-      if (want() && spec.layoutMode !== void 0 && existingNode.layoutMode !== spec.layoutMode) {
+      if (want("layoutMode") && spec.layoutMode !== void 0 && existingNode.layoutMode !== spec.layoutMode) {
         existingNode.layoutMode = spec.layoutMode;
         changedProps.push("layoutMode");
       }
-      if (want() && spec.layoutWrap !== void 0 && existingNode.layoutWrap !== spec.layoutWrap) {
+      if (want("layoutWrap") && spec.layoutWrap !== void 0 && existingNode.layoutWrap !== spec.layoutWrap) {
         existingNode.layoutWrap = spec.layoutWrap;
         changedProps.push("layoutWrap");
       }
-      if (want() && spec.paddingTop !== void 0 && existingNode.paddingTop !== spec.paddingTop) {
+      if (want("paddingTop") && spec.paddingTop !== void 0 && existingNode.paddingTop !== spec.paddingTop) {
         existingNode.paddingTop = spec.paddingTop;
         changedProps.push("paddingTop");
       }
-      if (want() && spec.paddingRight !== void 0 && existingNode.paddingRight !== spec.paddingRight) {
+      if (want("paddingRight") && spec.paddingRight !== void 0 && existingNode.paddingRight !== spec.paddingRight) {
         existingNode.paddingRight = spec.paddingRight;
         changedProps.push("paddingRight");
       }
-      if (want() && spec.paddingBottom !== void 0 && existingNode.paddingBottom !== spec.paddingBottom) {
+      if (want("paddingBottom") && spec.paddingBottom !== void 0 && existingNode.paddingBottom !== spec.paddingBottom) {
         existingNode.paddingBottom = spec.paddingBottom;
         changedProps.push("paddingBottom");
       }
-      if (want() && spec.paddingLeft !== void 0 && existingNode.paddingLeft !== spec.paddingLeft) {
+      if (want("paddingLeft") && spec.paddingLeft !== void 0 && existingNode.paddingLeft !== spec.paddingLeft) {
         existingNode.paddingLeft = spec.paddingLeft;
         changedProps.push("paddingLeft");
       }
-      if (want() && spec.primaryAxisAlignItems !== void 0 && existingNode.primaryAxisAlignItems !== spec.primaryAxisAlignItems) {
+      if (want("primaryAxisAlignItems") && spec.primaryAxisAlignItems !== void 0 && existingNode.primaryAxisAlignItems !== spec.primaryAxisAlignItems) {
         existingNode.primaryAxisAlignItems = spec.primaryAxisAlignItems;
         changedProps.push("primaryAxisAlignItems");
       }
-      if (want() && spec.counterAxisAlignItems !== void 0 && existingNode.counterAxisAlignItems !== spec.counterAxisAlignItems) {
+      if (want("counterAxisAlignItems") && spec.counterAxisAlignItems !== void 0 && existingNode.counterAxisAlignItems !== spec.counterAxisAlignItems) {
         existingNode.counterAxisAlignItems = spec.counterAxisAlignItems;
         changedProps.push("counterAxisAlignItems");
       }
-      if (want() && spec.itemSpacing !== void 0 && existingNode.itemSpacing !== spec.itemSpacing) {
+      if (want("itemSpacing") && spec.itemSpacing !== void 0 && existingNode.itemSpacing !== spec.itemSpacing) {
         existingNode.itemSpacing = spec.itemSpacing;
         changedProps.push("itemSpacing");
       }
-      if (want() && spec.counterAxisSpacing !== void 0 && existingNode.counterAxisSpacing !== spec.counterAxisSpacing) {
+      if (want("counterAxisSpacing") && spec.counterAxisSpacing !== void 0 && existingNode.counterAxisSpacing !== spec.counterAxisSpacing) {
         existingNode.counterAxisSpacing = spec.counterAxisSpacing;
         changedProps.push("counterAxisSpacing");
       }
-      if (want() && spec.itemReverseZIndex !== void 0 && existingNode.itemReverseZIndex !== !!spec.itemReverseZIndex) {
+      if (want("itemReverseZIndex") && spec.itemReverseZIndex !== void 0 && existingNode.itemReverseZIndex !== !!spec.itemReverseZIndex) {
         existingNode.itemReverseZIndex = !!spec.itemReverseZIndex;
         changedProps.push("itemReverseZIndex");
       }
-      if (spec.layoutSizingHorizontal !== "FILL" && want() && spec.layoutSizingHorizontal !== void 0) {
+      if (spec.layoutSizingHorizontal !== "FILL" && want("layoutSizingHorizontal") && spec.layoutSizingHorizontal !== void 0) {
         if (existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
           existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
           changedProps.push("layoutSizingHorizontal");
         }
       }
-      if (spec.layoutSizingVertical !== "FILL" && want() && spec.layoutSizingVertical !== void 0) {
+      if (spec.layoutSizingVertical !== "FILL" && want("layoutSizingVertical") && spec.layoutSizingVertical !== void 0) {
         if (existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
           existingNode.layoutSizingVertical = spec.layoutSizingVertical;
           changedProps.push("layoutSizingVertical");
@@ -6761,6 +6775,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         const currentFontName = existingNode.fontName;
         let userFontFamily = spec.fontFamily || "Inter";
         let userFontStyle = spec.fontStyle || fontWeightToStyle(spec.fontWeight || 400);
+        if (only && currentFontName && typeof currentFontName !== "symbol") {
+          userFontFamily = only.has("fontFamily") && spec.fontFamily ? spec.fontFamily : currentFontName.family;
+          userFontStyle = only.has("fontStyle") && spec.fontStyle ? spec.fontStyle : only.has("fontWeight") && spec.fontWeight ? fontWeightToStyle(spec.fontWeight) : currentFontName.style;
+        }
         if (!currentFontName || typeof currentFontName === "symbol" || currentFontName.family !== userFontFamily || currentFontName.style !== userFontStyle) {
           try {
             await loadFontCached({ family: userFontFamily, style: userFontStyle });
@@ -6783,39 +6801,54 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       } else if (TEXT_FONT_DEPENDENT.some((key) => only.has(key))) {
         await loadAllFonts(existingNode);
       }
-      if (want() && spec.text !== void 0 && existingNode.characters !== spec.text) {
+      if (want("text") && spec.text !== void 0 && existingNode.characters !== spec.text) {
         await setCharacters(existingNode, spec.text);
         changedProps.push("characters");
       }
-      if (want() && spec.fontSize !== void 0 && existingNode.fontSize !== parseInt(spec.fontSize)) {
+      if (want("fontSize") && spec.fontSize !== void 0 && existingNode.fontSize !== parseInt(spec.fontSize)) {
         existingNode.fontSize = parseInt(spec.fontSize);
         changedProps.push("fontSize");
       }
-      if (want() && spec.fontColor !== void 0) {
+      if (want("fontColor") && spec.fontColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fontColor);
         changedProps.push("fontColor");
       }
-      if (want() && spec.textAlignHorizontal !== void 0 && existingNode.textAlignHorizontal !== spec.textAlignHorizontal) {
+      if (want("textAlignHorizontal") && spec.textAlignHorizontal !== void 0 && existingNode.textAlignHorizontal !== spec.textAlignHorizontal) {
         existingNode.textAlignHorizontal = spec.textAlignHorizontal;
         changedProps.push("textAlignHorizontal");
       }
-      if (want() && spec.lineHeight !== void 0) {
+      if (want("lineHeight") && spec.lineHeight !== void 0) {
         existingNode.lineHeight = { value: spec.lineHeight, unit: "PIXELS" };
         changedProps.push("lineHeight");
       }
-      if (want() && spec.letterSpacing !== void 0) {
+      if (want("letterSpacing") && spec.letterSpacing !== void 0) {
         existingNode.letterSpacing = { value: spec.letterSpacing, unit: "PIXELS" };
         changedProps.push("letterSpacing");
       }
-      if (want() && spec.textCase !== void 0 && existingNode.textCase !== spec.textCase) {
+      if (want("textCase") && spec.textCase !== void 0 && existingNode.textCase !== spec.textCase) {
         existingNode.textCase = spec.textCase;
         changedProps.push("textCase");
       }
-      spec.textAutoResize === "NONE" || spec.textAutoResize === "TRUNCATE";
-      if (want() && spec.width !== void 0) {
+      const fixedBox = spec.textAutoResize === "NONE" || spec.textAutoResize === "TRUNCATE";
+      if (only && fixedBox && (only.has("width") || only.has("height"))) {
+        wantAny("width", "height");
+        const w = spec.width !== void 0 ? spec.width : existingNode.width;
+        const h = spec.height !== void 0 ? spec.height : existingNode.height;
+        if (existingNode.width !== w || existingNode.height !== h) {
+          existingNode.resize(w, h);
+          changedProps.push("size");
+        }
+        if (existingNode.textAutoResize !== spec.textAutoResize) existingNode.textAutoResize = spec.textAutoResize;
+      } else if (want("width") && spec.width !== void 0) {
         existingNode.resize(spec.width, existingNode.height);
         existingNode.textAutoResize = "HEIGHT";
         changedProps.push("width");
+      }
+      setSizing("layoutSizingHorizontal");
+      setSizing("layoutSizingVertical");
+      if (only && want("textAutoResize") && spec.textAutoResize !== void 0 && existingNode.textAutoResize !== spec.textAutoResize) {
+        existingNode.textAutoResize = spec.textAutoResize;
+        changedProps.push("textAutoResize");
       }
     }
     if (type === "rectangle") {
@@ -6825,22 +6858,24 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push("size");
         }
       }
-      if (want() && spec.fillColor !== void 0) {
+      if (want("fillColor") && spec.fillColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fillColor);
         changedProps.push("fillColor");
       }
-      if (want() && spec.strokeColor !== void 0) {
+      if (want("strokeColor") && spec.strokeColor !== void 0) {
         applyColorPaint(existingNode, "strokes", spec.strokeColor);
         changedProps.push("strokeColor");
       }
-      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+      if (want("strokeWeight") && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
         existingNode.strokeWeight = spec.strokeWeight;
         changedProps.push("strokeWeight");
       }
-      if (want() && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
+      if (want("cornerRadius") && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
         existingNode.cornerRadius = spec.cornerRadius;
         changedProps.push("cornerRadius");
       }
+      setSizing("layoutSizingHorizontal");
+      setSizing("layoutSizingVertical");
     }
     if (type === "vector") {
       if (wantAny("width", "height") && spec.width !== void 0 && spec.height !== void 0) {
@@ -6849,37 +6884,41 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push("size");
         }
       }
-      if (want() && spec.fillColor !== void 0) {
+      if (want("fillColor") && spec.fillColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fillColor);
         changedProps.push("fillColor");
       }
-      if (want() && spec.strokeColor !== void 0) {
+      if (want("strokeColor") && spec.strokeColor !== void 0) {
         applyColorPaint(existingNode, "strokes", spec.strokeColor);
         changedProps.push("strokeColor");
       }
-      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+      if (want("strokeWeight") && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
         existingNode.strokeWeight = spec.strokeWeight;
         changedProps.push("strokeWeight");
       }
-      if (want() && spec.pathData !== void 0) {
+      if (want("pathData") && spec.pathData !== void 0) {
         existingNode.vectorPaths = [{ windingRule: "NONZERO", data: normalizeSvgPath(spec.pathData) }];
         changedProps.push("pathData");
       }
-      if (want() && spec.strokeCap !== void 0) {
+      if (want("strokeCap") && spec.strokeCap !== void 0) {
         var network = existingNode.vectorNetwork;
         if (network && network.vertices) {
           var updatedVertices = network.vertices.map(function(v) {
             return Object.assign({}, v, { strokeCap: spec.strokeCap });
           });
-          {
+          if (only && typeof existingNode.setVectorNetworkAsync === "function") {
+            await existingNode.setVectorNetworkAsync(Object.assign({}, network, { vertices: updatedVertices }));
+          } else {
             existingNode.vectorNetwork = Object.assign({}, network, { vertices: updatedVertices });
           }
           changedProps.push("strokeCap");
         }
       }
+      setSizing("layoutSizingHorizontal");
+      setSizing("layoutSizingVertical");
     }
     if (type === "instance") {
-      if (want() && spec.componentKey) {
+      if (want("componentKey") && spec.componentKey) {
         const mainComponent = await existingNode.getMainComponentAsync();
         if (!mainComponent || mainComponent.key !== spec.componentKey) {
           const component = await figma.importComponentByKeyAsync(spec.componentKey);
@@ -6887,7 +6926,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push("componentKey");
         }
       }
-      if (want() && spec.componentId) {
+      if (want("componentId") && spec.componentId) {
         const mainComponent = await existingNode.getMainComponentAsync();
         if (!mainComponent || mainComponent.id !== spec.componentId) {
           existingNode.swapComponent(await localComponent(spec.componentId, "COMPONENT"));
@@ -6904,11 +6943,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push(spec.componentSetKey ? "componentSetKey" : "componentSetId");
         }
       }
-      if (want() && spec.properties !== void 0) {
+      if (want("properties") && spec.properties !== void 0) {
         existingNode.setProperties(spec.properties);
         changedProps.push("properties");
       }
-      if (want() && spec.textOverrides !== void 0) {
+      if (want("textOverrides") && spec.textOverrides !== void 0) {
         await applyTextOverrides(existingNode, spec.textOverrides);
         changedProps.push("textOverrides");
       }
@@ -6920,7 +6959,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push("size");
         }
       }
-      if (want() && spec.layoutSizingHorizontal !== void 0 && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
+      if (want("layoutSizingHorizontal") && spec.layoutSizingHorizontal !== void 0 && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
         try {
           existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
           changedProps.push("layoutSizingHorizontal");
@@ -6928,7 +6967,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           console.error("Error setting layoutSizingHorizontal during sync:", e);
         }
       }
-      if (want() && spec.layoutSizingVertical !== void 0 && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
+      if (want("layoutSizingVertical") && spec.layoutSizingVertical !== void 0 && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
         try {
           existingNode.layoutSizingVertical = spec.layoutSizingVertical;
           changedProps.push("layoutSizingVertical");
@@ -6940,12 +6979,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
     for (var ci = 0; ci < cornerProps.length; ci++) {
       var cp = cornerProps[ci];
-      if (cp in existingNode && want() && spec[cp] !== void 0 && existingNode[cp] !== spec[cp]) {
+      if (cp in existingNode && want(cp) && spec[cp] !== void 0 && existingNode[cp] !== spec[cp]) {
         existingNode[cp] = spec[cp];
         changedProps.push(cp);
       }
     }
-    if ("fills" in existingNode && want() && spec.fillImage && spec.fillImage.base64) {
+    if ("fills" in existingNode && want("fillImage") && spec.fillImage && spec.fillImage.base64) {
       applyImageFill(existingNode, spec.fillImage);
       changedProps.push("fillImage");
     }
@@ -6963,7 +7002,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
     for (const key of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
       if (options.checkParent && node[key] === "FILL") continue;
-      if (spec[key] === "FILL") {
+      if ((!only || only.has(key)) && spec[key] === "FILL") {
         try {
           node[key] = "FILL";
           applied.push(key);
@@ -9275,6 +9314,366 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       nodes
     };
   }
+  function forcedReasons(truncated) {
+    const forced = /* @__PURE__ */ new Map();
+    if (truncated && typeof truncated === "object") {
+      for (const [id, reason] of Object.entries(truncated)) if (typeof reason === "string") forced.set(id, reason);
+    }
+    return forced;
+  }
+  async function readLockEntry(node, cache, forced) {
+    const parent = node.parent;
+    const layout = { layoutMode: parent && parent.type !== "PAGE" ? parent.layoutMode : void 0 };
+    const recorded = forced.get(node.id);
+    let raw;
+    if (recorded !== void 0) raw = opaqueNode(node, recorded, true);
+    else {
+      const result = await readSpecNode(node, cache);
+      raw = "props" in result ? result.props : opaqueNode(node, result.opaque);
+    }
+    const props = lockProps(normalizeNode(raw, layout));
+    const children = props.type === "frame" && Array.isArray(node.children) ? node.children.map((child) => child.id) : [];
+    return { props, propsHash: hashProps(props), parentId: parent ? parent.id : null, children };
+  }
+  async function readLiveLock(params, commandType) {
+    const { rootId, expect, truncated, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+    const read = await readSubtree2({ nodeId: rootId, expect, maxNodes, maxDepth, maxBytes, commandId }, { commandType, forced: forcedReasons(truncated) });
+    return {
+      rootId: read.rootId,
+      rootParentId: read.rootParentId,
+      rootParentLayoutMode: read.rootParentLayoutMode,
+      truncated: read.truncated,
+      nodes: lockNodesFromTree(read.tree, read.rootParentId)
+    };
+  }
+
+  // src/llm2figma_plugin/src/spec-apply.ts
+  var COMMAND = "apply_spec_ops";
+  var PROGRESS_EVERY2 = 50;
+  var SUPERSEDED_NAME = "l2f/superseded";
+  var POSITION_TOLERANCE = 0.5;
+  var MAX_STALE_LISTED = 10;
+  function multiply(a, b) {
+    return [
+      [a[0][0] * b[0][0] + a[0][1] * b[1][0], a[0][0] * b[0][1] + a[0][1] * b[1][1], a[0][0] * b[0][2] + a[0][1] * b[1][2] + a[0][2]],
+      [a[1][0] * b[0][0] + a[1][1] * b[1][0], a[1][0] * b[0][1] + a[1][1] * b[1][1], a[1][0] * b[0][2] + a[1][1] * b[1][2] + a[1][2]]
+    ];
+  }
+  function invert(m) {
+    const [[a, c, e], [b, d, f]] = m;
+    const det = a * d - b * c;
+    if (!det) throw new Error("the parent's transform cannot be inverted");
+    return [[d / det, -c / det, (c * f - d * e) / det], [-b / det, a / det, (b * e - a * f) / det]];
+  }
+  var IDENTITY = [[1, 0, 0], [0, 1, 0]];
+  var absoluteOf = (node) => node && node.type !== "PAGE" && node.absoluteTransform ? node.absoluteTransform : IDENTITY;
+  function keepAbsolute(node, absolute) {
+    node.relativeTransform = multiply(invert(absoluteOf(node.parent)), absolute);
+    const now = absoluteOf(node);
+    if (Math.abs(now[0][2] - absolute[0][2]) > POSITION_TOLERANCE || Math.abs(now[1][2] - absolute[1][2]) > POSITION_TOLERANCE) {
+      throw new Error(`absolute position not kept (was ${absolute[0][2]}, ${absolute[1][2]}; now ${now[0][2]}, ${now[1][2]})`);
+    }
+  }
+  var autoLayout = (node) => !!node && typeof node.layoutMode === "string" && node.layoutMode !== "NONE";
+  var CREATE_SKIPS = /* @__PURE__ */ new Set(["x", "y", "width", "height", "layoutPositioning", "layoutSizingHorizontal", "layoutSizingVertical", "properties"]);
+  var AUTO_LAYOUT_KEYS = /* @__PURE__ */ new Set([
+    "layoutWrap",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "primaryAxisAlignItems",
+    "counterAxisAlignItems",
+    "itemSpacing",
+    "counterAxisSpacing",
+    "itemReverseZIndex"
+  ]);
+  function withCreateDefaults(node) {
+    const out = { ...node };
+    const defaults = SPEC_DEFAULTS[node.type] || {};
+    for (const [key, value] of Object.entries(defaults)) {
+      if (out[key] !== void 0 || CREATE_SKIPS.has(key)) continue;
+      if (AUTO_LAYOUT_KEYS.has(key) && !autoLayout(out)) continue;
+      if (key === "counterAxisSpacing" && out.layoutWrap !== "WRAP") continue;
+      out[key] = value;
+    }
+    if (Array.isArray(node.children)) out.children = node.children.map(withCreateDefaults);
+    return out;
+  }
+  var pathKey = (path) => path.join(".");
+  function specAt(node, rest) {
+    let current = node;
+    for (const i of rest) current = current && Array.isArray(current.children) ? current.children[i] : void 0;
+    return current;
+  }
+  async function applySpecOps(params) {
+    const {
+      rootId,
+      expect,
+      operations,
+      expectedHashes,
+      allowRemovals,
+      orders,
+      truncated,
+      supersededFrameId,
+      date,
+      maxNodes,
+      maxDepth,
+      commandId
+    } = params || {};
+    if (!rootId || typeof rootId !== "string") throw new Error("Missing rootId parameter");
+    if (!Array.isArray(operations)) throw new Error("Missing operations parameter");
+    const forced = forcedReasons(truncated);
+    let page;
+    try {
+      page = (await resolveSpecTarget(rootId, expect || {})).page;
+    } catch (error) {
+      return { refused: error instanceof Error ? error.message : String(error) };
+    }
+    const cache = new SpecReadCache();
+    const stale = [];
+    const liveUnread = /* @__PURE__ */ new Map();
+    for (const [id, want] of Object.entries(expectedHashes || {})) {
+      const node = await figma.getNodeByIdAsync(id);
+      if (!node) {
+        stale.push(`${id} (gone)`);
+        continue;
+      }
+      const entry = await readLockEntry(node, cache, forced);
+      const what = [];
+      if (entry.propsHash !== want.propsHash) what.push("properties");
+      if (entry.parentId !== want.parentId) what.push("parent");
+      if (entry.children.join("\n") !== (want.children || []).join("\n")) what.push("children");
+      if (what.length) stale.push(`${id} (${what.join(", ")})`);
+      if (Array.isArray(entry.props[UNREAD_KEY])) liveUnread.set(id, new Set(entry.props[UNREAD_KEY]));
+    }
+    if (stale.length) {
+      const shown = stale.slice(0, MAX_STALE_LISTED).join(", ") + (stale.length > MAX_STALE_LISTED ? ` and ${stale.length - MAX_STALE_LISTED} more` : "");
+      return { refused: `Figma changed since the plan: ${shown}. Nothing was written; run plan_spec again.`, stale: stale.length };
+    }
+    const created = [];
+    const updated = [];
+    const moved = [];
+    const removed = [];
+    const failed = [];
+    const partial = [];
+    const total = operations.length;
+    let done = 0;
+    const step = async () => {
+      done++;
+      if (commandId && done % PROGRESS_EVERY2 === 0) {
+        await sendProgressUpdate(commandId, COMMAND, "in_progress", Math.min(99, Math.round(done / Math.max(1, total) * 100)), total, done, `Applied ${done}/${total} operations`);
+      }
+    };
+    const message = (error) => error instanceof Error ? error.message : String(error);
+    if (commandId) await sendProgressUpdate(commandId, COMMAND, "started", 0, total, 0, `Applying ${total} operations`);
+    let holderId = typeof supersededFrameId === "string" ? supersededFrameId : null;
+    let writeError = null;
+    if (typeof figma.commitUndo === "function") figma.commitUndo();
+    try {
+      const creates = operations.filter((op) => op.op === "create");
+      const createdTop = /* @__PURE__ */ new Map();
+      const ctx = createNodeTreeContext({ totalNodes: creates.length, firstOnTop: true, commandId, progressLabel: COMMAND, progressEvery: PROGRESS_EVERY2 });
+      for (const op of creates) {
+        const spec = withCreateDefaults(op.node);
+        const before = ctx.errors.length;
+        try {
+          const made = await createNode(spec, op.parentId, 1, ctx, { onBindFailure: "keep", path: op.path });
+          for (const entry of made) {
+            created.push(entry);
+            if (pathKey(entry.path) === pathKey(op.path)) createdTop.set(pathKey(op.path), entry.id);
+            const source = specAt(op.node, entry.path.slice(op.path.length));
+            if (source && source.type === "text" && source.name === void 0) {
+              const node = await figma.getNodeByIdAsync(entry.id);
+              if (node && "autoRename" in node) node.autoRename = true;
+            }
+          }
+        } catch (error) {
+          failed.push({ op: "create", path: op.path, error: message(error) });
+        }
+        for (const error of ctx.errors.slice(before)) failed.push({ op: "create", path: error.path, error: error.error });
+        await step();
+      }
+      const moving = new Set(operations.filter((op) => op.op === "move").map((op) => op.id));
+      const afterMove = /* @__PURE__ */ new Map();
+      for (const op of operations.filter((o) => o.op === "update")) {
+        const unread = liveUnread.get(op.id) || /* @__PURE__ */ new Set();
+        const set = {};
+        for (const [key, value] of Object.entries(op.set || {})) if (key !== UNREAD_KEY && !unread.has(key)) set[key] = value;
+        if (moving.has(op.id)) {
+          const later = {};
+          for (const key of PARENT_DEPENDENT) if (key in set) {
+            later[key] = set[key];
+            delete set[key];
+          }
+          if (Object.keys(later).length) afterMove.set(op.id, later);
+        }
+        const keys = Object.keys(set);
+        if (keys.length) {
+          try {
+            const node = await figma.getNodeByIdAsync(op.id);
+            if (!node) throw new Error("node not found");
+            const unwritten = await writeProps(node, set);
+            if (unwritten.length) failed.push({ op: "update", id: op.id, keys: unwritten, error: "not written for this node type" });
+            updated.push({ id: op.id, keys: keys.filter((k) => !unwritten.includes(k)) });
+          } catch (error) {
+            failed.push({ op: "update", id: op.id, keys, error: message(error) });
+          }
+        }
+        await step();
+      }
+      const toPlace = /* @__PURE__ */ new Map();
+      const place = (parentId, id) => {
+        if (!toPlace.has(parentId)) toPlace.set(parentId, /* @__PURE__ */ new Set());
+        toPlace.get(parentId).add(id);
+      };
+      for (const op of operations) {
+        if (op.op === "move") place(op.parentId, op.id);
+        if (op.op === "create" && createdTop.has(pathKey(op.path))) place(op.parentId, createdTop.get(pathKey(op.path)));
+      }
+      const moveOps = new Map(operations.filter((op) => op.op === "move").map((op) => [op.id, op]));
+      for (const order of Array.isArray(orders) ? orders : []) {
+        const wanted = toPlace.get(order.parentId);
+        if (!wanted) continue;
+        const ids = order.children.map((entry) => typeof entry === "string" ? entry : createdTop.get(pathKey(entry)) ?? null);
+        const inOrder = new Set(ids.filter((id) => !!id));
+        let previous = null;
+        for (const id of ids) {
+          if (!id) continue;
+          const node = await figma.getNodeByIdAsync(id);
+          if (!node) continue;
+          if (!wanted.has(id)) {
+            if (node.parent && node.parent.id === order.parentId) previous = node;
+            continue;
+          }
+          const op = moveOps.has(id) ? "move" : "create";
+          let arrived = false;
+          try {
+            const parent = await figma.getNodeByIdAsync(order.parentId);
+            if (!parent || !Array.isArray(parent.children)) throw new Error(`parent ${order.parentId} not found`);
+            const isReparent = !node.parent || node.parent.id !== parent.id;
+            const absolute = isReparent ? absoluteOf(node) : null;
+            const siblings = parent.children.filter((child) => child.id !== id);
+            const first = siblings.findIndex((child) => inOrder.has(child.id));
+            const target = previous ? siblings.indexOf(previous) + 1 : first >= 0 ? first : siblings.length;
+            if (isReparent || parent.children.indexOf(node) !== target) {
+              await appendOrInsertChild(node, parent.id, target);
+              arrived = true;
+              let at = parent.children.indexOf(node);
+              if (at !== target && at >= 0) {
+                parent.insertChild(at < target ? target + 1 : target, node);
+                at = parent.children.indexOf(node);
+              }
+              if (at !== target) throw new Error(`placed at index ${at}, expected ${target}`);
+              if (absolute && (!autoLayout(parent) || node.layoutPositioning === "ABSOLUTE")) keepAbsolute(node, absolute);
+            }
+            arrived = true;
+            if (moveOps.has(id)) moved.push(id);
+            previous = node;
+          } catch (error) {
+            if (arrived && node.parent && node.parent.id === order.parentId) {
+              partial.push({ id, keys: ["parent"], detail: `moved into ${order.parentId}, but ${message(error)}` });
+              if (moveOps.has(id)) moved.push(id);
+              previous = node;
+            } else {
+              failed.push({ op, id, error: message(error) });
+            }
+          }
+          const later = afterMove.get(id);
+          if (later) {
+            afterMove.delete(id);
+            if (node.parent && node.parent.id === order.parentId) {
+              try {
+                const unwritten = await writeProps(node, later);
+                if (unwritten.length) failed.push({ op: "update", id, keys: unwritten, error: "not written for this node type" });
+                const done2 = Object.keys(later).filter((k) => !unwritten.includes(k));
+                const entry = updated.find((u) => u.id === id);
+                if (entry) entry.keys.push(...done2);
+                else updated.push({ id, keys: done2 });
+              } catch (error) {
+                failed.push({ op: "update", id, keys: Object.keys(later), error: message(error) });
+              }
+            } else {
+              failed.push({ op: "update", id, keys: Object.keys(later), error: "not written: the move to its new parent failed" });
+            }
+          }
+          if (moveOps.has(id)) await step();
+        }
+      }
+      for (const [id, later] of afterMove) failed.push({ op: "update", id, keys: Object.keys(later), error: "not written: the node was not moved" });
+      const removals = operations.filter((op) => op.op === "remove");
+      if (allowRemovals === true && removals.length) {
+        const holder = await supersededHolder(page, holderId);
+        holderId = holder.id;
+        for (const op of removals) {
+          const node = await figma.getNodeByIdAsync(op.id);
+          if (!node) {
+            failed.push({ op: "remove", id: op.id, error: "node not found" });
+            await step();
+            continue;
+          }
+          const name = `${node.name} (superseded ${typeof date === "string" ? date : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)})`;
+          let arrived = false;
+          try {
+            const absolute = absoluteOf(node);
+            holder.appendChild(node);
+            arrived = node.parent === holder;
+            node.name = name;
+            keepAbsolute(node, absolute);
+            removed.push(op.id);
+          } catch (error) {
+            if (arrived || node.parent === holder) {
+              if (node.name !== name) node.name = name;
+              removed.push(op.id);
+              partial.push({ id: op.id, keys: ["position"], detail: `moved into ${SUPERSEDED_NAME}, but ${message(error)}` });
+            } else {
+              failed.push({ op: "remove", id: op.id, error: message(error) });
+            }
+          }
+          await step();
+        }
+      }
+    } catch (error) {
+      writeError = message(error);
+    }
+    if (typeof figma.commitUndo === "function") figma.commitUndo();
+    const outcome = { created, updated, moved, removed, failed, partial, supersededFrameId: holderId };
+    if (writeError) return { ...outcome, writeError };
+    try {
+      const readBack = await readLiveLock({ rootId, expect, truncated, maxNodes, maxDepth, commandId }, COMMAND);
+      if (commandId) await sendProgressUpdate(commandId, COMMAND, "completed", 100, total, done, `Applied ${done} operations`);
+      return { ...outcome, readBack };
+    } catch (error) {
+      return { ...outcome, writeError: `the read-back failed: ${message(error)}` };
+    }
+  }
+  var PARENT_DEPENDENT = ["x", "y", "layoutPositioning", "layoutSizingHorizontal", "layoutSizingVertical", "layoutGrow", "layoutAlign", "constraints"];
+  async function supersededHolder(page, recordedId) {
+    const recorded = recordedId ? await figma.getNodeByIdAsync(recordedId) : null;
+    if (recorded && recorded.type === "FRAME" && !recorded.removed && recorded.parent === page && (!recorded.layoutMode || recorded.layoutMode === "NONE")) {
+      return recorded;
+    }
+    const taken = new Set((page.children || []).map((child) => child.name));
+    let name = SUPERSEDED_NAME;
+    for (let n = 2; taken.has(name); n++) name = `${SUPERSEDED_NAME} ${n}`;
+    const holder = figma.createFrame();
+    page.appendChild(holder);
+    holder.name = name;
+    if (holder.layoutMode !== "NONE") holder.layoutMode = "NONE";
+    holder.clipsContent = false;
+    holder.fills = [];
+    holder.resize(1, 1);
+    holder.visible = false;
+    return holder;
+  }
+  async function writeProps(node, set) {
+    const only = new Set(Object.keys(set));
+    const colors = await resolveAndBind(set, only);
+    const result = await updateNodeProperties(node, colors.resolved, only);
+    const filled = applyDeferredFill(node, colors.resolved, only, { checkParent: true });
+    await colors.bind(node);
+    return result.unhandled.filter((key) => !filled.includes(key) && !(node.type === "FRAME" && set[key] === "FILL"));
+  }
 
   // src/llm2figma_plugin/src/events.ts
   function debounce(fn, ms) {
@@ -9556,6 +9955,8 @@ ${detail}`);
         return await exportSpec(params);
       case "read_spec_nodes":
         return await readSpecNodes(params);
+      case "apply_spec_ops":
+        return await applySpecOps(params);
       case "delete_node":
         return await deleteNode(params);
       case "delete_multiple_nodes":

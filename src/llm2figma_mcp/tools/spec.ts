@@ -2,13 +2,14 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
 import { randomUUID } from "node:crypto";
-import { getChannelFileKey, getCurrentChannel } from "../connection.js";
+import { commandDelivery, getChannelFileKey, getCurrentChannel } from "../connection.js";
 import {
-  SPEC_LOCK_VERSION, SPEC_VERSION, clip, lockNodesFromTree, specHash, type SpecFile, type SpecLockFile,
+  SPEC_LOCK_VERSION, SPEC_VERSION, clip, lockNodesFromTree, showList, specHash, type SpecFile, type SpecLockFile,
 } from "../../shared/spec.js";
 import { WALK_LIMITS } from "../../shared/walk.js";
 import { backUp, readExistingPair, readSpecPair, resolveSpecPaths, specBaseDir, writeFileAtomic, type SpecPaths } from "../spec-files.js";
 import { computePlan, prepareSpec, type LiveRead, type Plan, type PlanIssue, type PlanOperation } from "../spec-plan.js";
+import { buildApply, findPartial, relock, withCreatedIds, type OnConflict, type PartialEntry, type ReadBack, type SkippedEntry } from "../spec-apply.js";
 
 // Spec sync (L2F_SPEC_SYNC). pull_spec writes a subtree to a Spec file the model
 // edits with ordinary file edits, and a SpecLock beside it recording what Figma
@@ -19,6 +20,8 @@ import { computePlan, prepareSpec, type LiveRead, type Plan, type PlanIssue, typ
 export const EXPORT_TIMEOUT_MS = 120_000;
 // read_spec_nodes walks the same subtree, with the same progress updates.
 export const READ_TIMEOUT_MS = 120_000;
+// apply_spec_ops writes, then re-reads the whole subtree; progress every 50.
+export const APPLY_TIMEOUT_MS = 120_000;
 
 export interface SpecToolOptions {
   env?: Record<string, string | undefined>;
@@ -290,6 +293,141 @@ export async function planSpec(args: { path: string }, send: SendCommandFn, opti
   return summary;
 }
 
+// --- apply_spec ---
+
+export interface ApplyArgs {
+  planId: string;
+  allowRemovals?: boolean;
+  onConflict?: OnConflict;
+}
+
+export interface ApplyResult {
+  planId: string;
+  path: string;
+  applied: {
+    created: Array<{ path: number[]; id: string }>;
+    updated: Array<{ id: string; keys: string[] }>;
+    moved: string[];
+    removed: string[];
+  };
+  counts: { created: number; updated: number; moved: number; removed: number; skipped: number; partial: number; failed: number };
+  skipped: SkippedEntry[];
+  partial: PartialEntry[];
+  failed: Array<Record<string, unknown>>;
+  undo: string;
+  truncated: boolean;
+  note?: string;
+}
+
+const UNDO_NOTE = "One undo in Figma (Cmd/Ctrl+Z) reverts this apply, together with anything changed by hand in the file while it ran. apply_spec never undoes anything itself.";
+
+const isoDay = (date: Date) => date.toISOString().slice(0, 10);
+
+// Carries out one Plan. Under the Spec's path lock: refuses when the Spec or
+// SpecLock changed since the plan, marks the SpecLock pendingApply, sends the
+// operations, then (unless the Spec was edited meanwhile) writes the created
+// ids into the Spec and the SpecLock from the read-back. A run the plugin
+// refuses wrote nothing, so pendingApply is cleared; a timeout or any other
+// failure leaves it set, and plan_spec refuses until a pull.
+export async function applySpec(args: ApplyArgs, send: SendCommandFn, options: SpecToolOptions = {}): Promise<ApplyResult> {
+  const { planId, allowRemovals = false, onConflict = "skip" } = args;
+  if (onConflict !== "skip" && onConflict !== "spec") throw new Error(`onConflict must be "skip" or "spec", got ${clip(String(onConflict))}.`);
+  const plan = getPlanStore(options).get(planId);
+  const channel = (options.channel ?? getCurrentChannel)();
+  if (plan.channel && channel && plan.channel !== channel) {
+    throw new Error(`Plan ${planId} was made on channel ${clip(plan.channel)}, but the server is now on ${clip(channel)}. Run plan_spec again on this channel.`);
+  }
+  const paths: SpecPaths = { specPath: plan.specPath, lockPath: plan.lockPath, baseDir: "" };
+  return withPathLock(plan.specPath, async () => {
+    const { spec, lock } = await readSpecPair(paths);
+    if (lock.pendingApply) {
+      throw new Error(`Refusing to apply: an earlier apply (plan ${clip(String(lock.pendingApply))}) did not finish, so Figma may hold part of it. Pull again (pull_spec with replaceEdited: true backs up the Spec) and redo the edits.`);
+    }
+    if (specHash(spec) !== plan.specHash) throw new Error(`Refusing to apply: ${plan.specPath} changed since plan ${planId}. Run plan_spec again.`);
+    if (specHash(lock) !== plan.lockHash) throw new Error(`Refusing to apply: the SpecLock beside ${plan.specPath} changed since plan ${planId} (pulled or applied again). Run plan_spec again.`);
+
+    const request = buildApply(plan, spec, { allowRemovals, onConflict });
+    const truncated: Record<string, string> = {};
+    for (const [id, node] of Object.entries(lock.nodes)) {
+      if (node.props.truncated === true) truncated[id] = typeof node.props.reason === "string" ? node.props.reason : "node budget";
+    }
+    const now = (options.now ?? (() => new Date()))();
+
+    // Marked before sending: if the run never reports back, Figma may hold part of it.
+    await writeFileAtomic(plan.lockPath, JSON.stringify({ ...lock, pendingApply: planId }, null, 2) + "\n");
+    const unmark = () => writeFileAtomic(plan.lockPath, JSON.stringify(lock, null, 2) + "\n");
+    let result: any;
+    try {
+      result = await send("apply_spec_ops", {
+        rootId: lock.rootId, expect: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId },
+        operations: request.operations, expectedHashes: request.expectedHashes, orders: request.orders,
+        allowRemovals, truncated, supersededFrameId: lock.supersededFrameId ?? null, date: isoDay(now),
+        maxNodes: WALK_LIMITS.maxNodes, maxDepth: WALK_LIMITS.maxDepth,
+      }, APPLY_TIMEOUT_MS);
+    } catch (error) {
+      // Never sent (no relay, no channel), or the plugin threw: apply_spec_ops
+      // only throws before its first write (the editor gate, an unknown command
+      // from an old plugin, bad parameters), so Figma is untouched. Only a
+      // timeout or a connection lost after sending may have written.
+      const delivery = commandDelivery(error);
+      if (delivery === "not_sent" || delivery === "plugin_error") {
+        await unmark();
+        throw new Error(`${error instanceof Error ? error.message : String(error)} Nothing was written to Figma.`);
+      }
+      throw error;
+    }
+    if (result && typeof result === "object" && typeof result.refused === "string") {
+      // Refused before any write: nothing to record.
+      await unmark();
+      throw new Error(`Refusing to apply: ${result.refused}`);
+    }
+    const created: Array<{ path: number[]; id: string; failed?: boolean }> = result && Array.isArray(result.created) ? result.created : [];
+    const createdNote = created.length
+      ? ` Created in Figma: ${showList(created.map(c => `${c.id} at tree.children[${c.path.join("].children[")}]`))}. Do not re-apply these edits from a .bak copy of the Spec: the nodes would be created twice; pull (it reads them) and redo only the other edits.`
+      : "";
+    if (!result || typeof result !== "object" || typeof result.writeError === "string" || !result.readBack || !result.readBack.nodes) {
+      const why = result && typeof result.writeError === "string" ? `The apply stopped part-way: ${result.writeError}.` : "The Figma plugin returned no apply result (rebuild and re-run the plugin with bun run build so it knows apply_spec_ops).";
+      throw new Error(`${why} Figma may hold part of the plan, so the SpecLock keeps pendingApply; pull again before planning.${createdNote}`);
+    }
+
+    const { spec: current } = await readSpecPair(paths);
+    if (specHash(current) !== plan.specHash) {
+      throw new Error(`${plan.specPath} was edited while the apply ran, so the Spec and SpecLock were not updated and the SpecLock keeps pendingApply. Figma holds the applied plan. Pull again (pull_spec with replaceEdited: true backs up your edits) and redo them.${createdNote}`);
+    }
+    const failed: Array<Record<string, unknown>> = Array.isArray(result.failed) ? result.failed : [];
+    const readBack = result.readBack as ReadBack;
+    const nextSpec = created.length ? withCreatedIds(spec, created) : spec;
+    const nextLock = relock(lock, nextSpec, readBack, result.supersededFrameId ?? lock.supersededFrameId ?? null, specHash(nextSpec));
+    const partial: PartialEntry[] = [...(Array.isArray(result.partial) ? result.partial : []), ...findPartial(request.operations, failed as any, created, readBack, nextSpec)];
+    // Spec first, then SpecLock: a crash between leaves pendingApply set.
+    if (nextSpec !== spec) await writeFileAtomic(plan.specPath, JSON.stringify(nextSpec, null, 2) + "\n");
+    await writeFileAtomic(plan.lockPath, JSON.stringify(nextLock, null, 2) + "\n");
+
+    const updated: Array<{ id: string; keys: string[] }> = Array.isArray(result.updated) ? result.updated : [];
+    const moved: string[] = Array.isArray(result.moved) ? result.moved : [];
+    const removed: string[] = Array.isArray(result.removed) ? result.removed : [];
+    const cut = <T>(list: T[]) => list.slice(0, PLAN_LIST_LIMIT);
+    const lists = [created, updated, moved, removed, request.skipped, partial, failed];
+    const out: ApplyResult = {
+      planId, path: plan.specPath,
+      applied: { created: cut(created.filter(c => !c.failed).map(({ path, id }) => ({ path, id }))), updated: cut(updated), moved: cut(moved), removed: cut(removed) },
+      counts: {
+        created: created.filter(c => !c.failed).length, updated: updated.length, moved: moved.length, removed: removed.length,
+        skipped: request.skipped.length, partial: partial.length, failed: failed.length,
+      },
+      skipped: cut(request.skipped), partial: cut(partial), failed: cut(failed), undo: UNDO_NOTE,
+      truncated: lists.some(list => list.length > PLAN_LIST_LIMIT),
+    };
+    const notes: string[] = [];
+    if (partial.length) notes.push("partial: Figma did not take these values as asked (a size it constrained, a font it substituted...); the SpecLock keeps the old value, so the next plan shows them again.");
+    if (failed.length) notes.push("failed operations wrote nothing (or, for a create whose colour binding failed, a node named \"(failed)\"); plan again to retry.");
+    if (removed.length) notes.push(`removed nodes were moved, at the same place, into the hidden page-level frame "l2f/superseded" (renamed "(superseded ${isoDay(now)})"); nothing was deleted.`);
+    if (request.skipped.some(s => s.op === "remove")) notes.push("removals were skipped: pass allowRemovals: true to move them into l2f/superseded.");
+    if (notes.length) out.note = notes.join(" ");
+    return out;
+  });
+}
+
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn, options: SpecToolOptions = {}) {
   server.tool(
     "pull_spec",
@@ -313,7 +451,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
 
   server.tool(
     "plan_spec",
-    "Compare a Spec (after your edits), its SpecLock (Figma at the last pull) and live Figma, property by property, and return the difference as a Plan. Writes nothing: not to Figma, not to the Spec or SpecLock. Per property: Spec changed and Figma did not -> an update; Figma changed and the Spec did not -> drift (kept as Figma has it); both changed to the same value -> nothing; both changed differently -> a conflict (skipped). Structure the same way: a node without an id -> create; a changed parent or sibling order -> move; an id deleted from the Spec -> remove (only if Figma did not change it; a subtree the node budget cut off never yields removals); a node gone from Figma -> missing; a node added in Figma by hand is left alone and reported as drift. Errors, naming the node, on a duplicate or unknown id, an id inside an instance (contains ';'), a changed node type, or an edit to an OpaqueNode other than moving or removing it. Refuses while the SpecLock records an unfinished apply. Returns {planId, counts, operations, drift, conflicts} with at most 100 entries per list (truncated: true when more; counts are complete) and the planId; the full Plan stays on the server for 30 minutes under that explicit id. Nothing applies a Plan yet.",
+    "Compare a Spec (after your edits), its SpecLock (Figma at the last pull) and live Figma, property by property, and return the difference as a Plan. Writes nothing: not to Figma, not to the Spec or SpecLock. Per property: Spec changed and Figma did not -> an update; Figma changed and the Spec did not -> drift (kept as Figma has it); both changed to the same value -> nothing; both changed differently -> a conflict (skipped). Structure the same way: a node without an id -> create; a changed parent or sibling order -> move; an id deleted from the Spec -> remove (only if Figma did not change it; a subtree the node budget cut off never yields removals); a node gone from Figma -> missing; a node added in Figma by hand is left alone and reported as drift. Errors, naming the node, on a duplicate or unknown id, an id inside an instance (contains ';'), a changed node type, or an edit to an OpaqueNode other than moving or removing it. Refuses while the SpecLock records an unfinished apply. Returns {planId, counts, operations, drift, conflicts} with at most 100 entries per list (truncated: true when more; counts are complete) and the planId; the full Plan stays on the server for 30 minutes under that explicit id. Apply it with apply_spec {planId}.",
     {
       path: z.string().min(1).describe("The Spec file (.l2f.json) written by pull_spec, after your edits"),
     },
@@ -323,6 +461,24 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
       } catch (error) {
         return { isError: true, content: [{ type: "text", text: `Error planning spec: ${error instanceof Error ? error.message : String(error)}` }] };
+      }
+    },
+  );
+
+  server.tool(
+    "apply_spec",
+    "Carry out one Plan from plan_spec in Figma, by node id, then update the Spec and SpecLock. Refuses, writing nothing, when the Spec or SpecLock changed since the plan, when an earlier apply did not finish, or when any node the plan touches changed in Figma since (checked inside the plugin in the same run as the writes; plan again). Order: creates (parents first; a node whose colour variable cannot be bound is kept, renamed \"(failed)\"), updates (only the listed properties; never a key in a node's $unread), moves (only the nodes that moved; nodes added by hand keep their places; a reparent keeps the absolute position), removals last: moved into a hidden page-level frame \"l2f/superseded\" at the same absolute position and renamed \"(superseded YYYY-MM-DD)\", never deleted, and only with allowRemovals: true. One failed operation does not stop the rest. Conflicts are skipped unless onConflict: \"spec\" (property conflicts only: the Spec's value wins). Then the whole subtree is read back: created ids are written into the Spec, the SpecLock is rewritten from the read-back, and touched properties Figma did not take as asked are listed as partial (they and failed ones keep their old base, so the next plan shows them again). Returns {applied: {created, updated, moved, removed}, counts, skipped, partial, failed, undo} with at most 100 entries per list. One undo in Figma reverts the apply (and anything done by hand while it ran); this tool never undoes. If the run times out or the plugin reloads, the SpecLock keeps pendingApply and plan_spec refuses until a pull.",
+    {
+      planId: z.string().min(1).describe("The planId plan_spec returned"),
+      allowRemovals: z.boolean().optional().describe("Move removed nodes into l2f/superseded (default false: removals are listed under skipped)"),
+      onConflict: z.enum(["skip", "spec"]).optional().describe('"skip" (default) leaves conflicts as Figma has them; "spec" writes the Spec\'s value for property conflicts'),
+    },
+    async (args: any) => {
+      try {
+        const result = await applySpec(args, sendCommandToFigma, options);
+        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      } catch (error) {
+        return { isError: true, content: [{ type: "text", text: `Error applying spec: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     },
   );

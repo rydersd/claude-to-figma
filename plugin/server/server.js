@@ -17530,7 +17530,7 @@ function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOU
             if (pendingRequests.has(requestId)) {
               logger.error(`Request ${requestId} timed out after extended period of inactivity`);
               pendingRequests.delete(requestId);
-              request.reject(new Error("Request to Figma timed out"));
+              request.reject(new FigmaCommandError("Request to Figma timed out", "no_reply"));
             }
           }, 60000);
           logger.info(`Progress update for ${progressData.commandType}: ${progressData.progress}% - ${progressData.message}`);
@@ -17560,7 +17560,7 @@ function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOU
         clearTimeout(request.timeout);
         if (myResponse.error) {
           logger.error(`Error from Figma: ${myResponse.error}`);
-          request.reject(new Error(myResponse.error));
+          request.reject(new FigmaCommandError(myResponse.error, "plugin_error"));
         } else {
           request.resolve(myResponse.result);
         }
@@ -17584,7 +17584,7 @@ function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOU
     onDisconnect();
     for (const [id, request] of pendingRequests.entries()) {
       clearTimeout(request.timeout);
-      request.reject(new Error("Connection closed"));
+      request.reject(new FigmaCommandError("Connection closed", "no_reply"));
       pendingRequests.delete(id);
     }
     logger.info("Attempting to reconnect in 2 seconds...");
@@ -17642,6 +17642,25 @@ function listChannels(timeoutMs = 5000) {
     ws.send(JSON.stringify({ id, type: "list_channels" }));
   });
 }
+var DELIVERY = Symbol("l2f.commandDelivery");
+
+class FigmaCommandError extends Error {
+  constructor(message, delivery) {
+    super(message);
+    this[DELIVERY] = delivery;
+  }
+}
+function commandDelivery(error) {
+  return error && typeof error === "object" ? error[DELIVERY] : undefined;
+}
+function notSent(error) {
+  if (!(error instanceof Error))
+    return new FigmaCommandError(String(error), "not_sent");
+  if (commandDelivery(error) && commandDelivery(error) !== "not_sent")
+    return new FigmaCommandError(error.message, "not_sent");
+  Object.defineProperty(error, DELIVERY, { value: "not_sent", configurable: true });
+  return error;
+}
 
 class ChannelSelectionError extends Error {
 }
@@ -17674,15 +17693,19 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 30000) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       if (!isPluginInstall) {
         connectToFigma();
-        reject(new Error("Not connected to the relay. Start it with `bun socket` in the llm2figma repo."));
+        reject(new FigmaCommandError("Not connected to the relay. Start it with `bun socket` in the llm2figma repo.", "not_sent"));
         return;
       }
-      ensureConnected().then(() => sendCommandToFigma(command, params, timeoutMs)).then(resolve, reject);
+      ensureConnected().catch((error) => {
+        throw notSent(error);
+      }).then(() => sendCommandToFigma(command, params, timeoutMs)).then(resolve, reject);
       return;
     }
     const requiresChannel = command !== "join";
     if (requiresChannel && !currentChannel) {
-      autoJoinChannel().then(() => sendCommandToFigma(command, params, timeoutMs)).then(resolve, reject);
+      autoJoinChannel().catch((error) => {
+        throw notSent(error);
+      }).then(() => sendCommandToFigma(command, params, timeoutMs)).then(resolve, reject);
       return;
     }
     const id = v4_default();
@@ -17703,7 +17726,7 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 30000) {
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
         logger.error(`Request ${id} to Figma timed out after ${timeoutMs / 1000} seconds`);
-        reject(new Error("Request to Figma timed out"));
+        reject(new FigmaCommandError("Request to Figma timed out", "no_reply"));
       }
     }, timeoutMs);
     pendingRequests.set(id, {
@@ -24140,6 +24163,7 @@ function computePlan({ lock, live, prepared }) {
   const drift = [];
   const conflicts = [];
   const expected = {};
+  const overwrites = [];
   let converged = 0;
   const liveNodes = live.nodes;
   const liveProps = (id) => {
@@ -24202,6 +24226,7 @@ function computePlan({ lock, live, prepared }) {
     const set2 = {};
     const drifted = [];
     const conflicted = [];
+    const overwrite = {};
     const unexpressed = [];
     const baseUnread = unreadKeys(was.props);
     const liveUnread = unreadKeys(now);
@@ -24226,6 +24251,8 @@ function computePlan({ lock, live, prepared }) {
           set2.properties = result.set;
         drifted.push(...result.drifted);
         conflicted.push(...result.conflicted);
+        if (result.conflictSet)
+          overwrite.properties = result.conflictSet;
         converged += result.converged;
         continue;
       }
@@ -24264,12 +24291,22 @@ function computePlan({ lock, live, prepared }) {
         converged++;
       } else {
         conflicted.push(key);
+        if (value !== undefined && value !== UNREADABLE && b !== UNREADABLE && l !== UNREADABLE) {
+          if (key === "pathHash")
+            overwrite.pathData = want.props.pathData;
+          else
+            overwrite[key] = value;
+        }
       }
     }
     if (drifted.length)
       drift.push({ id, name: label(id), kind: "property", keys: drifted });
     if (conflicted.length)
       conflicts.push({ id, name: label(id), kind: "property", keys: conflicted });
+    if (Object.keys(overwrite).length) {
+      const { propsHash, parentId, children } = liveNodes[id];
+      overwrites.push({ id, name: label(id), nodeType: type, set: overwrite, expected: { propsHash, parentId, children }, ...liveNodes[id].size ? { size: liveNodes[id].size } : {} });
+    }
     if (unexpressed.length) {
       conflicts.push({
         id,
@@ -24431,6 +24468,7 @@ function computePlan({ lock, live, prepared }) {
   const ordered = [...operations.create, ...operations.update, ...operations.move, ...operations.remove];
   return {
     operations: ordered,
+    overwrites,
     expectedHashes: expected,
     drift,
     conflicts,
@@ -24453,7 +24491,7 @@ function computePlan({ lock, live, prepared }) {
 function compareProperties(base, desired, live) {
   const b = record2(base);
   const l = record2(live);
-  const out = { set: undefined, drifted: [], conflicted: [], converged: 0, removed: "" };
+  const out = { set: undefined, conflictSet: undefined, drifted: [], conflicted: [], converged: 0, removed: "" };
   if (desired === undefined) {
     if (Object.keys(b).length)
       out.removed = "properties";
@@ -24477,8 +24515,11 @@ function compareProperties(base, desired, live) {
       out.drifted.push(`properties.${key}`);
     else if (same(d[key], l[key]))
       out.converged++;
-    else
+    else {
       out.conflicted.push(`properties.${key}`);
+      if (d[key] !== undefined)
+        out.conflictSet = { ...out.conflictSet, [key]: d[key] };
+    }
   }
   if (Object.keys(set2).length)
     out.set = set2;
@@ -24494,9 +24535,284 @@ function diffKeys(a, b) {
   return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => !same(a[k], b[k])).sort();
 }
 
+// src/llm2figma_mcp/spec-apply.ts
+var same2 = (a, b) => stableStringify(a) === stableStringify(b);
+var RESIZABLE2 = new Set(["frame", "rectangle", "vector"]);
+function covers(set2, key) {
+  if (key.startsWith("properties."))
+    return !!set2.properties && key.slice("properties.".length) in set2.properties;
+  if (key === "pathHash")
+    return "pathData" in set2;
+  return key in set2;
+}
+function buildApply(plan, spec, options) {
+  const skipped = [];
+  const operations = [];
+  const expectedHashes = { ...plan.expectedHashes };
+  const overwrites = new Map((options.onConflict === "spec" ? plan.overwrites ?? [] : []).map((o) => [o.id, o]));
+  const merged = new Set;
+  for (const op of plan.operations) {
+    if (op.op === "remove" && !options.allowRemovals) {
+      skipped.push({ op: "remove", id: op.id, name: op.name, reason: "removal needs allowRemovals: true" });
+      continue;
+    }
+    if (op.op === "update" && overwrites.has(op.id)) {
+      operations.push(mergeOverwrite(op, overwrites.get(op.id)));
+      merged.add(op.id);
+      continue;
+    }
+    operations.push(op);
+  }
+  const extra = [];
+  for (const [id, overwrite] of overwrites) {
+    if (merged.has(id))
+      continue;
+    extra.push(mergeOverwrite({ op: "update", id, name: overwrite.name, nodeType: overwrite.nodeType, set: {} }, overwrite));
+    expectedHashes[id] = overwrite.expected;
+  }
+  if (extra.length) {
+    const at = operations.findIndex((op) => op.op === "move" || op.op === "remove");
+    operations.splice(at < 0 ? operations.length : at, 0, ...extra);
+  }
+  for (const issue of plan.conflicts) {
+    const overwrite = overwrites.get(issue.id);
+    const keys = issue.kind === "property" && overwrite && issue.keys ? issue.keys.filter((k) => !covers(overwrite.set, k)) : issue.keys;
+    if (issue.kind === "property" && overwrite && keys && !keys.length)
+      continue;
+    skipped.push(conflictEntry(issue, keys));
+  }
+  return { operations, expectedHashes, orders: childOrders(spec, operations), skipped };
+}
+function conflictEntry(issue, keys) {
+  const entry2 = { id: issue.id, name: issue.name, kind: issue.kind, reason: issue.detail ?? "changed in both the Spec and Figma" };
+  if (keys && keys.length)
+    entry2.keys = keys;
+  return entry2;
+}
+function mergeOverwrite(op, overwrite) {
+  const set2 = { ...op.set };
+  let fromLive = (op.fromLive ?? []).filter((k) => !(k in overwrite.set));
+  for (const [key, value] of Object.entries(overwrite.set)) {
+    set2[key] = key === "properties" ? { ...set2.properties ?? {}, ...value } : value;
+  }
+  if (RESIZABLE2.has(op.nodeType) && "width" in set2 !== "height" in set2 && overwrite.size) {
+    const other = "width" in set2 ? "height" : "width";
+    set2[other] = overwrite.size[other];
+    fromLive = [...fromLive, other];
+  }
+  const out = { op: "update", id: op.id, name: op.name, nodeType: op.nodeType, set: set2 };
+  if (fromLive.length)
+    out.fromLive = fromLive;
+  return out;
+}
+function indexSpec(tree) {
+  const out = new Map;
+  const visit = (node, path4) => {
+    if (!node || typeof node !== "object")
+      return;
+    if (typeof node.id === "string")
+      out.set(node.id, { node, path: path4 });
+    (Array.isArray(node.children) ? node.children : []).forEach((child, i) => visit(child, [...path4, i]));
+  };
+  visit(tree, []);
+  return out;
+}
+function childOrders(spec, operations) {
+  const parents = [];
+  for (const op of operations) {
+    if ((op.op === "create" || op.op === "move") && !parents.includes(op.parentId))
+      parents.push(op.parentId);
+  }
+  const index = indexSpec(spec.tree);
+  const orders = [];
+  for (const parentId of parents) {
+    const hit = index.get(parentId);
+    if (!hit)
+      continue;
+    const kids = Array.isArray(hit.node.children) ? hit.node.children : [];
+    orders.push({ parentId, children: kids.map((child, i) => child && typeof child.id === "string" ? child.id : [...hit.path, i]) });
+  }
+  return orders;
+}
+function withCreatedIds(spec, created) {
+  const copy = JSON.parse(JSON.stringify(spec));
+  for (const { path: path4, id } of created) {
+    if (!path4.length)
+      continue;
+    let parent = copy.tree;
+    for (const i of path4.slice(0, -1))
+      parent = parent && Array.isArray(parent.children) ? parent.children[i] : undefined;
+    const last = path4[path4.length - 1];
+    const node = parent && Array.isArray(parent.children) ? parent.children[last] : undefined;
+    if (!node || typeof node !== "object" || node.id !== undefined)
+      continue;
+    parent.children[last] = { id, ...node };
+  }
+  return copy;
+}
+function desiredNodes(spec, rootParentId, rootParentLayout) {
+  const out = new Map;
+  const visit = (raw, parentId, layout) => {
+    if (!raw || typeof raw !== "object")
+      return;
+    const id = typeof raw.id === "string" ? raw.id : null;
+    const kids = Array.isArray(raw.children) ? raw.children : [];
+    if (id) {
+      out.set(id, {
+        props: lockProps(normalizeNode(raw, layout)),
+        parentId,
+        type: raw.type,
+        children: kids.filter((k) => k && typeof k.id === "string").map((k) => k.id)
+      });
+    }
+    const own = { layoutMode: typeof raw.layoutMode === "string" ? raw.layoutMode : "NONE" };
+    if (id)
+      for (const kid of kids)
+        visit(kid, id, own);
+  };
+  visit(spec.tree, rootParentId, rootParentLayout);
+  return out;
+}
+var orDefault = (type, key, value) => value !== undefined ? value : SPEC_DEFAULTS[type]?.[key];
+function findPartial(sent, failed, created, readBack, spec) {
+  const out = [];
+  const failedKeys = new Map;
+  for (const f of failed) {
+    if (f.op !== "update" || typeof f.id !== "string")
+      continue;
+    const set2 = failedKeys.get(f.id) ?? new Set;
+    for (const k of Array.isArray(f.keys) ? f.keys : [])
+      set2.add(k);
+    failedKeys.set(f.id, set2);
+  }
+  for (const op of sent) {
+    if (op.op !== "update")
+      continue;
+    const live = readBack.nodes[op.id];
+    if (!live)
+      continue;
+    const skip = failedKeys.get(op.id) ?? new Set;
+    const keys = [];
+    for (const [key, raw] of Object.entries(op.set)) {
+      if (op.fromLive?.includes(key) || skip.has(key))
+        continue;
+      if (key === "pathData") {
+        const want = canonicalValue("pathData", raw);
+        if (typeof want === "string" && live.props.pathHash !== hashString(want))
+          keys.push(key);
+        continue;
+      }
+      if (key === "properties") {
+        const got2 = live.props.properties ?? {};
+        for (const [name, value] of Object.entries(raw ?? {}))
+          if (!same2(value, got2[name]))
+            keys.push(`properties.${name}`);
+        continue;
+      }
+      const got = orDefault(op.nodeType, key, live.props[key]);
+      if (got === undefined)
+        continue;
+      if (!same2(canonicalValue(key, raw), got))
+        keys.push(key);
+    }
+    if (keys.length)
+      out.push({ id: op.id, keys });
+  }
+  const desired = desiredNodes(spec, readBack.rootParentId, { layoutMode: readBack.rootParentLayoutMode ?? undefined });
+  for (const { id, failed: bindFailed } of created) {
+    const want = desired.get(id);
+    const live = readBack.nodes[id];
+    if (!want || !live)
+      continue;
+    const keys = [...new Set([...Object.keys(want.props), ...Object.keys(live.props)])].filter((key) => !same2(orDefault(want.type, key, want.props[key]), orDefault(want.type, key, live.props[key]))).filter((key) => !(bindFailed && key === "name"));
+    if (keys.length)
+      out.push({ id, keys: keys.sort() });
+  }
+  return out;
+}
+function relock(oldLock, spec, readBack, supersededFrameId, newSpecHash) {
+  const desired = desiredNodes(spec, oldLock.nodes[oldLock.rootId]?.parentId ?? readBack.rootParentId, { layoutMode: readBack.rootParentLayoutMode ?? undefined });
+  const nodes = {};
+  const fresh = new Set;
+  const ids = new Set([...desired.keys(), ...Object.keys(oldLock.nodes)]);
+  for (const id of ids) {
+    const live = readBack.nodes[id];
+    const old = oldLock.nodes[id];
+    const want = desired.get(id);
+    const newlyCut = !!(live && old && live.props.truncated === true && old.props.truncated !== true);
+    if (!live || newlyCut) {
+      if (want && old)
+        nodes[id] = { ...old };
+      continue;
+    }
+    if (!want) {
+      if (old)
+        nodes[id] = { ...old };
+      continue;
+    }
+    if (!old) {
+      nodes[id] = { props: live.props, propsHash: live.propsHash, parentId: live.parentId, children: [] };
+      fresh.add(id);
+      continue;
+    }
+    const props = mergeProps(old.props, want.props, live.props);
+    nodes[id] = { props, propsHash: hashProps(props), parentId: same2(want.parentId, live.parentId) ? live.parentId : old.parentId, children: [] };
+    fresh.add(id);
+  }
+  for (const [id, node] of Object.entries(nodes)) {
+    const live = readBack.nodes[id];
+    const old = oldLock.nodes[id];
+    const mine = (c) => !!nodes[c] && nodes[c].parentId === id;
+    if (!fresh.has(id) || !live) {
+      node.children = (old?.children ?? []).filter((c) => !!nodes[c]);
+      continue;
+    }
+    const liveKids = live.children.filter(mine);
+    const want = desired.get(id);
+    const wantKids = (want?.children ?? []).filter(mine);
+    if (!old || same2(liveKids, wantKids)) {
+      node.children = liveKids;
+      continue;
+    }
+    const kids = old.children.filter(mine);
+    for (let i = 0;i < liveKids.length; i++) {
+      const c = liveKids[i];
+      if (kids.includes(c))
+        continue;
+      let at = 0;
+      for (let j = i - 1;j >= 0; j--) {
+        const k = kids.indexOf(liveKids[j]);
+        if (k >= 0) {
+          at = k + 1;
+          break;
+        }
+      }
+      kids.splice(at, 0, c);
+    }
+    node.children = kids;
+  }
+  return { ...oldLock, specHash: newSpecHash, pendingApply: null, supersededFrameId, nodes };
+}
+function mergeProps(old, want, live) {
+  const out = {};
+  for (const key of new Set([...Object.keys(live), ...Object.keys(old), ...Object.keys(want)])) {
+    let value;
+    if (key === "properties" && (old.properties !== undefined || live.properties !== undefined)) {
+      const merged = mergeProps(old.properties ?? {}, want.properties ?? {}, live.properties ?? {});
+      value = Object.keys(merged).length || live.properties !== undefined ? merged : undefined;
+    } else {
+      value = same2(live[key], want[key]) ? live[key] : old[key];
+    }
+    if (value !== undefined)
+      out[key] = value;
+  }
+  return out;
+}
+
 // src/llm2figma_mcp/tools/spec.ts
 var EXPORT_TIMEOUT_MS = 120000;
 var READ_TIMEOUT_MS = 120000;
+var APPLY_TIMEOUT_MS = 120000;
 var REPLACE_HINT = "Pass replaceEdited: true to rename the old pair to .bak files and pull fresh.";
 function refusal(spec, lock, specPath) {
   if (lock && lock.pendingApply) {
@@ -24735,6 +25051,123 @@ async function planSpec(args2, send, options = {}) {
     summary.note = note;
   return summary;
 }
+var UNDO_NOTE = "One undo in Figma (Cmd/Ctrl+Z) reverts this apply, together with anything changed by hand in the file while it ran. apply_spec never undoes anything itself.";
+var isoDay = (date2) => date2.toISOString().slice(0, 10);
+async function applySpec(args2, send, options = {}) {
+  const { planId, allowRemovals = false, onConflict = "skip" } = args2;
+  if (onConflict !== "skip" && onConflict !== "spec")
+    throw new Error(`onConflict must be "skip" or "spec", got ${clip(String(onConflict))}.`);
+  const plan = getPlanStore(options).get(planId);
+  const channel = (options.channel ?? getCurrentChannel)();
+  if (plan.channel && channel && plan.channel !== channel) {
+    throw new Error(`Plan ${planId} was made on channel ${clip(plan.channel)}, but the server is now on ${clip(channel)}. Run plan_spec again on this channel.`);
+  }
+  const paths = { specPath: plan.specPath, lockPath: plan.lockPath, baseDir: "" };
+  return withPathLock(plan.specPath, async () => {
+    const { spec, lock } = await readSpecPair(paths);
+    if (lock.pendingApply) {
+      throw new Error(`Refusing to apply: an earlier apply (plan ${clip(String(lock.pendingApply))}) did not finish, so Figma may hold part of it. Pull again (pull_spec with replaceEdited: true backs up the Spec) and redo the edits.`);
+    }
+    if (specHash(spec) !== plan.specHash)
+      throw new Error(`Refusing to apply: ${plan.specPath} changed since plan ${planId}. Run plan_spec again.`);
+    if (specHash(lock) !== plan.lockHash)
+      throw new Error(`Refusing to apply: the SpecLock beside ${plan.specPath} changed since plan ${planId} (pulled or applied again). Run plan_spec again.`);
+    const request = buildApply(plan, spec, { allowRemovals, onConflict });
+    const truncated = {};
+    for (const [id, node] of Object.entries(lock.nodes)) {
+      if (node.props.truncated === true)
+        truncated[id] = typeof node.props.reason === "string" ? node.props.reason : "node budget";
+    }
+    const now = (options.now ?? (() => new Date))();
+    await writeFileAtomic(plan.lockPath, JSON.stringify({ ...lock, pendingApply: planId }, null, 2) + `
+`);
+    const unmark = () => writeFileAtomic(plan.lockPath, JSON.stringify(lock, null, 2) + `
+`);
+    let result;
+    try {
+      result = await send("apply_spec_ops", {
+        rootId: lock.rootId,
+        expect: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId },
+        operations: request.operations,
+        expectedHashes: request.expectedHashes,
+        orders: request.orders,
+        allowRemovals,
+        truncated,
+        supersededFrameId: lock.supersededFrameId ?? null,
+        date: isoDay(now),
+        maxNodes: WALK_LIMITS.maxNodes,
+        maxDepth: WALK_LIMITS.maxDepth
+      }, APPLY_TIMEOUT_MS);
+    } catch (error) {
+      const delivery = commandDelivery(error);
+      if (delivery === "not_sent" || delivery === "plugin_error") {
+        await unmark();
+        throw new Error(`${error instanceof Error ? error.message : String(error)} Nothing was written to Figma.`);
+      }
+      throw error;
+    }
+    if (result && typeof result === "object" && typeof result.refused === "string") {
+      await unmark();
+      throw new Error(`Refusing to apply: ${result.refused}`);
+    }
+    const created = result && Array.isArray(result.created) ? result.created : [];
+    const createdNote = created.length ? ` Created in Figma: ${showList(created.map((c) => `${c.id} at tree.children[${c.path.join("].children[")}]`))}. Do not re-apply these edits from a .bak copy of the Spec: the nodes would be created twice; pull (it reads them) and redo only the other edits.` : "";
+    if (!result || typeof result !== "object" || typeof result.writeError === "string" || !result.readBack || !result.readBack.nodes) {
+      const why = result && typeof result.writeError === "string" ? `The apply stopped part-way: ${result.writeError}.` : "The Figma plugin returned no apply result (rebuild and re-run the plugin with bun run build so it knows apply_spec_ops).";
+      throw new Error(`${why} Figma may hold part of the plan, so the SpecLock keeps pendingApply; pull again before planning.${createdNote}`);
+    }
+    const { spec: current } = await readSpecPair(paths);
+    if (specHash(current) !== plan.specHash) {
+      throw new Error(`${plan.specPath} was edited while the apply ran, so the Spec and SpecLock were not updated and the SpecLock keeps pendingApply. Figma holds the applied plan. Pull again (pull_spec with replaceEdited: true backs up your edits) and redo them.${createdNote}`);
+    }
+    const failed = Array.isArray(result.failed) ? result.failed : [];
+    const readBack = result.readBack;
+    const nextSpec = created.length ? withCreatedIds(spec, created) : spec;
+    const nextLock = relock(lock, nextSpec, readBack, result.supersededFrameId ?? lock.supersededFrameId ?? null, specHash(nextSpec));
+    const partial = [...Array.isArray(result.partial) ? result.partial : [], ...findPartial(request.operations, failed, created, readBack, nextSpec)];
+    if (nextSpec !== spec)
+      await writeFileAtomic(plan.specPath, JSON.stringify(nextSpec, null, 2) + `
+`);
+    await writeFileAtomic(plan.lockPath, JSON.stringify(nextLock, null, 2) + `
+`);
+    const updated = Array.isArray(result.updated) ? result.updated : [];
+    const moved = Array.isArray(result.moved) ? result.moved : [];
+    const removed = Array.isArray(result.removed) ? result.removed : [];
+    const cut = (list) => list.slice(0, PLAN_LIST_LIMIT);
+    const lists = [created, updated, moved, removed, request.skipped, partial, failed];
+    const out = {
+      planId,
+      path: plan.specPath,
+      applied: { created: cut(created.filter((c) => !c.failed).map(({ path: path4, id }) => ({ path: path4, id }))), updated: cut(updated), moved: cut(moved), removed: cut(removed) },
+      counts: {
+        created: created.filter((c) => !c.failed).length,
+        updated: updated.length,
+        moved: moved.length,
+        removed: removed.length,
+        skipped: request.skipped.length,
+        partial: partial.length,
+        failed: failed.length
+      },
+      skipped: cut(request.skipped),
+      partial: cut(partial),
+      failed: cut(failed),
+      undo: UNDO_NOTE,
+      truncated: lists.some((list) => list.length > PLAN_LIST_LIMIT)
+    };
+    const notes = [];
+    if (partial.length)
+      notes.push("partial: Figma did not take these values as asked (a size it constrained, a font it substituted...); the SpecLock keeps the old value, so the next plan shows them again.");
+    if (failed.length)
+      notes.push('failed operations wrote nothing (or, for a create whose colour binding failed, a node named "(failed)"); plan again to retry.');
+    if (removed.length)
+      notes.push(`removed nodes were moved, at the same place, into the hidden page-level frame "l2f/superseded" (renamed "(superseded ${isoDay(now)})"); nothing was deleted.`);
+    if (request.skipped.some((s) => s.op === "remove"))
+      notes.push("removals were skipped: pass allowRemovals: true to move them into l2f/superseded.");
+    if (notes.length)
+      out.note = notes.join(" ");
+    return out;
+  });
+}
 function registerTools27(server, sendCommandToFigma2, options = {}) {
   server.tool("pull_spec", 'Write a Figma subtree to a Spec file on disk (JSON, name ending .l2f.json) so a design can be edited in place by editing the file, plus a SpecLock beside it (<name>.l2f.lock.json, never edit it) recording what Figma held at the pull. The Spec uses create_node_tree\'s node format (text content is `text`, colours are hex or $var:Collection/Name) and every node carries its Figma `id`; a node without an id is one to create. An absent key means its default (what create_node_tree leaves); values Figma derives from layout (x/y inside auto-layout, width/height on HUG or FILL axes, text height unless the box is fixed) are left out, while x/y outside auto-layout, FIXED width/height and auto-layout padding/spacing are always written. Nodes the format cannot express (groups, ellipses, lines, boolean operations, sections, components, rotated nodes, grid frames, text with mixed styles) are OpaqueNodes {type: "$opaque", id, name, nodeType, reason} with no children; an instance is a leaf with componentSetKey/componentSetId for a variant (properties pick the variant), else componentKey/componentId, and flattened properties. The walk is breadth-first; nodes a budget (maxNodes, maxDepth, 8 MB) left unread are OpaqueNodes with truncated: true in their parent\'s children. Returns only paths and counts, never the tree: read the file. Refuses to overwrite a Spec with unapplied edits, a pair whose apply did not finish, or a file that is not a Spec; replaceEdited: true renames the old pair to .bak first. Re-pulling the same root checks it is the same file (by file key when known, else by file name: a copy renamed to the original\'s name is not detected) and page; with replaceEdited and a known file key only the key is checked. Paths: relative to L2F_SPEC_DIR (or the server\'s working directory); absolute paths must be inside it; symlinked Spec files are refused.', {
     nodeId: z2.string().min(1).describe("Root of the subtree: a frame, text, rectangle, vector or instance"),
@@ -24750,7 +25183,7 @@ function registerTools27(server, sendCommandToFigma2, options = {}) {
       return { isError: true, content: [{ type: "text", text: `Error pulling spec: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
-  server.tool("plan_spec", "Compare a Spec (after your edits), its SpecLock (Figma at the last pull) and live Figma, property by property, and return the difference as a Plan. Writes nothing: not to Figma, not to the Spec or SpecLock. Per property: Spec changed and Figma did not -> an update; Figma changed and the Spec did not -> drift (kept as Figma has it); both changed to the same value -> nothing; both changed differently -> a conflict (skipped). Structure the same way: a node without an id -> create; a changed parent or sibling order -> move; an id deleted from the Spec -> remove (only if Figma did not change it; a subtree the node budget cut off never yields removals); a node gone from Figma -> missing; a node added in Figma by hand is left alone and reported as drift. Errors, naming the node, on a duplicate or unknown id, an id inside an instance (contains ';'), a changed node type, or an edit to an OpaqueNode other than moving or removing it. Refuses while the SpecLock records an unfinished apply. Returns {planId, counts, operations, drift, conflicts} with at most 100 entries per list (truncated: true when more; counts are complete) and the planId; the full Plan stays on the server for 30 minutes under that explicit id. Nothing applies a Plan yet.", {
+  server.tool("plan_spec", "Compare a Spec (after your edits), its SpecLock (Figma at the last pull) and live Figma, property by property, and return the difference as a Plan. Writes nothing: not to Figma, not to the Spec or SpecLock. Per property: Spec changed and Figma did not -> an update; Figma changed and the Spec did not -> drift (kept as Figma has it); both changed to the same value -> nothing; both changed differently -> a conflict (skipped). Structure the same way: a node without an id -> create; a changed parent or sibling order -> move; an id deleted from the Spec -> remove (only if Figma did not change it; a subtree the node budget cut off never yields removals); a node gone from Figma -> missing; a node added in Figma by hand is left alone and reported as drift. Errors, naming the node, on a duplicate or unknown id, an id inside an instance (contains ';'), a changed node type, or an edit to an OpaqueNode other than moving or removing it. Refuses while the SpecLock records an unfinished apply. Returns {planId, counts, operations, drift, conflicts} with at most 100 entries per list (truncated: true when more; counts are complete) and the planId; the full Plan stays on the server for 30 minutes under that explicit id. Apply it with apply_spec {planId}.", {
     path: z2.string().min(1).describe("The Spec file (.l2f.json) written by pull_spec, after your edits")
   }, async (args2) => {
     try {
@@ -24758,6 +25191,18 @@ function registerTools27(server, sendCommandToFigma2, options = {}) {
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     } catch (error) {
       return { isError: true, content: [{ type: "text", text: `Error planning spec: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+  server.tool("apply_spec", `Carry out one Plan from plan_spec in Figma, by node id, then update the Spec and SpecLock. Refuses, writing nothing, when the Spec or SpecLock changed since the plan, when an earlier apply did not finish, or when any node the plan touches changed in Figma since (checked inside the plugin in the same run as the writes; plan again). Order: creates (parents first; a node whose colour variable cannot be bound is kept, renamed "(failed)"), updates (only the listed properties; never a key in a node's $unread), moves (only the nodes that moved; nodes added by hand keep their places; a reparent keeps the absolute position), removals last: moved into a hidden page-level frame "l2f/superseded" at the same absolute position and renamed "(superseded YYYY-MM-DD)", never deleted, and only with allowRemovals: true. One failed operation does not stop the rest. Conflicts are skipped unless onConflict: "spec" (property conflicts only: the Spec's value wins). Then the whole subtree is read back: created ids are written into the Spec, the SpecLock is rewritten from the read-back, and touched properties Figma did not take as asked are listed as partial (they and failed ones keep their old base, so the next plan shows them again). Returns {applied: {created, updated, moved, removed}, counts, skipped, partial, failed, undo} with at most 100 entries per list. One undo in Figma reverts the apply (and anything done by hand while it ran); this tool never undoes. If the run times out or the plugin reloads, the SpecLock keeps pendingApply and plan_spec refuses until a pull.`, {
+    planId: z2.string().min(1).describe("The planId plan_spec returned"),
+    allowRemovals: z2.boolean().optional().describe("Move removed nodes into l2f/superseded (default false: removals are listed under skipped)"),
+    onConflict: z2.enum(["skip", "spec"]).optional().describe(`"skip" (default) leaves conflicts as Figma has them; "spec" writes the Spec's value for property conflicts`)
+  }, async (args2) => {
+    try {
+      const result = await applySpec(args2, sendCommandToFigma2, options);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: `Error applying spec: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
 }
