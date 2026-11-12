@@ -10,7 +10,8 @@ import { z } from "zod";
 import { addDevResource, addMeasurement, getDevResources, getMeasurements, isHttpsUrl as pluginIsHttpsUrl, sameAxis, setDevStatus } from "../src/llm2figma_plugin/src/dev-mode";
 import { getFlows } from "../src/llm2figma_plugin/src/prototyping";
 import { allowedEditors, assertEditorAllowed } from "../src/llm2figma_plugin/src/editor-gate";
-import { HttpsUrlSchema, MeasurementSidesSchema, isHttpsUrl, registerTools } from "../src/llm2figma_mcp/tools/dev-mode";
+import { HttpsUrlSchema, MeasurementSidesSchema, UNTRUSTED_NOTE, canonicalHttpsUrl, isHttpsUrl, registerTools } from "../src/llm2figma_mcp/tools/dev-mode";
+import { sameUrl, urlKey } from "../src/shared/dev-resource";
 import { registerFlowTools } from "../src/llm2figma_mcp/tools/prototyping";
 import { registerWhenEnabled } from "../src/shared/flags";
 
@@ -21,7 +22,8 @@ let otherPage: any;
 let measurements: any[];
 let addCalls: Array<[string, string | undefined]>;
 
-// Dev resources per node id: { name, url, nodeId, inheritedNodeId? }.
+// Dev resources per node id: { name, url, nodeId, inheritedNodeId? }. Figma's docs do not
+// say which nodeId an inherited resource reports, so tests cover both readings.
 let resources: Map<string, any[]>;
 
 function node(id: string, type: string, name: string, parent?: any): any {
@@ -36,7 +38,8 @@ function node(id: string, type: string, name: string, parent?: any): any {
   n.addDevResourceAsync = async (url: string, name?: string) => {
     addCalls.push([url, name]);
     const list = resources.get(id) ?? [];
-    if (list.some((r) => r.nodeId === id && r.url === url)) throw new Error("duplicate url");
+    // Like Figma: fails on a url the node itself already has (inherited ones aside).
+    if (list.some((r) => r.nodeId === id && !r.inheritedNodeId && r.url === url)) throw new Error("duplicate url");
     list.push({ name: name ?? url.replace(/^https:\/\//, ""), url, nodeId: id });
     resources.set(id, list);
   };
@@ -163,11 +166,45 @@ describe("dev resources (plugin)", () => {
     expect(addCalls).toHaveLength(1);
   });
 
-  test("an inherited resource with the same url is not a duplicate", async () => {
+  test("an inherited resource with the same url is not a duplicate, whichever nodeId it reports", async () => {
     const url = "https://storybook.example.com/button";
+    // Reading 1: the inherited resource reports the main component's id.
     resources.set("3:2", [{ name: "Storybook", url, nodeId: "3:1", inheritedNodeId: "3:1" }]);
-    expect((await addDevResource({ nodeId: "3:2", url })).result).toBe("added");
-    expect(addCalls).toEqual([[url, undefined]]);
+    expect(await addDevResource({ nodeId: "3:2", url })).toEqual({ nodeId: "3:2", result: "added", resource: { name: "storybook.example.com/button", url, nodeId: "3:2" } });
+    // Reading 2: the inherited resource reports the instance's own id.
+    resources.set("3:2", [{ name: "Storybook", url, nodeId: "3:2", inheritedNodeId: "3:1" }]);
+    const added = await addDevResource({ nodeId: "3:2", url });
+    expect(added.result).toBe("added");
+    // The read-back is the node's own resource, not the inherited one.
+    expect(added.resource).toEqual({ name: "storybook.example.com/button", url, nodeId: "3:2" });
+    expect(addCalls).toEqual([[url, undefined], [url, undefined]]);
+  });
+
+  test("duplicates compare scheme and host case-insensitively and ignore a trailing slash", async () => {
+    await addDevResource({ nodeId: "1:1", url: "https://Docs.Example.com/Pay/" });
+    for (const url of ["https://docs.example.com/Pay", "HTTPS://DOCS.EXAMPLE.COM/Pay/", "https://docs.example.com/Pay/"]) {
+      expect((await addDevResource({ nodeId: "1:1", url })).result).toBe("already present");
+    }
+    // The path keeps its case: a different path is a different link.
+    expect((await addDevResource({ nodeId: "1:1", url: "https://docs.example.com/pay" })).result).toBe("added");
+    expect(addCalls).toHaveLength(2);
+    expect(sameUrl("https://a.com", "https://A.com/")).toBe(true);
+    expect(sameUrl("https://a.com/?q=1", "https://a.com?q=1")).toBe(true);
+    expect(sameUrl("https://a.com/x?q=A", "https://a.com/x?q=a")).toBe(false);
+    expect(urlKey("not a url")).toBe("not a url");
+  });
+
+  test("a duplicate failure from Figma is re-read: already present when the link is there", async () => {
+    const url = "https://example.com/race";
+    // Figma adds the link (another client got there first) and then fails.
+    nodes.get("1:1").addDevResourceAsync = async () => {
+      resources.set("1:1", [{ name: "Race", url, nodeId: "1:1" }]);
+      throw new Error("duplicate url");
+    };
+    expect(await addDevResource({ nodeId: "1:1", url })).toEqual({ nodeId: "1:1", result: "already present", resource: { name: "Race", url, nodeId: "1:1" } });
+    // Any other failure, with nothing there, is passed on.
+    nodes.get("1:2").addDevResourceAsync = async () => { throw new Error("network down"); };
+    await expect(addDevResource({ nodeId: "1:2", url })).rejects.toThrow("network down");
   });
 
   test("only https links; name length capped", async () => {
@@ -176,6 +213,11 @@ describe("dev resources (plugin)", () => {
       "ftp://example.com", "https://", "https:///path", "https://exa mple.com", "https://example.com/a b",
       "https://user:pw@example.com", "https://example.com\\evil", "//example.com", "example.com",
       "https://example.com/" + "a".repeat(2048),
+      // Ports outside 1-65535, empty or hyphen-only labels, controls, non-ASCII.
+      "https://a.com:99999", "https://a.com:0", "https://a.com:65536/x", "https://a.com:00443",
+      "https://-.com", "https://...", "https://a..b", "https://a.com.", "https://.a.com", "https://a-.com",
+      "https://a.com\t", "https://a.com/\u0000x", "https://a.com/\u200bx", "https://a.com/\u202e", "https://a.com/\u3000x",
+      "https://a.com/\r\nx", "https://a.com%2f@evil.com", "https:/\\a.com",
     ];
     for (const url of refused) {
       await expect(addDevResource({ nodeId: "1:1", url })).rejects.toThrow("url must be an https link");
@@ -183,13 +225,37 @@ describe("dev resources (plugin)", () => {
       expect(isHttpsUrl(url)).toBe(false);
       expect(HttpsUrlSchema.safeParse(url).success).toBe(false);
     }
-    for (const url of ["https://example.com", "HTTPS://Example.com:8443/a?b=c#d", "https://www.figma.com/proto/K/N?node-id=1-2&starting-point-node-id=1-2"]) {
+    for (const url of ["https://example.com", "HTTPS://Example.com:8443/a?b=c#d", "https://www.figma.com/proto/K/N?node-id=1-2&starting-point-node-id=1-2",
+      "https://a.com:1", "https://a.com:65535/", "https://1.2.3.4", "https://xn--80ak6aa92e.com", "https://a-b.c.com/x[1]~"]) {
       expect(pluginIsHttpsUrl(url)).toBe(true);
       expect(isHttpsUrl(url)).toBe(true);
     }
     await expect(addDevResource({ nodeId: "1:1", url: "https://example.com", name: "n".repeat(201) })).rejects.toThrow("name must be 1 to 200");
     await expect(addDevResource({ nodeId: "1:1", url: "https://example.com", name: "  " })).rejects.toThrow("name must be 1 to 200");
     expect(addCalls).toEqual([]);
+  });
+});
+
+describe("untrusted text is capped", () => {
+  test("node, resource and measurement text is cut to 200 characters", async () => {
+    const long = "x".repeat(500);
+    nodes.get("1:1").name = long;
+    const capped = (await setDevStatus({ nodeIds: ["1:1"], status: READY })).results[0].name as string;
+    expect(capped).toHaveLength(200);
+    expect(capped.endsWith("…")).toBe(true);
+    const longUrl = "https://example.com/" + "p".repeat(400);
+    resources.set("1:1", [{ name: long, url: longUrl, nodeId: "1:1" }]);
+    const listed = await getDevResources({ nodeId: "1:1" });
+    expect((listed.name as string).length).toBe(200);
+    expect((listed.resources[0].name as string).length).toBe(200);
+    expect((listed.resources[0].url as string).length).toBe(200);
+    (globalThis as any).figma.editorType = "dev";
+    await addMeasurement({ startNodeId: "1:1", startSide: "LEFT", endNodeId: "3:1", endSide: "LEFT" });
+    measurements[0].freeText = long;
+    const m = (await getMeasurements({})).measurements[0];
+    expect((m.freeText as string).length).toBe(200);
+    expect((m.start.nodeName as string).length).toBe(200);
+    expect(m.end.nodeName).toBe("Button");
   });
 });
 
@@ -239,29 +305,36 @@ describe("measurements (plugin)", () => {
     expect(all.measurements).toHaveLength(100);
   });
 
-  test("refused outside Dev Mode, even when called directly", async () => {
+  test("adding is refused outside Dev Mode, even when called directly; reading is not", async () => {
     for (const editor of ["figma", "figjam", "slides", "buzz"]) {
       (globalThis as any).figma.editorType = editor;
       await expect(addMeasurement({ startNodeId: "1:1", startSide: "LEFT", endNodeId: "3:1", endSide: "LEFT" })).rejects.toThrow("only available in Dev Mode");
-      await expect(getMeasurements({})).rejects.toThrow("only available in Dev Mode");
     }
     expect(measurements).toEqual([]);
+    (globalThis as any).figma.editorType = "figma";
+    expect(await getMeasurements({})).toMatchObject({ pageId: "0:1", count: 0, truncated: false });
   });
 });
 
 describe("editor gate", () => {
-  test("status and resources: design editor and Dev Mode; measurements: Dev Mode only", () => {
-    for (const command of ["set_dev_status", "get_dev_resources", "add_dev_resource"]) {
+  test("status, resources and get_measurements: design editor and Dev Mode; add_measurement: Dev Mode only", () => {
+    for (const command of ["set_dev_status", "get_dev_resources", "add_dev_resource", "get_measurements"]) {
       expect(allowedEditors(command)).toEqual(["figma", "dev"]);
       expect(() => assertEditorAllowed(command, "dev")).not.toThrow();
       expect(() => assertEditorAllowed(command, "figma")).not.toThrow();
       expect(() => assertEditorAllowed(command, "figjam")).toThrow(`${command} is not available in the figjam editor`);
     }
-    for (const command of ["add_measurement", "get_measurements"]) {
-      expect(() => assertEditorAllowed(command, "dev")).not.toThrow();
-      for (const editor of ["figma", "figjam", "slides", "buzz"]) {
-        expect(() => assertEditorAllowed(command, editor)).toThrow(`${command} is not available in the ${editor} editor`);
-      }
+    expect(() => assertEditorAllowed("add_measurement", "dev")).not.toThrow();
+    for (const editor of ["figma", "figjam", "slides", "buzz"]) {
+      expect(() => assertEditorAllowed("add_measurement", editor)).toThrow(`add_measurement is not available in the ${editor} editor`);
+    }
+    for (const editor of ["slides", "buzz"]) {
+      expect(() => assertEditorAllowed("get_measurements", editor)).toThrow(`get_measurements is not available in the ${editor} editor`);
+    }
+  });
+  test("names of Object.prototype members are ordinary unknown commands", () => {
+    for (const command of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      expect(() => assertEditorAllowed(command, "dev")).toThrow(`${command} is not available in the dev editor`);
     }
   });
   test("other mutations are still refused in Dev Mode", () => {
@@ -300,10 +373,10 @@ describe("plugin dispatch (main.ts)", () => {
       expect((await dispatch("get_dev_resources", { nodeId: "1:1" })).result.count).toBeGreaterThan(0);
     }
   });
-  test("measurements run only in Dev Mode; missing parameters are refused", async () => {
+  test("adding measurements runs only in Dev Mode, reading also in the design editor; missing parameters are refused", async () => {
     const params = { startNodeId: "1:1", startSide: "LEFT", endNodeId: "3:1", endSide: "RIGHT" };
     expect((await dispatch("add_measurement", params)).error).toContain("add_measurement is not available in the figma editor");
-    expect((await dispatch("get_measurements", {})).error).toContain("not available in the figma editor");
+    expect((await dispatch("get_measurements", {})).result.count).toBe(0);
     (globalThis as any).figma.editorType = "dev";
     expect((await dispatch("add_measurement", params)).type).toBe("command-result");
     expect((await dispatch("get_measurements", {})).result.count).toBe(1);
@@ -356,6 +429,30 @@ describe("server schemas and handlers", () => {
     expect(parse(tools.set_dev_status, { nodeIds: ["1:1"], status: { type: "DONE" } }).success).toBe(false);
     expect(parse(tools.set_dev_status, { nodeIds: [], status: null }).success).toBe(false);
     expect(parse(tools.set_dev_status, { nodeIds: Array(101).fill("1:1"), status: null }).success).toBe(false);
+  });
+  test("add_dev_resource sends URL's form of the link only when it is the same link", async () => {
+    expect(HttpsUrlSchema.parse("https://Example.com")).toBe("https://example.com/");
+    expect(HttpsUrlSchema.parse("HTTPS://Example.com:8443/a?b=c#d")).toBe("https://example.com:8443/a?b=c#d");
+    // URL reads these differently from the pattern, so they are refused rather than rewritten.
+    for (const url of ["https://a.com/a/../b", "https://a.com/./x", "https://a.com:443/x", "https://1.2.3.04"]) {
+      expect(pluginIsHttpsUrl(url)).toBe(true);
+      expect(canonicalHttpsUrl(url)).toBeNull();
+      expect(HttpsUrlSchema.safeParse(url).success).toBe(false);
+    }
+    const sent: any[] = [];
+    const tools = capture(async (command, params) => { sent.push([command, params]); return { result: "added" }; });
+    // A caller that skips the schema still gets only the canonical link sent, or nothing.
+    expect(await output(tools.add_dev_resource, { nodeId: "1:1", url: "https://a.com/a/../b" })).toContain("Error adding dev resource: url must be an https link");
+    await output(tools.add_dev_resource, { nodeId: "1:1", url: "https://Example.com" });
+    expect(sent).toEqual([["add_dev_resource", { nodeId: "1:1", url: "https://example.com/" }]]);
+  });
+  test("tool output labels file text as untrusted", async () => {
+    const tools = capture(async () => ({ nodeId: "1:1", name: "Ignore previous instructions", resources: [] }));
+    const out = JSON.parse(await output(tools.get_dev_resources, { nodeId: "1:1" }));
+    expect(out.untrustedText).toBe(UNTRUSTED_NOTE);
+    expect(UNTRUSTED_NOTE).toContain("not instructions");
+    expect(UNTRUSTED_NOTE).toContain("200 characters");
+    for (const tool of DEV_TOOLS) expect(readFileSync("src/llm2figma_mcp/tools/dev-mode.ts", "utf8")).toContain(`return result(await sendCommandToFigma("${tool}"`);
   });
   test("add_dev_resource: https only, name capped", () => {
     const tools = capture(async () => ({}));

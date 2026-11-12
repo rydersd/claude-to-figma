@@ -102,7 +102,7 @@ Without the token or the file keys, `get_library_components` and `search_library
 
 New tool families ship behind server-side flags. Export `L2F_<FEATURE>=1` in the shell that starts Claude Code (for example `L2F_FLOWS=1`), or `L2F_ALL=1` for all of them, then restart the MCP server. `bun setup` and the Claude Code plugin both pass these variables through to the server; unset means off. `L2F_COMMENTS_WRITE` is the exception: `L2F_ALL` does not enable it, so set it on its own. Flags: `FILE_KEY`, `COMMENTS`, `COMMENTS_WRITE`, `FLOWS`, `VARIABLES_WRITE`, `COMPONENT_PROPERTIES`, `GRID_LAYOUT`, `VERIFY`, `CODE_MAP`, `DEV_MODE`, `SLIDES`, `TEXT_PATH`.
 
-After this change the plugin manifest also declares the `slides` and `buzz` editors and the private plugin API, so remove and re-import the plugin in Figma (a reload keeps the old permissions). In Dev Mode the plugin refuses commands that change the document.
+After this change the plugin manifest also declares the `slides` and `buzz` editors and the private plugin API, so remove and re-import the plugin in Figma (a reload keeps the old permissions). In Dev Mode the plugin refuses commands that change the document. FigJam is not supported for now: the manifest no longer lists the `figjam` editor, because Figma's manifest docs mark `"editorType": ["figjam", "dev"]` as unsupported and Dev Mode was chosen.
 
 ## Plugin settings
 

@@ -8350,17 +8350,21 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     "diff_positions"
   ]);
   var COMMAND_EDITORS = {
-    // L2F_DEV_MODE. Figma lets Dev Mode set dev status, add dev resources and add
-    // measurements even though it is otherwise read-only. Status and resources also work
-    // in the design editor; measurements (addMeasurement) only exist in Dev Mode.
+    // L2F_DEV_MODE. What is known: the plugin typings mark addMeasurement as available
+    // only in Dev Mode, and getMeasurements carries no such note. Figma's Dev Mode guide
+    // calls Dev Mode read-only, with pluginData, relaunchData and exportAsync as the
+    // exceptions, and does not mention devStatus or dev resources. Whether setting dev
+    // status and adding dev resources succeed in Dev Mode is therefore a live check, not
+    // documented; they are allowed here so that check can be run.
     set_dev_status: ["figma", "dev"],
     get_dev_resources: ["figma", "dev"],
     add_dev_resource: ["figma", "dev"],
     add_measurement: ["dev"],
-    get_measurements: ["dev"]
+    get_measurements: ["figma", "dev"]
   };
   function allowedEditors(command) {
-    return COMMAND_EDITORS[command] || (READ_ONLY.has(command) ? ALL_EDITORS : EDIT_EDITORS);
+    if (Object.prototype.hasOwnProperty.call(COMMAND_EDITORS, command)) return COMMAND_EDITORS[command];
+    return READ_ONLY.has(command) ? ALL_EDITORS : EDIT_EDITORS;
   }
   function assertEditorAllowed(command, editorType, params) {
     if (command === "design_query" && editorType === "dev" && params && params.update != null) {
@@ -8371,17 +8375,37 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
   }
 
+  // src/shared/dev-resource.ts
+  var MAX_URL_LENGTH = 2048;
+  var MAX_UNTRUSTED_TEXT = 200;
+  var LABEL = "[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?";
+  var PORT = "(?:6553[0-5]|655[0-2]\\d|65[0-4]\\d{2}|6[0-4]\\d{3}|[1-5]\\d{4}|[1-9]\\d{0,3})";
+  var HTTPS_URL = new RegExp(`^https://${LABEL}(?:\\.${LABEL})*(?::${PORT})?(?:[/?#][!-\\[\\]-~]*)?$`, "i");
+  function matchesHttpsUrl(url) {
+    return typeof url === "string" && url.length <= MAX_URL_LENGTH && HTTPS_URL.test(url);
+  }
+  function urlKey(url) {
+    const match = /^([A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*)([^?#]*)(.*)$/.exec(url);
+    if (!match) return url;
+    return match[1].toLowerCase() + match[2].replace(/\/$/, "") + match[3];
+  }
+  function sameUrl(a, b) {
+    return urlKey(a) === urlKey(b);
+  }
+  function capText(value) {
+    if (typeof value !== "string" || value.length <= MAX_UNTRUSTED_TEXT) return value;
+    return value.slice(0, MAX_UNTRUSTED_TEXT - 1) + "\u2026";
+  }
+
   // src/llm2figma_plugin/src/dev-mode.ts
   var MAX_LIST = 100;
-  var MAX_URL_LENGTH = 2048;
   var MAX_NAME_LENGTH = 200;
   var MAX_DESCRIPTION_LENGTH = 1e3;
   var STATUS_TYPES = ["READY_FOR_DEV", "COMPLETED"];
   var SIDES = ["TOP", "RIGHT", "BOTTOM", "LEFT"];
   var HORIZONTAL = ["LEFT", "RIGHT"];
-  var HTTPS_URL = /^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?([/?#][^\s\\]*)?$/i;
   function isHttpsUrl(url) {
-    return typeof url === "string" && url.length <= MAX_URL_LENGTH && HTTPS_URL.test(url);
+    return matchesHttpsUrl(url);
   }
   function sameAxis(startSide, endSide) {
     return HORIZONTAL.includes(startSide) === HORIZONTAL.includes(endSide);
@@ -8413,21 +8437,22 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         continue;
       }
       if (!("devStatus" in node)) {
-        results.push({ nodeId, name: node.name, result: "skipped", reason: `${node.type} has no dev status (sections and frames only)` });
+        results.push({ nodeId, name: capText(node.name), result: "skipped", reason: `${node.type} has no dev status (sections and frames only)` });
         continue;
       }
       const parent = node.parent;
       if (!parent || parent.type !== "PAGE" && parent.type !== "SECTION") {
-        results.push({ nodeId, name: node.name, result: "skipped", reason: `not directly under a page or section (inside ${parent ? `${parent.type} ${parent.id}` : "nothing"})` });
+        results.push({ nodeId, name: capText(node.name), result: "skipped", reason: `not directly under a page or section (inside ${parent ? `${parent.type} ${parent.id}` : "nothing"})` });
         continue;
       }
       try {
         node.devStatus = value;
       } catch (error) {
-        results.push({ nodeId, name: node.name, result: "skipped", reason: error instanceof Error ? error.message : String(error) });
+        results.push({ nodeId, name: capText(node.name), result: "skipped", reason: capText(error instanceof Error ? error.message : String(error)) });
         continue;
       }
-      results.push({ nodeId, name: node.name, result: "set", devStatus: node.devStatus ?? null });
+      const devStatus = node.devStatus ?? null;
+      results.push({ nodeId, name: capText(node.name), result: "set", devStatus: devStatus && devStatus.description !== void 0 ? { ...devStatus, description: capText(devStatus.description) } : devStatus });
     }
     return {
       set: results.filter((r) => r.result === "set").length,
@@ -8437,8 +8462,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   }
   function resourceSummary(resource) {
     return {
-      name: resource.name,
-      url: resource.url,
+      name: capText(resource.name),
+      url: capText(resource.url),
       nodeId: resource.nodeId,
       ...resource.inheritedNodeId ? { inheritedNodeId: resource.inheritedNodeId } : {}
     };
@@ -8449,7 +8474,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const all = await node.getDevResourcesAsync({ includeChildren: params.includeChildren === true });
     return {
       nodeId: node.id,
-      name: node.name,
+      name: capText(node.name),
       count: all.length,
       resources: all.slice(0, MAX_LIST).map(resourceSummary),
       truncated: all.length > MAX_LIST
@@ -8466,12 +8491,20 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
     const node = await requireNode2(params.nodeId);
     if (typeof node.addDevResourceAsync !== "function") throw new Error(`${node.type} ${node.id} cannot hold dev resources`);
-    const own = (await node.getDevResourcesAsync()).filter((r) => r.nodeId === node.id);
-    const existing = own.find((r) => r.url === url);
+    const findOwn = async () => (await node.getDevResourcesAsync()).find(
+      (r) => r.nodeId === node.id && !r.inheritedNodeId && typeof r.url === "string" && sameUrl(r.url, url)
+    );
+    const existing = await findOwn();
     if (existing) return { nodeId: node.id, result: "already present", resource: resourceSummary(existing) };
-    await node.addDevResourceAsync(url, name);
-    const added = (await node.getDevResourcesAsync()).find((r) => r.nodeId === node.id && r.url === url);
-    return { nodeId: node.id, result: "added", resource: added ? resourceSummary(added) : { name: name ?? null, url, nodeId: node.id } };
+    try {
+      await node.addDevResourceAsync(url, name);
+    } catch (error) {
+      const present = await findOwn();
+      if (present) return { nodeId: node.id, result: "already present", resource: resourceSummary(present) };
+      throw error;
+    }
+    const added = await findOwn();
+    return { nodeId: node.id, result: "added", resource: resourceSummary(added ?? { name: name ?? null, url, nodeId: node.id }) };
   }
   function requireDevEditor(command) {
     if (figma.editorType !== "dev") throw new Error(`${command} is only available in Dev Mode (editor: ${figma.editorType})`);
@@ -8486,17 +8519,17 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (node.type === "PAGE" || node.type === "DOCUMENT") throw new Error(`${role} ${nodeId} is a ${node.type}, not a layer`);
     const page = pageOf(node);
     if (!page || page.id !== figma.currentPage.id) {
-      throw new Error(`${role} ${nodeId} is not on the current page (${figma.currentPage.name}); measurements act on the current page only`);
+      throw new Error(`${role} ${nodeId} is not on the current page (${capText(figma.currentPage.name)}); measurements act on the current page only`);
     }
     return node;
   }
   function measurementSummary(m) {
     return {
       id: m.id,
-      start: { nodeId: m.start.node.id, nodeName: m.start.node.name, side: m.start.side },
-      end: { nodeId: m.end.node.id, nodeName: m.end.node.name, side: m.end.side },
+      start: { nodeId: m.start.node.id, nodeName: capText(m.start.node.name), side: m.start.side },
+      end: { nodeId: m.end.node.id, nodeName: capText(m.end.node.name), side: m.end.side },
       offset: m.offset,
-      freeText: m.freeText
+      freeText: capText(m.freeText)
     };
   }
   function validOffset(offset) {
@@ -8524,12 +8557,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     return measurementSummary(measurement);
   }
   async function getMeasurements(params) {
-    requireDevEditor("get_measurements");
     const page = figma.currentPage;
     const all = params && params.nodeId ? page.getMeasurementsForNode(await requireOnCurrentPage(params.nodeId, "nodeId")) : page.getMeasurements();
     return {
       pageId: page.id,
-      pageName: page.name,
+      pageName: capText(page.name),
       count: all.length,
       measurements: all.slice(0, MAX_LIST).map(measurementSummary),
       truncated: all.length > MAX_LIST
