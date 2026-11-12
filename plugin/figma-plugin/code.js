@@ -5653,10 +5653,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       totalNodes: options.totalNodes,
       firstOnTop: options.firstOnTop === void 0 ? true : !!options.firstOnTop,
       commandId: options.commandId,
-      prune: options.prune
+      prune: options.prune,
+      progressLabel: options.progressLabel || "create_node_tree",
+      progressEvery: options.progressEvery && options.progressEvery > 0 ? options.progressEvery : 5
     };
   }
-  async function resolveAndBind(props) {
+  async function resolveAndBind(props, only) {
     const resolved = Object.assign({}, props);
     const bindings = [];
     for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
@@ -5695,115 +5697,132 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
     };
   }
+  var TEXT_FONT_DEPENDENT = [
+    "text",
+    "fontSize",
+    "lineHeight",
+    "letterSpacing",
+    "textCase",
+    "textAlignHorizontal",
+    "width",
+    "textAutoResize",
+    "layoutSizingHorizontal",
+    "layoutSizingVertical"
+  ];
   async function updateNodeProperties(existingNode, spec, only) {
     const changedProps = [];
     const type = existingNode.type.toLowerCase();
-    if (spec.name !== void 0 && existingNode.name !== spec.name) {
+    const consumed = /* @__PURE__ */ new Set();
+    const want = (key) => {
+      return true;
+    };
+    const wantAny = (...keys) => keys.map(want).some(Boolean);
+    if (want() && spec.name !== void 0 && existingNode.name !== spec.name) {
       existingNode.name = spec.name;
       changedProps.push("name");
     }
-    if (spec.x !== void 0 && existingNode.x !== spec.x) {
+    if (want() && spec.x !== void 0 && existingNode.x !== spec.x) {
       existingNode.x = spec.x;
       changedProps.push("x");
     }
-    if (spec.y !== void 0 && existingNode.y !== spec.y) {
+    if (want() && spec.y !== void 0 && existingNode.y !== spec.y) {
       existingNode.y = spec.y;
       changedProps.push("y");
     }
-    if (spec.opacity !== void 0 && existingNode.opacity !== spec.opacity) {
+    if (want() && spec.opacity !== void 0 && existingNode.opacity !== spec.opacity) {
       existingNode.opacity = spec.opacity;
       changedProps.push("opacity");
     }
-    if (spec.effects !== void 0 && "effects" in existingNode) {
+    if ("effects" in existingNode && want() && spec.effects !== void 0) {
       existingNode.effects = buildFigmaEffects(spec.effects);
       changedProps.push("effects");
     }
-    if (spec.strokeAlign !== void 0 && "strokeAlign" in existingNode && existingNode.strokeAlign !== spec.strokeAlign) {
+    if ("strokeAlign" in existingNode && want() && spec.strokeAlign !== void 0 && existingNode.strokeAlign !== spec.strokeAlign) {
       existingNode.strokeAlign = spec.strokeAlign;
       changedProps.push("strokeAlign");
     }
-    if (spec.layoutPositioning !== void 0 && "layoutPositioning" in existingNode && existingNode.layoutPositioning !== spec.layoutPositioning) {
+    if ("layoutPositioning" in existingNode && want() && spec.layoutPositioning !== void 0 && existingNode.layoutPositioning !== spec.layoutPositioning) {
       applyLayoutPositioning(existingNode, spec);
       changedProps.push("layoutPositioning");
     }
     if (type === "frame") {
-      if (spec.width !== void 0 && spec.height !== void 0) {
+      if (wantAny("width", "height") && spec.width !== void 0 && spec.height !== void 0) {
         if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
           existingNode.resize(spec.width, spec.height);
           changedProps.push("size");
         }
       }
-      if (spec.fillColor !== void 0) {
+      if (want() && spec.fillColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fillColor);
         changedProps.push("fillColor");
       }
-      if (spec.strokeColor !== void 0) {
+      if (want() && spec.strokeColor !== void 0) {
         applyColorPaint(existingNode, "strokes", spec.strokeColor);
         changedProps.push("strokeColor");
       }
-      if (spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
         existingNode.strokeWeight = spec.strokeWeight;
         changedProps.push("strokeWeight");
       }
-      if (spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
+      if (want() && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
         existingNode.cornerRadius = spec.cornerRadius;
         changedProps.push("cornerRadius");
       }
-      if (spec.clipsContent !== void 0 && existingNode.clipsContent !== !!spec.clipsContent) {
+      if (want() && spec.clipsContent !== void 0 && existingNode.clipsContent !== !!spec.clipsContent) {
         existingNode.clipsContent = !!spec.clipsContent;
         changedProps.push("clipsContent");
       }
-      if (spec.layoutMode !== void 0 && existingNode.layoutMode !== spec.layoutMode) {
+      if (want() && spec.layoutMode !== void 0 && existingNode.layoutMode !== spec.layoutMode) {
         existingNode.layoutMode = spec.layoutMode;
         changedProps.push("layoutMode");
       }
-      if (spec.layoutWrap !== void 0 && existingNode.layoutWrap !== spec.layoutWrap) {
+      if (want() && spec.layoutWrap !== void 0 && existingNode.layoutWrap !== spec.layoutWrap) {
         existingNode.layoutWrap = spec.layoutWrap;
         changedProps.push("layoutWrap");
       }
-      if (spec.paddingTop !== void 0 && existingNode.paddingTop !== spec.paddingTop) {
+      if (want() && spec.paddingTop !== void 0 && existingNode.paddingTop !== spec.paddingTop) {
         existingNode.paddingTop = spec.paddingTop;
         changedProps.push("paddingTop");
       }
-      if (spec.paddingRight !== void 0 && existingNode.paddingRight !== spec.paddingRight) {
+      if (want() && spec.paddingRight !== void 0 && existingNode.paddingRight !== spec.paddingRight) {
         existingNode.paddingRight = spec.paddingRight;
         changedProps.push("paddingRight");
       }
-      if (spec.paddingBottom !== void 0 && existingNode.paddingBottom !== spec.paddingBottom) {
+      if (want() && spec.paddingBottom !== void 0 && existingNode.paddingBottom !== spec.paddingBottom) {
         existingNode.paddingBottom = spec.paddingBottom;
         changedProps.push("paddingBottom");
       }
-      if (spec.paddingLeft !== void 0 && existingNode.paddingLeft !== spec.paddingLeft) {
+      if (want() && spec.paddingLeft !== void 0 && existingNode.paddingLeft !== spec.paddingLeft) {
         existingNode.paddingLeft = spec.paddingLeft;
         changedProps.push("paddingLeft");
       }
-      if (spec.primaryAxisAlignItems !== void 0 && existingNode.primaryAxisAlignItems !== spec.primaryAxisAlignItems) {
+      if (want() && spec.primaryAxisAlignItems !== void 0 && existingNode.primaryAxisAlignItems !== spec.primaryAxisAlignItems) {
         existingNode.primaryAxisAlignItems = spec.primaryAxisAlignItems;
         changedProps.push("primaryAxisAlignItems");
       }
-      if (spec.counterAxisAlignItems !== void 0 && existingNode.counterAxisAlignItems !== spec.counterAxisAlignItems) {
+      if (want() && spec.counterAxisAlignItems !== void 0 && existingNode.counterAxisAlignItems !== spec.counterAxisAlignItems) {
         existingNode.counterAxisAlignItems = spec.counterAxisAlignItems;
         changedProps.push("counterAxisAlignItems");
       }
-      if (spec.itemSpacing !== void 0 && existingNode.itemSpacing !== spec.itemSpacing) {
+      if (want() && spec.itemSpacing !== void 0 && existingNode.itemSpacing !== spec.itemSpacing) {
         existingNode.itemSpacing = spec.itemSpacing;
         changedProps.push("itemSpacing");
       }
-      if (spec.counterAxisSpacing !== void 0 && existingNode.counterAxisSpacing !== spec.counterAxisSpacing) {
+      if (want() && spec.counterAxisSpacing !== void 0 && existingNode.counterAxisSpacing !== spec.counterAxisSpacing) {
         existingNode.counterAxisSpacing = spec.counterAxisSpacing;
         changedProps.push("counterAxisSpacing");
       }
-      if (spec.itemReverseZIndex !== void 0 && existingNode.itemReverseZIndex !== !!spec.itemReverseZIndex) {
+      if (want() && spec.itemReverseZIndex !== void 0 && existingNode.itemReverseZIndex !== !!spec.itemReverseZIndex) {
         existingNode.itemReverseZIndex = !!spec.itemReverseZIndex;
         changedProps.push("itemReverseZIndex");
       }
-      if (spec.layoutSizingHorizontal !== void 0 && spec.layoutSizingHorizontal !== "FILL") {
+      if (spec.layoutSizingHorizontal !== "FILL" && want() && spec.layoutSizingHorizontal !== void 0) {
         if (existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
           existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
           changedProps.push("layoutSizingHorizontal");
         }
       }
-      if (spec.layoutSizingVertical !== void 0 && spec.layoutSizingVertical !== "FILL") {
+      if (spec.layoutSizingVertical !== "FILL" && want() && spec.layoutSizingVertical !== void 0) {
         if (existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
           existingNode.layoutSizingVertical = spec.layoutSizingVertical;
           changedProps.push("layoutSizingVertical");
@@ -5811,10 +5830,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
     }
     if (type === "text") {
-      {
-        const userFontFamily = spec.fontFamily || "Inter";
-        const userFontStyle = spec.fontStyle || fontWeightToStyle(spec.fontWeight || 400);
+      if (wantAny("fontFamily", "fontStyle", "fontWeight")) {
         const currentFontName = existingNode.fontName;
+        let userFontFamily = spec.fontFamily || "Inter";
+        let userFontStyle = spec.fontStyle || fontWeightToStyle(spec.fontWeight || 400);
         if (!currentFontName || typeof currentFontName === "symbol" || currentFontName.family !== userFontFamily || currentFontName.style !== userFontStyle) {
           try {
             await loadFontCached({ family: userFontFamily, style: userFontStyle });
@@ -5834,89 +5853,91 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           } catch (e) {
           }
         }
+      } else if (TEXT_FONT_DEPENDENT.some((key) => only.has(key))) {
+        await loadAllFonts(existingNode);
       }
-      if (spec.text !== void 0 && existingNode.characters !== spec.text) {
+      if (want() && spec.text !== void 0 && existingNode.characters !== spec.text) {
         await setCharacters(existingNode, spec.text);
         changedProps.push("characters");
       }
-      if (spec.fontSize !== void 0 && existingNode.fontSize !== parseInt(spec.fontSize)) {
+      if (want() && spec.fontSize !== void 0 && existingNode.fontSize !== parseInt(spec.fontSize)) {
         existingNode.fontSize = parseInt(spec.fontSize);
         changedProps.push("fontSize");
       }
-      if (spec.fontColor !== void 0) {
+      if (want() && spec.fontColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fontColor);
         changedProps.push("fontColor");
       }
-      if (spec.textAlignHorizontal !== void 0 && existingNode.textAlignHorizontal !== spec.textAlignHorizontal) {
+      if (want() && spec.textAlignHorizontal !== void 0 && existingNode.textAlignHorizontal !== spec.textAlignHorizontal) {
         existingNode.textAlignHorizontal = spec.textAlignHorizontal;
         changedProps.push("textAlignHorizontal");
       }
-      if (spec.lineHeight !== void 0) {
+      if (want() && spec.lineHeight !== void 0) {
         existingNode.lineHeight = { value: spec.lineHeight, unit: "PIXELS" };
         changedProps.push("lineHeight");
       }
-      if (spec.letterSpacing !== void 0) {
+      if (want() && spec.letterSpacing !== void 0) {
         existingNode.letterSpacing = { value: spec.letterSpacing, unit: "PIXELS" };
         changedProps.push("letterSpacing");
       }
-      if (spec.textCase !== void 0 && existingNode.textCase !== spec.textCase) {
+      if (want() && spec.textCase !== void 0 && existingNode.textCase !== spec.textCase) {
         existingNode.textCase = spec.textCase;
         changedProps.push("textCase");
       }
-      if (spec.width !== void 0) {
+      if (want() && spec.width !== void 0) {
         existingNode.resize(spec.width, existingNode.height);
         existingNode.textAutoResize = "HEIGHT";
         changedProps.push("width");
       }
     }
     if (type === "rectangle") {
-      if (spec.width !== void 0 && spec.height !== void 0) {
+      if (wantAny("width", "height") && spec.width !== void 0 && spec.height !== void 0) {
         if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
           existingNode.resize(spec.width, spec.height);
           changedProps.push("size");
         }
       }
-      if (spec.fillColor !== void 0) {
+      if (want() && spec.fillColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fillColor);
         changedProps.push("fillColor");
       }
-      if (spec.strokeColor !== void 0) {
+      if (want() && spec.strokeColor !== void 0) {
         applyColorPaint(existingNode, "strokes", spec.strokeColor);
         changedProps.push("strokeColor");
       }
-      if (spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
         existingNode.strokeWeight = spec.strokeWeight;
         changedProps.push("strokeWeight");
       }
-      if (spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
+      if (want() && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
         existingNode.cornerRadius = spec.cornerRadius;
         changedProps.push("cornerRadius");
       }
     }
     if (type === "vector") {
-      if (spec.width !== void 0 && spec.height !== void 0) {
+      if (wantAny("width", "height") && spec.width !== void 0 && spec.height !== void 0) {
         if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
           existingNode.resize(spec.width, spec.height);
           changedProps.push("size");
         }
       }
-      if (spec.fillColor !== void 0) {
+      if (want() && spec.fillColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fillColor);
         changedProps.push("fillColor");
       }
-      if (spec.strokeColor !== void 0) {
+      if (want() && spec.strokeColor !== void 0) {
         applyColorPaint(existingNode, "strokes", spec.strokeColor);
         changedProps.push("strokeColor");
       }
-      if (spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
         existingNode.strokeWeight = spec.strokeWeight;
         changedProps.push("strokeWeight");
       }
-      if (spec.pathData !== void 0) {
+      if (want() && spec.pathData !== void 0) {
         existingNode.vectorPaths = [{ windingRule: "NONZERO", data: normalizeSvgPath(spec.pathData) }];
         changedProps.push("pathData");
       }
-      if (spec.strokeCap !== void 0) {
+      if (want() && spec.strokeCap !== void 0) {
         var network = existingNode.vectorNetwork;
         if (network && network.vertices) {
           var updatedVertices = network.vertices.map(function(v) {
@@ -5928,7 +5949,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
     }
     if (type === "instance") {
-      if (spec.componentKey) {
+      if (want() && spec.componentKey) {
         const mainComponent = await existingNode.getMainComponentAsync();
         if (!mainComponent || mainComponent.key !== spec.componentKey) {
           const component = await figma.importComponentByKeyAsync(spec.componentKey);
@@ -5936,15 +5957,15 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push("componentKey");
         }
       }
-      if (spec.properties !== void 0) {
+      if (want() && spec.properties !== void 0) {
         existingNode.setProperties(spec.properties);
         changedProps.push("properties");
       }
-      if (spec.textOverrides !== void 0) {
+      if (want() && spec.textOverrides !== void 0) {
         await applyTextOverrides(existingNode, spec.textOverrides);
         changedProps.push("textOverrides");
       }
-      if (spec.layoutSizingHorizontal !== void 0 && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
+      if (want() && spec.layoutSizingHorizontal !== void 0 && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
         try {
           existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
           changedProps.push("layoutSizingHorizontal");
@@ -5952,7 +5973,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           console.error("Error setting layoutSizingHorizontal during sync:", e);
         }
       }
-      if (spec.layoutSizingVertical !== void 0 && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
+      if (want() && spec.layoutSizingVertical !== void 0 && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
         try {
           existingNode.layoutSizingVertical = spec.layoutSizingVertical;
           changedProps.push("layoutSizingVertical");
@@ -5964,16 +5985,31 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
     for (var ci = 0; ci < cornerProps.length; ci++) {
       var cp = cornerProps[ci];
-      if (spec[cp] !== void 0 && cp in existingNode && existingNode[cp] !== spec[cp]) {
+      if (cp in existingNode && want() && spec[cp] !== void 0 && existingNode[cp] !== spec[cp]) {
         existingNode[cp] = spec[cp];
         changedProps.push(cp);
       }
     }
-    if (spec.fillImage && spec.fillImage.base64 && "fills" in existingNode) {
+    if ("fills" in existingNode && want() && spec.fillImage && spec.fillImage.base64) {
       applyImageFill(existingNode, spec.fillImage);
       changedProps.push("fillImage");
     }
-    return { changed: changedProps.length > 0, changedProps };
+    const unhandled = only ? Array.from(only).filter((key) => !consumed.has(key)) : [];
+    return { changed: changedProps.length > 0, changedProps, unhandled };
+  }
+  function applyDeferredFill(node, spec, only) {
+    const applied = [];
+    if (node.type !== "FRAME" || !node.layoutMode || node.layoutMode === "NONE") return applied;
+    for (const key of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
+      if (spec[key] === "FILL") {
+        try {
+          node[key] = "FILL";
+          applied.push(key);
+        } catch (e) {
+        }
+      }
+    }
+    return applied;
   }
   async function syncNode(spec, existingNode, depth, ctx) {
     depth = depth || 0;
@@ -6064,26 +6100,13 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         }
       }
     }
-    if (type === "frame" && existingNode.layoutMode && existingNode.layoutMode !== "NONE") {
-      if (spec.layoutSizingHorizontal === "FILL") {
-        try {
-          existingNode.layoutSizingHorizontal = "FILL";
-        } catch (e) {
-        }
-      }
-      if (spec.layoutSizingVertical === "FILL") {
-        try {
-          existingNode.layoutSizingVertical = "FILL";
-        } catch (e) {
-        }
-      }
-    }
+    applyDeferredFill(existingNode, spec);
     var processedCount = ctx.counters.updated + ctx.counters.unchanged + ctx.counters.created;
-    if (ctx.commandId && processedCount % 5 === 0) {
+    if (ctx.commandId && processedCount % ctx.progressEvery === 0) {
       var progress = Math.round(processedCount / ctx.totalNodes * 100);
       await sendProgressUpdate(
         ctx.commandId,
-        "create_node_tree",
+        ctx.progressLabel,
         "in_progress",
         progress,
         ctx.totalNodes,
@@ -6093,9 +6116,24 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
   }
   async function createNode(spec, parentNodeId, depth, ctx, options = {}) {
-    const onBindFailure = options.onBindFailure || "remove";
-    const path = options.path || [];
+    if (options.onBindFailure !== void 0 && options.onBindFailure !== "remove" && options.onBindFailure !== "keep") {
+      throw new Error('onBindFailure must be "remove" or "keep", got ' + JSON.stringify(options.onBindFailure));
+    }
+    return createNodeAt(spec, parentNodeId, depth, ctx, options.onBindFailure || "remove", options.path || [], options.path !== void 0);
+  }
+  function reportSkippedChildren(children, path, ctx) {
+    if (!children || !Array.isArray(children)) return;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i] || {};
+      const childPath = path.concat(i);
+      ctx.counters.errors++;
+      ctx.errors.push({ type: child.type, name: child.name || "(unnamed)", path: childPath, error: "skipped: parent failed" });
+      reportSkippedChildren(child.children, childPath, ctx);
+    }
+  }
+  async function createNodeAt(spec, parentNodeId, depth, ctx, onBindFailure, path, reportPaths) {
     const created = [];
+    const withPath = (entry) => reportPaths ? Object.assign(entry, { path }) : entry;
     depth = depth || 0;
     if (depth > ctx.maxDepthSeen) ctx.maxDepthSeen = depth;
     var type = spec.type;
@@ -6132,11 +6170,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
     } catch (err) {
       ctx.counters.errors++;
-      ctx.errors.push({
+      ctx.errors.push(withPath({
         type,
         name: props.name || "(unnamed)",
         error: err.message || String(err)
-      });
+      }));
+      if (onBindFailure === "keep") reportSkippedChildren(children, path, ctx);
       return created;
     }
     if (colors.bindings.length > 0) {
@@ -6145,18 +6184,19 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         if (node) await colors.bind(node);
       } catch (err) {
         ctx.counters.errors++;
-        ctx.errors.push({
+        ctx.errors.push(withPath({
           type,
           name: props.name || "(unnamed)",
           nodeId: result.id,
           error: "Variable binding failed: " + (err.message || String(err))
-        });
+        }));
         const failedNode = await figma.getNodeByIdAsync(result.id);
         if (onBindFailure === "keep") {
           if (failedNode) {
             failedNode.name = failedNode.name + " (failed)";
             created.push({ path, id: result.id, failed: true });
           }
+          reportSkippedChildren(children, path, ctx);
         } else if (failedNode) {
           failedNode.remove();
         }
@@ -6171,11 +6211,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       type,
       parentId: parentNodeId || null
     });
-    if (ctx.commandId && ctx.counters.created % 5 === 0) {
+    if (ctx.commandId && ctx.counters.created % ctx.progressEvery === 0) {
       const progress = Math.round(ctx.counters.created / ctx.totalNodes * 100);
       await sendProgressUpdate(
         ctx.commandId,
-        "create_node_tree",
+        ctx.progressLabel,
         "in_progress",
         progress,
         ctx.totalNodes,
@@ -6185,7 +6225,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
     if (children && Array.isArray(children)) {
       for (let i = 0; i < children.length; i++) {
-        const childCreated = await createNode(children[i], result.id, depth + 1, ctx, { onBindFailure, path: path.concat(i) });
+        const childCreated = await createNodeAt(children[i], result.id, depth + 1, ctx, onBindFailure, path.concat(i), reportPaths);
         for (const entry of childCreated) created.push(entry);
       }
     }

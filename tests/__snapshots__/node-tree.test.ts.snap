@@ -868,3 +868,284 @@ exports[`create_node_tree characterisation: sync mode errors: root type mismatch
   },
 }
 `;
+
+exports[`create_node_tree characterisation: moved paths create: getNodeByIdAsync returning null before bind skips the bind and still counts the node 1`] = `
+{
+  "journal": [
+    "2.x = 0",
+    "2.y = 0",
+    "2.resize(100, 100)",
+    "2.name = "Root"",
+    "1.appendChild(#2)",
+    "3.x = 0",
+    "3.y = 0",
+    "3.resize(100, 100)",
+    "3.name = "Ghost"",
+    "3.fills = [{"type":"SOLID","color":{"r":1,"g":0,"b":0},"opacity":1}]",
+    "2.appendChild(#3)",
+  ],
+  "progress": [],
+  "result": {
+    "createdCount": 2,
+    "errorCount": 0,
+    "errors": undefined,
+    "mode": "create",
+    "nodes": [
+      {
+        "id": "2",
+        "name": "Root",
+        "parentId": null,
+        "type": "frame",
+      },
+      {
+        "id": "3",
+        "name": "Ghost",
+        "parentId": "2",
+        "type": "rectangle",
+      },
+    ],
+    "prunedCount": 0,
+    "stats": {
+      "maxDepth": 1,
+      "nodesByType": {
+        "frame": 1,
+        "rectangle": 1,
+      },
+    },
+    "success": true,
+    "totalNodes": 2,
+    "unchangedCount": 0,
+    "updatedCount": 0,
+  },
+}
+`;
+
+exports[`create_node_tree characterisation: moved paths create and sync: an ambiguous $var: fails inside resolve 1`] = `
+{
+  "journal": [
+    "2.x = 0",
+    "2.y = 0",
+    "2.resize(100, 100)",
+    "2.name = "Root"",
+    "1.appendChild(#2)",
+    "3.x = 0",
+    "3.y = 0",
+    "3.resize(100, 100)",
+    "3.name = "Next"",
+    "2.appendChild(#3)",
+  ],
+  "progress": [],
+  "result": {
+    "createdCount": 2,
+    "errorCount": 1,
+    "errors": [
+      {
+        "error": "Ambiguous local variable: Primary. Use a unique Collection/Name reference.",
+        "name": "Amb",
+        "type": "rectangle",
+      },
+    ],
+    "mode": "create",
+    "nodes": [
+      {
+        "id": "2",
+        "name": "Root",
+        "parentId": null,
+        "type": "frame",
+      },
+      {
+        "id": "3",
+        "name": "Next",
+        "parentId": "2",
+        "type": "rectangle",
+      },
+    ],
+    "prunedCount": 0,
+    "stats": {
+      "maxDepth": 1,
+      "nodesByType": {
+        "frame": 1,
+        "rectangle": 2,
+      },
+    },
+    "success": false,
+    "totalNodes": 3,
+    "unchangedCount": 0,
+    "updatedCount": 0,
+  },
+}
+`;
+
+exports[`create_node_tree characterisation: moved paths create and sync: an ambiguous $var: fails inside resolve 2`] = `
+{
+  "journal": [],
+  "progress": [],
+  "result": {
+    "createdCount": 0,
+    "errorCount": 1,
+    "errors": [
+      {
+        "error": "Ambiguous local variable: Primary. Use a unique Collection/Name reference.",
+        "name": "Box",
+        "type": "rectangle",
+      },
+    ],
+    "mode": "sync",
+    "nodes": [
+      {
+        "id": "2",
+        "name": "Root",
+        "parentId": "1",
+        "type": "frame",
+      },
+    ],
+    "prunedCount": 0,
+    "stats": {
+      "maxDepth": 1,
+      "nodesByType": {
+        "frame": 1,
+        "rectangle": 1,
+      },
+    },
+    "success": false,
+    "totalNodes": 2,
+    "unchangedCount": 1,
+    "updatedCount": 0,
+  },
+}
+`;
+
+exports[`create_node_tree characterisation: moved paths sync: a child whose spec type differs from the live node is created alongside, or fails as an unknown type 1`] = `
+{
+  "journal": [
+    "6.x = 0",
+    "6.y = 0",
+    "6.resize(100, 100)",
+    "6.name = "Title"",
+    "2.appendChild(#6)",
+  ],
+  "progress": [],
+  "result": {
+    "createdCount": 1,
+    "errorCount": 1,
+    "errors": [
+      {
+        "error": "Unknown node type: TEXT",
+        "name": "Box",
+        "type": "TEXT",
+      },
+    ],
+    "mode": "sync",
+    "nodes": [
+      {
+        "id": "2",
+        "name": "Root",
+        "parentId": "1",
+        "type": "frame",
+      },
+      {
+        "id": "6",
+        "name": "Title",
+        "parentId": "2",
+        "type": "rectangle",
+      },
+    ],
+    "prunedCount": 0,
+    "stats": {
+      "maxDepth": 1,
+      "nodesByType": {
+        "TEXT": 1,
+        "frame": 1,
+        "rectangle": 1,
+      },
+    },
+    "success": false,
+    "totalNodes": 3,
+    "unchangedCount": 1,
+    "updatedCount": 0,
+  },
+}
+`;
+
+exports[`create_node_tree characterisation: moved paths sync: a text font that cannot load falls back to Inter 1`] = `
+{
+  "journal": [
+    "3.fontName = {"family":"Inter","style":"Semi Bold"}",
+    "3.characters = "New"",
+  ],
+  "progress": [],
+  "result": {
+    "createdCount": 0,
+    "errorCount": 0,
+    "errors": undefined,
+    "mode": "sync",
+    "nodes": [
+      {
+        "id": "2",
+        "name": "Root",
+        "parentId": "1",
+        "type": "frame",
+      },
+      {
+        "id": "3",
+        "name": "Title",
+        "parentId": "2",
+        "type": "text",
+      },
+    ],
+    "prunedCount": 0,
+    "stats": {
+      "maxDepth": 1,
+      "nodesByType": {
+        "frame": 1,
+        "text": 1,
+      },
+    },
+    "success": true,
+    "totalNodes": 2,
+    "unchangedCount": 1,
+    "updatedCount": 1,
+  },
+}
+`;
+
+exports[`create_node_tree characterisation: moved paths sync: an instance sizing setter that throws is logged and skipped 1`] = `
+{
+  "journal": [
+    "5.layoutSizingVertical = "HUG"",
+  ],
+  "progress": [],
+  "result": {
+    "createdCount": 0,
+    "errorCount": 0,
+    "errors": undefined,
+    "mode": "sync",
+    "nodes": [
+      {
+        "id": "2",
+        "name": "Root",
+        "parentId": "1",
+        "type": "frame",
+      },
+      {
+        "id": "5",
+        "name": "Badge",
+        "parentId": "2",
+        "type": "instance",
+      },
+    ],
+    "prunedCount": 0,
+    "stats": {
+      "maxDepth": 1,
+      "nodesByType": {
+        "frame": 1,
+        "instance": 1,
+      },
+    },
+    "success": true,
+    "totalNodes": 2,
+    "unchangedCount": 1,
+    "updatedCount": 1,
+  },
+}
+`;

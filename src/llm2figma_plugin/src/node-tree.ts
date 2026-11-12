@@ -90,9 +90,15 @@ export interface NodeTreeContext {
   firstOnTop: boolean;
   commandId?: string;
   prune?: boolean;
+  // Command name and interval for the in-progress updates createNode and
+  // syncNode send (defaults "create_node_tree" and every 5 nodes).
+  progressLabel: string;
+  progressEvery: number;
 }
 
-export function createNodeTreeContext(options: { totalNodes: number; firstOnTop?: boolean; commandId?: string; prune?: boolean }): NodeTreeContext {
+export function createNodeTreeContext(options: {
+  totalNodes: number; firstOnTop?: boolean; commandId?: string; prune?: boolean; progressLabel?: string; progressEvery?: number;
+}): NodeTreeContext {
   return {
     counters: { created: 0, updated: 0, unchanged: 0, pruned: 0, errors: 0 },
     errors: [],
@@ -103,6 +109,8 @@ export function createNodeTreeContext(options: { totalNodes: number; firstOnTop?
     firstOnTop: options.firstOnTop === undefined ? true : !!options.firstOnTop,
     commandId: options.commandId,
     prune: options.prune,
+    progressLabel: options.progressLabel || "create_node_tree",
+    progressEvery: options.progressEvery && options.progressEvery > 0 ? options.progressEvery : 5,
   };
 }
 
@@ -129,10 +137,13 @@ export interface ResolvedColors {
 // exists. A $var: whose first-mode value cannot be read is dropped from the
 // copy, so applyColorPaint never sees a "$var:" string. Call bind(node) after
 // the write to create the real variable bindings; it throws on a bad ref.
-export async function resolveAndBind(props: any): Promise<ResolvedColors> {
+// With `only`, a colour key not in the set is left as it is in the copy: it is
+// neither resolved nor bound, so a fill update never rebinds the stroke.
+export async function resolveAndBind(props: any, only?: Set<string>): Promise<ResolvedColors> {
   const resolved: any = Object.assign({}, props);
   const bindings: { colorProp: string; figmaField: string; varRef: string }[] = [];
   for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
+    if (only && !only.has(colorProp)) continue;
     if (resolved[colorProp] != null) {
       const colorValue = resolveColorValue(resolved[colorProp]);
       if (colorValue.varRef) {
@@ -172,18 +183,48 @@ export async function resolveAndBind(props: any): Promise<ResolvedColors> {
 }
 
 // Text properties whose setters need the node's font loaded.
-const TEXT_FONT_DEPENDENT = ["text", "fontSize", "lineHeight", "letterSpacing", "textCase", "textAlignHorizontal", "width"];
+const TEXT_FONT_DEPENDENT = ["text", "fontSize", "lineHeight", "letterSpacing", "textCase", "textAlignHorizontal", "width",
+  "textAutoResize", "layoutSizingHorizontal", "layoutSizingVertical"];
+
+export interface UpdateResult {
+  changed: boolean;
+  changedProps: string[];
+  // Keys of `only` no branch consumed for this node type (always [] without
+  // `only`). FILL sizing on a frame is left here: apply it with applyDeferredFill.
+  unhandled: string[];
+}
 
 // Update an existing node's properties to match the spec (without creating a new node).
 // Colours must already be resolved (see resolveAndBind). With `only`, every
 // branch whose spec key is not in the set is skipped: no setter fires for it,
 // and the text font is left as it is unless fontFamily, fontStyle or fontWeight
-// is named. The size branches run when either width or height is named, and
-// still need both in the spec.
-export async function updateNodeProperties(existingNode: any, spec: any, only?: Set<string>) {
+// is named; a named font part missing from `only` is taken from the node's
+// live fontName. The size branches run when either width or height is named,
+// and still need both in the spec. textAutoResize, and layoutSizing* on text,
+// rectangle and vector nodes, are written only when named in `only`.
+export async function updateNodeProperties(existingNode: any, spec: any, only?: Set<string>): Promise<UpdateResult> {
   const changedProps: string[] = [];
   const type = existingNode.type.toLowerCase();
-  const want = (key: string) => !only || only.has(key);
+  const consumed = new Set<string>();
+  const want = (key: string) => {
+    if (!only) return true;
+    if (!only.has(key)) return false;
+    consumed.add(key);
+    return true;
+  };
+  // Every key is checked (no short-circuit), so each named one is consumed.
+  const wantAny = (...keys: string[]) => keys.map(want).some(Boolean);
+  // layoutSizing* on a node with no children: nothing to defer, so set it now
+  const setSizing = (key: string) => {
+    if (only && want(key) && spec[key] !== undefined && existingNode[key] !== spec[key]) {
+      try {
+        existingNode[key] = spec[key];
+        changedProps.push(key);
+      } catch (e) {
+        console.error("Error setting " + key + " during update:", e);
+      }
+    }
+  };
 
   // --- Common properties for all node types ---
   if (want("name") && spec.name !== undefined && existingNode.name !== spec.name) {
@@ -202,15 +243,15 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
     existingNode.opacity = spec.opacity;
     changedProps.push("opacity");
   }
-  if (want("effects") && spec.effects !== undefined && "effects" in existingNode) {
+  if ("effects" in existingNode && want("effects") && spec.effects !== undefined) {
     existingNode.effects = buildFigmaEffects(spec.effects);
     changedProps.push("effects");
   }
-  if (want("strokeAlign") && spec.strokeAlign !== undefined && "strokeAlign" in existingNode && existingNode.strokeAlign !== spec.strokeAlign) {
+  if ("strokeAlign" in existingNode && want("strokeAlign") && spec.strokeAlign !== undefined && existingNode.strokeAlign !== spec.strokeAlign) {
     existingNode.strokeAlign = spec.strokeAlign;
     changedProps.push("strokeAlign");
   }
-  if (want("layoutPositioning") && spec.layoutPositioning !== undefined && "layoutPositioning" in existingNode && existingNode.layoutPositioning !== spec.layoutPositioning) {
+  if ("layoutPositioning" in existingNode && want("layoutPositioning") && spec.layoutPositioning !== undefined && existingNode.layoutPositioning !== spec.layoutPositioning) {
     // ABSOLUTE restores spec x/y; with `only`, only the named ones
     applyLayoutPositioning(existingNode, only ? { layoutPositioning: spec.layoutPositioning, x: want("x") ? spec.x : undefined, y: want("y") ? spec.y : undefined } : spec);
     changedProps.push("layoutPositioning");
@@ -218,7 +259,7 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
 
   // --- Frame properties ---
   if (type === "frame") {
-    if ((want("width") || want("height")) && spec.width !== undefined && spec.height !== undefined) {
+    if (wantAny("width", "height") && spec.width !== undefined && spec.height !== undefined) {
       if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
         existingNode.resize(spec.width, spec.height);
         changedProps.push("size");
@@ -288,14 +329,14 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
       existingNode.itemReverseZIndex = !!spec.itemReverseZIndex;
       changedProps.push("itemReverseZIndex");
     }
-    // Defer FILL sizing — applied after children reconciliation (syncNode)
-    if (want("layoutSizingHorizontal") && spec.layoutSizingHorizontal !== undefined && spec.layoutSizingHorizontal !== "FILL") {
+    // Defer FILL sizing — applied after children reconciliation (applyDeferredFill)
+    if (spec.layoutSizingHorizontal !== "FILL" && want("layoutSizingHorizontal") && spec.layoutSizingHorizontal !== undefined) {
       if (existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
         existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
         changedProps.push("layoutSizingHorizontal");
       }
     }
-    if (want("layoutSizingVertical") && spec.layoutSizingVertical !== undefined && spec.layoutSizingVertical !== "FILL") {
+    if (spec.layoutSizingVertical !== "FILL" && want("layoutSizingVertical") && spec.layoutSizingVertical !== undefined) {
       if (existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
         existingNode.layoutSizingVertical = spec.layoutSizingVertical;
         changedProps.push("layoutSizingVertical");
@@ -305,10 +346,17 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
 
   // --- Text properties ---
   if (type === "text") {
-    if (want("fontFamily") || want("fontStyle") || want("fontWeight")) {
-      const userFontFamily = spec.fontFamily || "Inter";
-      const userFontStyle = spec.fontStyle || fontWeightToStyle(spec.fontWeight || 400);
+    if (wantAny("fontFamily", "fontStyle", "fontWeight")) {
       const currentFontName = existingNode.fontName;
+      let userFontFamily = spec.fontFamily || "Inter";
+      let userFontStyle = spec.fontStyle || fontWeightToStyle(spec.fontWeight || 400);
+      if (only && currentFontName && typeof currentFontName !== "symbol") {
+        // Change only the named part(s); the rest comes from the live font
+        userFontFamily = only.has("fontFamily") && spec.fontFamily ? spec.fontFamily : currentFontName.family;
+        userFontStyle = only.has("fontStyle") && spec.fontStyle ? spec.fontStyle
+          : only.has("fontWeight") && spec.fontWeight ? fontWeightToStyle(spec.fontWeight)
+          : currentFontName.style;
+      }
 
       // Load and set font if changed
       if (!currentFontName || typeof currentFontName === "symbol" ||
@@ -368,11 +416,17 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
       existingNode.textAutoResize = "HEIGHT";
       changedProps.push("width");
     }
+    setSizing("layoutSizingHorizontal");
+    setSizing("layoutSizingVertical");
+    if (only && want("textAutoResize") && spec.textAutoResize !== undefined && existingNode.textAutoResize !== spec.textAutoResize) {
+      existingNode.textAutoResize = spec.textAutoResize;
+      changedProps.push("textAutoResize");
+    }
   }
 
   // --- Rectangle properties ---
   if (type === "rectangle") {
-    if ((want("width") || want("height")) && spec.width !== undefined && spec.height !== undefined) {
+    if (wantAny("width", "height") && spec.width !== undefined && spec.height !== undefined) {
       if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
         existingNode.resize(spec.width, spec.height);
         changedProps.push("size");
@@ -394,11 +448,13 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
       existingNode.cornerRadius = spec.cornerRadius;
       changedProps.push("cornerRadius");
     }
+    setSizing("layoutSizingHorizontal");
+    setSizing("layoutSizingVertical");
   }
 
   // --- Vector properties ---
   if (type === "vector") {
-    if ((want("width") || want("height")) && spec.width !== undefined && spec.height !== undefined) {
+    if (wantAny("width", "height") && spec.width !== undefined && spec.height !== undefined) {
       if (existingNode.width !== spec.width || existingNode.height !== spec.height) {
         existingNode.resize(spec.width, spec.height);
         changedProps.push("size");
@@ -430,6 +486,8 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
         changedProps.push("strokeCap");
       }
     }
+    setSizing("layoutSizingHorizontal");
+    setSizing("layoutSizingVertical");
   }
 
   // --- Instance properties ---
@@ -471,16 +529,34 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
   var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
   for (var ci = 0; ci < cornerProps.length; ci++) {
     var cp = cornerProps[ci];
-    if (want(cp) && spec[cp] !== undefined && cp in existingNode && existingNode[cp] !== spec[cp]) {
+    if (cp in existingNode && want(cp) && spec[cp] !== undefined && existingNode[cp] !== spec[cp]) {
       existingNode[cp] = spec[cp];
       changedProps.push(cp);
     }
   }
-  if (want("fillImage") && spec.fillImage && spec.fillImage.base64 && "fills" in existingNode) {
+  if ("fills" in existingNode && want("fillImage") && spec.fillImage && spec.fillImage.base64) {
     applyImageFill(existingNode, spec.fillImage);
     changedProps.push("fillImage");
   }
-  return { changed: changedProps.length > 0, changedProps };
+  const unhandled = only ? Array.from(only).filter(key => !consumed.has(key)) : [];
+  return { changed: changedProps.length > 0, changedProps, unhandled };
+}
+
+// FILL sizing on an auto-layout frame, set after its children exist (syncNode
+// runs it after reconciling children). With `only`, an axis not named is
+// skipped. A setter that throws is ignored, as before. Returns the axes set.
+export function applyDeferredFill(node: any, spec: any, only?: Set<string>): string[] {
+  const applied: string[] = [];
+  if (node.type !== "FRAME" || !node.layoutMode || node.layoutMode === "NONE") return applied;
+  for (const key of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
+    if ((!only || only.has(key)) && spec[key] === "FILL") {
+      try {
+        node[key] = "FILL";
+        applied.push(key);
+      } catch (e) { /* ignore */ }
+    }
+  }
+  return applied;
 }
 
 // Recursive sync: reconcile spec against existing node tree
@@ -598,22 +674,15 @@ export async function syncNode(spec: any, existingNode: any, depth: number, ctx:
   }
 
   // Apply deferred FILL sizing after children reconciliation
-  if (type === "frame" && existingNode.layoutMode && existingNode.layoutMode !== "NONE") {
-    if (spec.layoutSizingHorizontal === "FILL") {
-      try { existingNode.layoutSizingHorizontal = "FILL"; } catch (e) { /* ignore */ }
-    }
-    if (spec.layoutSizingVertical === "FILL") {
-      try { existingNode.layoutSizingVertical = "FILL"; } catch (e) { /* ignore */ }
-    }
-  }
+  applyDeferredFill(existingNode, spec);
 
-  // Send progress every 5 nodes
+  // Send progress every ctx.progressEvery nodes
   var processedCount = ctx.counters.updated + ctx.counters.unchanged + ctx.counters.created;
-  if (ctx.commandId && processedCount % 5 === 0) {
+  if (ctx.commandId && processedCount % ctx.progressEvery === 0) {
     var progress = Math.round((processedCount / ctx.totalNodes) * 100);
     await sendProgressUpdate(
       ctx.commandId,
-      "create_node_tree",
+      ctx.progressLabel,
       "in_progress",
       progress,
       ctx.totalNodes,
@@ -625,7 +694,11 @@ export async function syncNode(spec: any, existingNode: any, depth: number, ctx:
 
 // Create `spec` and its children under `parentNodeId`. Returns every node it
 // created with the index path of its spec node, so ids map back to the spec even
-// when an earlier sibling failed.
+// when an earlier sibling failed. When `path` is passed, every ctx.errors entry
+// this call (and its recursion) adds carries the spec node's `path`, and with
+// onBindFailure "keep" each child skipped under a failed node is reported as
+// {path, error: "skipped: parent failed"}. Without `path` the error entries are
+// exactly create_node_tree's.
 export async function createNode(
   spec: any,
   parentNodeId: any,
@@ -633,9 +706,35 @@ export async function createNode(
   ctx: NodeTreeContext,
   options: { onBindFailure?: BindFailure; path?: number[] } = {}
 ): Promise<CreatedNode[]> {
-  const onBindFailure = options.onBindFailure || "remove";
-  const path = options.path || [];
+  if (options.onBindFailure !== undefined && options.onBindFailure !== "remove" && options.onBindFailure !== "keep") {
+    throw new Error('onBindFailure must be "remove" or "keep", got ' + JSON.stringify(options.onBindFailure));
+  }
+  return createNodeAt(spec, parentNodeId, depth, ctx, options.onBindFailure || "remove", options.path || [], options.path !== undefined);
+}
+
+// Report every descendant of a failed node as skipped (keep mode only).
+function reportSkippedChildren(children: any, path: number[], ctx: NodeTreeContext) {
+  if (!children || !Array.isArray(children)) return;
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i] || {};
+    const childPath = path.concat(i);
+    ctx.counters.errors++;
+    ctx.errors.push({ type: child.type, name: child.name || "(unnamed)", path: childPath, error: "skipped: parent failed" });
+    reportSkippedChildren(child.children, childPath, ctx);
+  }
+}
+
+async function createNodeAt(
+  spec: any,
+  parentNodeId: any,
+  depth: number,
+  ctx: NodeTreeContext,
+  onBindFailure: BindFailure,
+  path: number[],
+  reportPaths: boolean
+): Promise<CreatedNode[]> {
   const created: CreatedNode[] = [];
+  const withPath = (entry: any) => reportPaths ? Object.assign(entry, { path }) : entry;
   depth = depth || 0;
   if (depth > ctx.maxDepthSeen) ctx.maxDepthSeen = depth;
   var type = spec.type;
@@ -678,12 +777,13 @@ export async function createNode(
     }
   } catch (err: any) {
     ctx.counters.errors++;
-    ctx.errors.push({
+    ctx.errors.push(withPath({
       type,
       name: props.name || "(unnamed)",
       error: err.message || String(err),
-    });
+    }));
     // If a frame fails, skip its children
+    if (onBindFailure === "keep") reportSkippedChildren(children, path, ctx);
     return created;
   }
 
@@ -697,18 +797,19 @@ export async function createNode(
       if (node) await colors.bind(node);
     } catch (err: any) {
       ctx.counters.errors++;
-      ctx.errors.push({
+      ctx.errors.push(withPath({
         type,
         name: props.name || "(unnamed)",
         nodeId: result.id,
         error: "Variable binding failed: " + (err.message || String(err)),
-      });
+      }));
       const failedNode: any = await figma.getNodeByIdAsync(result.id);
       if (onBindFailure === "keep") {
         if (failedNode) {
           failedNode.name = failedNode.name + " (failed)";
           created.push({ path, id: result.id, failed: true });
         }
+        reportSkippedChildren(children, path, ctx);
       } else if (failedNode) {
         failedNode.remove();
       }
@@ -725,12 +826,12 @@ export async function createNode(
     parentId: parentNodeId || null,
   });
 
-  // Send progress every 5 nodes
-  if (ctx.commandId && ctx.counters.created % 5 === 0) {
+  // Send progress every ctx.progressEvery nodes
+  if (ctx.commandId && ctx.counters.created % ctx.progressEvery === 0) {
     const progress = Math.round((ctx.counters.created / ctx.totalNodes) * 100);
     await sendProgressUpdate(
       ctx.commandId,
-      "create_node_tree",
+      ctx.progressLabel,
       "in_progress",
       progress,
       ctx.totalNodes,
@@ -742,7 +843,7 @@ export async function createNode(
   // Recurse into children (only frames should have them)
   if (children && Array.isArray(children)) {
     for (let i = 0; i < children.length; i++) {
-      const childCreated = await createNode(children[i], result.id, depth + 1, ctx, { onBindFailure, path: path.concat(i) });
+      const childCreated = await createNodeAt(children[i], result.id, depth + 1, ctx, onBindFailure, path.concat(i), reportPaths);
       for (const entry of childCreated) created.push(entry);
     }
   }

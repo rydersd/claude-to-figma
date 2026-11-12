@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { createNode, createNodeTree, createNodeTreeContext, resolveAndBind, updateNodeProperties } from "../src/llm2figma_plugin/src/node-tree";
+import { applyDeferredFill, createNode, createNodeTree, createNodeTreeContext, resolveAndBind, updateNodeProperties } from "../src/llm2figma_plugin/src/node-tree";
 
 // Characterisation tests for create_node_tree on a recording figma mock. Every
 // property write and mutating method call on a node is journaled, so a refactor
@@ -38,6 +38,8 @@ function makeNode(type: string, extra: any = {}): any {
   };
   const proxy: any = new Proxy(target, {
     set(t, prop, value) {
+      // `throwsOn: {prop: message}` makes that setter throw without writing
+      if (t.throwsOn && t.throwsOn[prop]) throw new Error(t.throwsOn[prop]);
       if (prop !== "parent") journal.push(`${t.id}.${String(prop)} = ${fmt(value)}`);
       t[prop] = value;
       return true;
@@ -419,5 +421,262 @@ describe("createNode options", () => {
     expect(c.nodes).toEqual([]);
     expect(journal.some(line => line.endsWith(".remove()"))).toBe(false);
     expect(nodes.get(created[0].id).children).toEqual([]);
+  });
+});
+
+// --- Review fixes (PR 11a) ---
+
+const byName = (name: string) => Array.from(nodes.values()).find(n => n.name === name);
+
+describe("resolveAndBind with `only`", () => {
+  test("a fill update leaves a $var: stroke unresolved, unbound and unwritten", async () => {
+    const bound = { type: "SOLID", color: { r: 1, g: 0, b: 0 }, boundVariables: { color: { type: "VARIABLE_ALIAS", id: "color" } } };
+    const node = makeNode("FRAME", { strokes: [bound] });
+    journal = [];
+    // "$var:Primary" is ambiguous, so getVariableByName throws if it is ever called for the stroke
+    const spec = { fillColor: "#00ff00", strokeColor: "$var:Primary" };
+    const only = new Set(["fillColor"]);
+    const colors = await resolveAndBind(spec, only);
+    expect(colors.bindings).toEqual([]);
+    expect(colors.resolved).toEqual({ fillColor: { r: 0, g: 1, b: 0, a: 1 }, strokeColor: "$var:Primary" });
+    await updateNodeProperties(node, colors.resolved, only);
+    await colors.bind(node);
+    expect(writes(node)).toEqual(["fills"]);
+    expect(node.strokes).toEqual([bound]);
+  });
+
+  test("a named $var: colour is still resolved and bound", async () => {
+    const colors = await resolveAndBind({ fillColor: "#00ff00", strokeColor: "$var:Colors/Primary" }, new Set(["strokeColor"]));
+    expect(colors.resolved).toEqual({ fillColor: "#00ff00", strokeColor: { r: 1, g: 0, b: 0 } });
+    expect(colors.bindings).toEqual([{ colorProp: "strokeColor", figmaField: "strokes", varRef: "Colors/Primary" }]);
+  });
+});
+
+describe("updateNodeProperties: unhandled keys, deferred FILL, sizing branches", () => {
+  test("FILL on a frame is reported unhandled and written by applyDeferredFill", async () => {
+    const node = makeNode("FRAME", { layoutMode: "VERTICAL" });
+    journal = [];
+    const spec = { layoutSizingHorizontal: "FILL", layoutSizingVertical: "FILL" };
+    const only = new Set(["layoutSizingHorizontal"]);
+    const result = await updateNodeProperties(node, spec, only);
+    expect(result).toEqual({ changed: false, changedProps: [], unhandled: ["layoutSizingHorizontal"] });
+    expect(journal).toEqual([]);
+    expect(applyDeferredFill(node, spec, only)).toEqual(["layoutSizingHorizontal"]);
+    expect(journal).toEqual([`${node.id}.layoutSizingHorizontal = "FILL"`]);
+  });
+
+  test("applyDeferredFill without `only` sets both axes; skips non-auto-layout frames and other types; ignores a throwing setter", async () => {
+    const spec = { layoutSizingHorizontal: "FILL", layoutSizingVertical: "FILL" };
+    const frame = makeNode("FRAME", { layoutMode: "HORIZONTAL" });
+    expect(applyDeferredFill(frame, spec)).toEqual(["layoutSizingHorizontal", "layoutSizingVertical"]);
+    expect(applyDeferredFill(makeNode("FRAME"), spec)).toEqual([]);
+    expect(applyDeferredFill(makeNode("RECTANGLE", { layoutMode: "VERTICAL" }), spec)).toEqual([]);
+    const throwing = makeNode("FRAME", { layoutMode: "VERTICAL", throwsOn: { layoutSizingHorizontal: "no auto-layout parent" } });
+    expect(applyDeferredFill(throwing, spec)).toEqual(["layoutSizingVertical"]);
+  });
+
+  test("keys with no branch for the node type are returned; without `only` unhandled is empty", async () => {
+    const rect = makeNode("RECTANGLE");
+    const result = await updateNodeProperties(rect, { text: "x", fillColor: { r: 0, g: 0, b: 1 } }, new Set(["text", "fillColor", "componentKey"]));
+    expect(result.changedProps).toEqual(["fillColor"]);
+    expect(result.unhandled).toEqual(["text", "componentKey"]);
+    expect((await updateNodeProperties(makeNode("RECTANGLE"), { text: "x" })).unhandled).toEqual([]);
+    // width and height both count as consumed by the one size branch
+    expect((await updateNodeProperties(makeNode("FRAME"), { width: 5, height: 5 }, new Set(["width", "height"]))).unhandled).toEqual([]);
+  });
+
+  test("text: textAutoResize and layoutSizing* are written when named", async () => {
+    const node = makeNode("TEXT", { fontName: { family: "Inter", style: "Regular" }, characters: "a", textAutoResize: "NONE" });
+    journal = [];
+    const result = await updateNodeProperties(node, { textAutoResize: "WIDTH_AND_HEIGHT", layoutSizingHorizontal: "FILL", layoutSizingVertical: "HUG" },
+      new Set(["textAutoResize", "layoutSizingHorizontal", "layoutSizingVertical"]));
+    expect(writes(node)).toEqual(["layoutSizingHorizontal", "layoutSizingVertical", "textAutoResize"]);
+    expect(result.unhandled).toEqual([]);
+  });
+
+  for (const type of ["RECTANGLE", "VECTOR"]) {
+    test(`${type.toLowerCase()}: layoutSizing* written when named; a throwing setter is skipped, not reported changed`, async () => {
+      const node = makeNode(type, { throwsOn: { layoutSizingVertical: "parent has no auto-layout" } });
+      journal = [];
+      const result = await updateNodeProperties(node, { layoutSizingHorizontal: "FILL", layoutSizingVertical: "FILL" },
+        new Set(["layoutSizingHorizontal", "layoutSizingVertical"]));
+      expect(writes(node)).toEqual(["layoutSizingHorizontal"]);
+      expect(result.changedProps).toEqual(["layoutSizingHorizontal"]);
+      expect(result.unhandled).toEqual([]);
+    });
+  }
+
+  test("without `only`, textAutoResize and layoutSizing* on text, rectangle and vector are not written (today's behaviour)", async () => {
+    const spec = { textAutoResize: "WIDTH_AND_HEIGHT", layoutSizingHorizontal: "FILL", layoutSizingVertical: "HUG" };
+    const text = makeNode("TEXT", { fontName: { family: "Inter", style: "Regular" }, characters: "a", textAutoResize: "NONE" });
+    const rect = makeNode("RECTANGLE");
+    const vector = makeNode("VECTOR");
+    journal = [];
+    for (const node of [text, rect, vector]) {
+      expect((await updateNodeProperties(node, spec)).changed).toBe(false);
+    }
+    expect(journal).toEqual([]);
+  });
+});
+
+describe("updateNodeProperties: text font with `only`", () => {
+  const roboto = () => makeNode("TEXT", { fontName: { family: "Roboto", style: "Bold" }, characters: "a" });
+
+  test("only fontFamily keeps the live style", async () => {
+    const node = roboto();
+    journal = [];
+    await updateNodeProperties(node, { fontFamily: "Inter" }, new Set(["fontFamily"]));
+    expect(node.fontName).toEqual({ family: "Inter", style: "Bold" });
+    expect(writes(node)).toEqual(["fontName"]);
+  });
+
+  test("only fontWeight keeps the live family; only fontStyle likewise", async () => {
+    const a = roboto();
+    await updateNodeProperties(a, { fontFamily: "Inter", fontWeight: 400 }, new Set(["fontWeight"]));
+    expect(a.fontName).toEqual({ family: "Roboto", style: "Regular" });
+    const b = roboto();
+    await updateNodeProperties(b, { fontStyle: "Medium" }, new Set(["fontStyle"]));
+    expect(b.fontName).toEqual({ family: "Roboto", style: "Medium" });
+  });
+
+  test("a named part equal to the live font writes nothing", async () => {
+    const node = roboto();
+    journal = [];
+    await updateNodeProperties(node, { fontFamily: "Roboto" }, new Set(["fontFamily"]));
+    expect(journal).toEqual([]);
+  });
+
+  test("without `only`, a missing style still defaults to Regular (today's sync)", async () => {
+    const node = roboto();
+    await updateNodeProperties(node, { fontFamily: "Inter" });
+    expect(node.fontName).toEqual({ family: "Inter", style: "Regular" });
+  });
+});
+
+describe("createNode: error paths, skipped children, onBindFailure validation", () => {
+  const ctx = () => createNodeTreeContext({ totalNodes: 10 });
+
+  test("with `path`, every error entry carries the spec node's path", async () => {
+    const c = ctx();
+    await createNode({
+      type: "frame", name: "Root",
+      children: [{ type: "ellipse", name: "Bad" }, { type: "frame", name: "F", children: [{ type: "rectangle", name: "V", fillColor: "$var:Missing" }] }],
+    }, null, 0, c, { path: [] });
+    expect(c.errors.map(e => [e.name, e.path])).toEqual([["Bad", [0]], ["V", [1, 0]]]);
+  });
+
+  test("without `path`, error entries have no path key (create_node_tree's shape)", async () => {
+    const c = ctx();
+    await createNode({ type: "frame", name: "Root", children: [{ type: "ellipse", name: "Bad" }] }, null, 0, c);
+    expect(c.errors).toEqual([{ type: "ellipse", name: "Bad", error: "Unknown node type: ellipse" }]);
+  });
+
+  test('"keep": a failed bind reports every skipped descendant with its path', async () => {
+    const c = ctx();
+    const created = await createNode({
+      type: "frame", name: "P", fillColor: "$var:Missing",
+      children: [{ type: "text", text: "x" }, { type: "frame", name: "Inner", children: [{ type: "rectangle", name: "R" }] }],
+    }, null, 0, c, { onBindFailure: "keep", path: [1] });
+    expect(created).toEqual([{ path: [1], id: c.errors[0].nodeId, failed: true }]);
+    expect(c.errors.map(e => [e.path, e.error.startsWith("Variable binding failed") ? "bind" : e.error])).toEqual([
+      [[1], "bind"], [[1, 0], "skipped: parent failed"], [[1, 1], "skipped: parent failed"], [[1, 1, 0], "skipped: parent failed"],
+    ]);
+    expect(c.errors[3]).toEqual({ type: "rectangle", name: "R", path: [1, 1, 0], error: "skipped: parent failed" });
+    expect(c.counters.errors).toBe(4);
+  });
+
+  test('"keep": a failed create also reports its skipped children', async () => {
+    const c = ctx();
+    const created = await createNode({ type: "frame", name: "Orphan", children: [{ type: "text", text: "x" }] }, "missing", 0, c, { onBindFailure: "keep", path: [0] });
+    expect(created).toEqual([]);
+    expect(c.errors.map(e => e.path)).toEqual([[0], [0, 0]]);
+    expect(c.errors[1].error).toBe("skipped: parent failed");
+  });
+
+  test('"remove" (default) does not report skipped children', async () => {
+    const c = ctx();
+    await createNode({ type: "frame", name: "P", fillColor: "$var:Missing", children: [{ type: "text", text: "x" }] }, null, 0, c, { path: [] });
+    expect(c.errors.length).toBe(1);
+  });
+
+  test("an unknown onBindFailure throws before anything is created", async () => {
+    const c = ctx();
+    const before = nodes.size;
+    await expect(createNode({ type: "rectangle" }, null, 0, c, { onBindFailure: "delete" as any })).rejects.toThrow('onBindFailure must be "remove" or "keep"');
+    expect(nodes.size).toBe(before);
+    expect(journal).toEqual([]);
+  });
+});
+
+describe("progress label and interval on the context", () => {
+  test("defaults are create_node_tree and every 5 nodes", () => {
+    const c = createNodeTreeContext({ totalNodes: 1 });
+    expect([c.progressLabel, c.progressEvery]).toEqual(["create_node_tree", 5]);
+  });
+
+  test("a caller can report under its own label at its own interval", async () => {
+    const c = createNodeTreeContext({ totalNodes: 4, commandId: "cmd-p", progressLabel: "apply_spec_ops", progressEvery: 2 });
+    await createNode({ type: "frame", name: "R", children: [{ type: "rectangle" }, { type: "rectangle" }, { type: "rectangle" }] }, null, 0, c);
+    expect(progress.map(p => [p.commandType, p.processedItems])).toEqual([["apply_spec_ops", 2], ["apply_spec_ops", 4]]);
+  });
+});
+
+// Characterisation of paths the refactor moved that had no coverage, recorded
+// against today's behaviour through create_node_tree.
+describe("create_node_tree characterisation: moved paths", () => {
+  async function seed() {
+    await createNodeTree({
+      tree: {
+        type: "frame", name: "Root", layoutMode: "VERTICAL",
+        children: [
+          { type: "text", name: "Title", text: "Old", fontSize: 14 },
+          { type: "rectangle", name: "Box", width: 10, height: 10 },
+          { type: "instance", name: "Badge", componentKey: "old" },
+        ],
+      },
+    });
+    journal = [];
+    progress = [];
+    return byName("Root");
+  }
+
+  test("sync: an instance sizing setter that throws is logged and skipped", async () => {
+    const root = await seed();
+    byName("Badge").throwsOn = { layoutSizingHorizontal: "parent is not auto-layout" };
+    journal = [];
+    const tree = { type: "frame", name: "Root", children: [{ type: "instance", name: "Badge", layoutSizingHorizontal: "FILL", layoutSizingVertical: "HUG" }] };
+    expect(await run({ rootId: root.id, tree })).toMatchSnapshot();
+  });
+
+  test("create: getNodeByIdAsync returning null before bind skips the bind and still counts the node", async () => {
+    const figmaMock = (globalThis as any).figma;
+    const original = figmaMock.getNodeByIdAsync;
+    figmaMock.getNodeByIdAsync = async (id: string) => {
+      const node = nodes.get(id);
+      return node && node.name === "Ghost" ? null : node || null;
+    };
+    try {
+      expect(await run({ tree: { type: "frame", name: "Root", children: [{ type: "rectangle", name: "Ghost", fillColor: "$var:Colors/Primary" }] } })).toMatchSnapshot();
+    } finally {
+      figmaMock.getNodeByIdAsync = original;
+    }
+  });
+
+  test("create and sync: an ambiguous $var: fails inside resolve", async () => {
+    expect(await run({ tree: { type: "frame", name: "Root", children: [{ type: "rectangle", name: "Amb", fillColor: "$var:Primary" }, { type: "rectangle", name: "Next" }] } })).toMatchSnapshot();
+    const root = await seed();
+    expect(await run({ rootId: root.id, tree: { type: "frame", name: "Root", children: [{ type: "rectangle", name: "Box", fillColor: "$var:Primary" }] } })).toMatchSnapshot();
+  });
+
+  test("sync: a child whose spec type differs from the live node is created alongside, or fails as an unknown type", async () => {
+    const root = await seed();
+    const tree = { type: "frame", name: "Root", children: [{ type: "rectangle", name: "Title" }, { type: "TEXT", name: "Box", text: "x" }] };
+    expect(await run({ rootId: root.id, tree })).toMatchSnapshot();
+  });
+
+  test("sync: a text font that cannot load falls back to Inter", async () => {
+    const root = await seed();
+    const tree = { type: "frame", name: "Root", children: [{ type: "text", name: "Title", text: "New", fontFamily: "Missing", fontWeight: 600 }] };
+    expect(await run({ rootId: root.id, tree })).toMatchSnapshot();
   });
 });
