@@ -31,6 +31,7 @@ import { registerTools as registerPageCompilerTools } from "./tools/page-compile
 import { registerTools as registerImageTools } from "./tools/images.js";
 import { registerTools as registerLibraryTools } from "./tools/library.js";
 import { registerTools as registerEventTools } from "./tools/events.js";
+import { registerReadTools as registerCommentReadTools, registerWriteTools as registerCommentWriteTools } from "./tools/comments.js";
 import { registerWhenEnabled, type Feature } from "../shared/flags.js";
 import { registerPrompts } from "./tools/prompts.js";
 import { installFigmaPluginFiles, isPluginInstall } from "./plugin-runtime.js";
@@ -75,6 +76,8 @@ registerPageCompilerTools(server, sendCommandToFigma);
 registerImageTools(server, sendCommandToFigma);
 registerLibraryTools(server, sendCommandToFigma);
 registerEventTools(server, sendCommandToFigma);
+registerFeature("COMMENTS", registerCommentReadTools);
+registerFeature("COMMENTS_WRITE", registerCommentWriteTools);
 registerReferenceCacheTools(server);
 registerSetupTools(server);
 
