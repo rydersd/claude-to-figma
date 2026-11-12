@@ -1,10 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
-  SCAN_LIMITS, manifestDependencies, openCodeRepo, readManifest, resolveManifest, scanPackage,
+  SCAN_LIMITS, clip, manifestDependencies, openCodeRepo, readManifest, resolveManifest, scanPackage, type CodeComponent,
 } from "../code-repo.js";
 import {
-  installedVersion, makeValidationContext, mergeCodeMap, tokenError, updateCodeMap, validateEntry,
+  installedVersion, isFigmaKey, makeValidationContext, mergeCodeMap, tokenError, updateCodeMap, validateEntry,
   type CodeMapEntry,
 } from "../code-map.js";
 
@@ -19,6 +19,9 @@ function asToolError(error: unknown) {
 
 const cap = <T>(list: T[]) => list.slice(0, SCAN_LIMITS.rows);
 
+/** Bytes of component rows one scan result may carry; the rest is cut with truncated. */
+const COMPONENT_BYTES = 48 * 1024;
+
 const LIMITS =
   "Reads TypeScript declaration files as text and never runs anything from the repository. Packages without declarations " +
   "(Vue single-file components, Angular modules, web-component manifests) scan as noDeclarations; map them by hand, unverified.";
@@ -28,17 +31,26 @@ export async function scanCodeComponents(args: { codeRepo: string; manifest?: st
   const manifestPath = resolveManifest(root, args.manifest);
   if (!args.package) {
     const dependencies = manifestDependencies(readManifest(root, manifestPath));
-    return { dependencies: cap(dependencies), truncated: dependencies.length > SCAN_LIMITS.rows };
+    const listed = cap(dependencies).map((name) => clip(name));
+    return { dependencies: listed, truncated: dependencies.length > SCAN_LIMITS.rows || listed.some((name, i) => name !== dependencies[i]) };
   }
-  const scan = scanPackage(root, manifestPath, args.package);
+  const scan = await scanPackage(root, manifestPath, args.package);
+  // Rows are kept while they fit the byte budget, so the whole result stays well under 64 KB.
+  const components: CodeComponent[] = [];
+  let bytes = 0;
+  for (const component of scan.components) {
+    bytes += JSON.stringify(component).length + 1;
+    if (bytes > COMPONENT_BYTES) break;
+    components.push(component);
+  }
   return {
-    package: scan.package,
+    package: clip(scan.package),
     packageVersion: scan.packageVersion,
     ...(scan.installed ? {} : { installed: false }),
     noDeclarations: scan.noDeclarations,
-    components: scan.components,
-    ...(scan.unfollowed.length ? { unfollowed: scan.unfollowed } : {}),
-    truncated: scan.truncated,
+    components,
+    ...(scan.unfollowedCount ? { unfollowed: scan.unfollowed, unfollowedCount: scan.unfollowedCount } : {}),
+    truncated: scan.truncated || components.length < scan.components.length,
   };
 }
 
@@ -54,16 +66,20 @@ export async function setCodeMapEntries(
   const entries: Record<string, CodeMapEntry | null> = {};
   const used = new Set<string>();
   for (const [figmaKey, input] of Object.entries(args.entries ?? {})) {
-    if (input === null) { entries[figmaKey] = null; continue; }
-    const result = validateEntry(ctx, figmaKey, input);
-    if ("reason" in result) { rejected.push({ figmaKey, reason: result.reason }); continue; }
+    if (input === null) {
+      if (isFigmaKey(figmaKey)) entries[figmaKey] = null;
+      else rejected.push({ figmaKey: clip(figmaKey), reason: "figmaKey is not a valid component or component set key" });
+      continue;
+    }
+    const result = await validateEntry(ctx, figmaKey, input);
+    if ("reason" in result) { rejected.push({ figmaKey: clip(figmaKey), reason: clip(result.reason, 2 * SCAN_LIMITS.text) }); continue; }
     entries[figmaKey] = result.entry;
     for (const name of result.packages) used.add(name);
   }
   const tokens: Record<string, string | null> = {};
   for (const [name, value] of Object.entries(args.tokens ?? {})) {
     const error = tokenError(name, value);
-    if (error) rejected.push({ figmaKey: `token:${name}`, reason: error });
+    if (error) rejected.push({ figmaKey: clip(`token:${name}`), reason: clip(error, 2 * SCAN_LIMITS.text) });
     else tokens[name] = value;
   }
   const packages: Record<string, string> = {};

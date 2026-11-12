@@ -5,14 +5,74 @@
 // as text and scanned with bounded patterns. Nothing from the CodeRepo is ever
 // imported, required, compiled or run, and no package manager is called. Every
 // path is resolved through realpath and must stay inside the CodeRepo (and
-// declaration files inside their package) before it is read.
+// declaration files inside their package) before it is read, and only regular
+// files are read (a FIFO or device would block the server).
+//
+// The CodeRepo is untrusted input. Every pattern is bounded (no nested or
+// unbounded quantifiers), every bracket scan is capped, each file has a step
+// budget and each scan a type-evaluation budget and a total-bytes budget, so a
+// hostile package costs bounded time and yields truncated: true. The scan
+// yields to the event loop between files so other tools keep running.
 
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export class CodeRepoError extends Error {}
 
-export const SCAN_LIMITS = { files: 400, fileBytes: 2 * 1024 * 1024, exports: 2000, rows: 100 };
+export const SCAN_LIMITS = {
+  files: 400,
+  fileBytes: 2 * 1024 * 1024,
+  /** Declaration bytes read across one scan. */
+  totalBytes: 16 * 1024 * 1024,
+  exports: 2000,
+  rows: 100,
+  /** Characters one bracket, semicolon or keyword search may cover. */
+  bracketScan: 64 * 1024,
+  /** Characters of bracket and semicolon scanning per declaration file. */
+  parseSteps: 8 * 1024 * 1024,
+  /** Characters of type text evaluated per scan (memoised evaluations are free). */
+  evalSteps: 4 * 1024 * 1024,
+  /** Longest package-derived string returned or written. */
+  text: 200,
+  /** Props per component. */
+  props: 100,
+  /** Unfollowed specifiers listed. */
+  unfollowed: 20,
+};
+
+/** `text` cut to SCAN_LIMITS.text characters. */
+export const clip = (text: string, max = SCAN_LIMITS.text) => (text.length > max ? text.slice(0, max) : text);
+
+const yieldToEventLoop = () => new Promise<void>((done) => setImmediate(done));
+
+/**
+ * Read a regular file as UTF-8, at most `maxBytes`; null when it is larger.
+ * Refuses anything that is not a regular file (FIFO, socket, device,
+ * directory). The stat is repeated on the open descriptor, which is opened
+ * non-blocking and without following a final symlink, so a swap after the
+ * first check cannot block the read or redirect it.
+ */
+export function readRegularFile(real: string, maxBytes: number, label: string): string | null {
+  if (!statSync(real).isFile()) throw new CodeRepoError(`${label} is not a regular file`);
+  let fd: number;
+  try { fd = openSync(real, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)); }
+  catch { throw new CodeRepoError(`${label} could not be opened as a regular file`); }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new CodeRepoError(`${label} is not a regular file`);
+    if (stat.size > maxBytes) return null;
+    const buffer = Buffer.alloc(stat.size);
+    let read = 0;
+    while (read < stat.size) {
+      const n = readSync(fd, buffer, read, stat.size - read, read);
+      if (n === 0) break;
+      read += n;
+    }
+    return buffer.subarray(0, read).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
 
 const DECL_EXT = /\.d\.(ts|mts|cts)$/;
 
@@ -44,7 +104,7 @@ export function resolveManifest(root: string, manifest?: string): string {
   }
   const joined = resolve(root, rel);
   if (!isInside(joined, root)) throw new CodeRepoError("manifest is outside the CodeRepo");
-  if (!existsSync(joined)) throw new CodeRepoError(`Manifest not found: ${rel}`);
+  if (!existsSync(joined)) throw new CodeRepoError(`Manifest not found: ${clip(rel)}`);
   const real = realpathOrNull(joined);
   if (!real || !isInside(real, root)) throw new CodeRepoError("manifest resolves outside the CodeRepo");
   return real;
@@ -53,9 +113,10 @@ export function resolveManifest(root: string, manifest?: string): string {
 function readJsonInside(file: string, container: string): any {
   const real = realpathOrNull(file);
   if (!real || !isInside(real, container)) throw new CodeRepoError(`${basename(file)} resolves outside the CodeRepo`);
-  if (statSync(real).size > SCAN_LIMITS.fileBytes) throw new CodeRepoError(`${basename(file)} is too large`);
-  try { return JSON.parse(readFileSync(real, "utf8")); }
-  catch { throw new CodeRepoError(`${relative(container, real) || basename(real)} is not valid JSON`); }
+  const text = readRegularFile(real, SCAN_LIMITS.fileBytes, basename(file));
+  if (text === null) throw new CodeRepoError(`${basename(file)} is too large`);
+  try { return JSON.parse(text); }
+  catch { throw new CodeRepoError(`${clip(relative(container, real) || basename(real))} is not valid JSON`); }
 }
 
 export function readManifest(root: string, manifestPath: string): any {
@@ -102,8 +163,8 @@ export function splitSpecifier(from: string): { name: string; subpath?: string }
   const count = from.startsWith("@") ? 2 : 1;
   const name = parts.slice(0, count).join("/");
   const subpath = parts.length > count ? parts.slice(count).join("/") : undefined;
-  if (!isValidPackageName(name)) throw new CodeRepoError(`Invalid package name: ${name}`);
-  if (subpath !== undefined && !isValidSubpath(subpath)) throw new CodeRepoError(`Invalid package subpath: ${subpath}`);
+  if (!isValidPackageName(name)) throw new CodeRepoError(`Invalid package name: ${clip(name)}`);
+  if (subpath !== undefined && !isValidSubpath(subpath)) throw new CodeRepoError(`Invalid package subpath: ${clip(subpath)}`);
   return { name, subpath };
 }
 
@@ -114,7 +175,7 @@ export function splitSpecifier(from: string): { name: string; subpath?: string }
  * the CodeRepo is refused; a symlink into a store inside it (pnpm) is fine.
  */
 export function findPackageDir(root: string, manifestDir: string, name: string): string | null {
-  if (!isValidPackageName(name)) throw new CodeRepoError(`Invalid package name: ${name}`);
+  if (!isValidPackageName(name)) throw new CodeRepoError(`Invalid package name: ${clip(name)}`);
   let dir = manifestDir;
   while (isInside(dir, root)) {
     const candidate = join(dir, "node_modules", ...name.split("/"));
@@ -237,11 +298,12 @@ function resolveMainEntry(pkg: PackageCtx): string | null {
     ?? existingDecl(pkg, "index.d.ts");
 }
 
-function resolveSubpathEntry(pkg: PackageCtx, subpath: string): string | null {
+function resolveSubpathEntry(pkg: PackageCtx, name: string, subpath: string): string | null {
   const json = pkg.json ?? {};
   if (json.exports !== undefined) {
     const entry = exportsEntry(json.exports, `./${subpath}`);
-    if (entry === undefined || entry === null) throw new CodeRepoError(`${json.name ?? "The package"} does not export ./${subpath}`);
+    // The caller's name, never the package's own text, goes in the message.
+    if (entry === undefined || entry === null) throw new CodeRepoError(`${clip(name)} does not export ./${clip(subpath)}`);
     return fromConditions(pkg, entry);
   }
   return fromTypesVersions(pkg, subpath) ?? existingDecl(pkg, subpath);
@@ -256,7 +318,7 @@ export function installedPackageVersion(root: string, manifestDir: string, name:
   const dir = findPackageDir(root, manifestDir, name);
   if (!dir) return null;
   const version = readPackageJson(dir).version;
-  return typeof version === "string" ? version : null;
+  return typeof version === "string" ? clip(version) : null;
 }
 
 /** `@types/<package>` name for a package: `@scope/x` → `@types/scope__x`. */
@@ -306,35 +368,75 @@ function braceDepths(text: string): Int32Array {
   return depth;
 }
 
+/** Characters of scanning left, shared by every scan of one declaration file. */
+interface Budget { left: number }
+
 const OPEN: Record<string, string> = { "{": "}", "(": ")", "[": "]", "<": ">" };
 
-/** Index just past the bracket that closes the one at `start`. */
-function matchBracket(text: string, start: number): number {
+/**
+ * Index just past the bracket that closes the one at `start`. At most
+ * SCAN_LIMITS.bracketScan characters are scanned; an unclosed bracket ends there.
+ */
+function matchBracket(text: string, start: number, budget?: Budget): number {
+  const end = Math.min(text.length, start + SCAN_LIMITS.bracketScan);
   const stack: string[] = [];
-  for (let i = start; i < text.length; i++) {
+  let result = end;
+  let i = start;
+  for (; i < end; i++) {
     const c = text[i];
-    if (c === "'" || c === '"' || c === "`") { const q = c; i++; while (i < text.length && text[i] !== q) { if (text[i] === "\\") i++; i++; } continue; }
+    if (c === "'" || c === '"' || c === "`") { const q = c; i++; while (i < end && text[i] !== q) { if (text[i] === "\\") i++; i++; } continue; }
     if (c === "=" && text[i + 1] === ">") { i++; continue; }
     if (OPEN[c]) stack.push(OPEN[c]);
-    else if (c === stack[stack.length - 1]) { stack.pop(); if (stack.length === 0) return i + 1; }
+    else if (c === stack[stack.length - 1]) { stack.pop(); if (stack.length === 0) { result = i + 1; break; } }
   }
-  return text.length;
+  if (budget) budget.left -= Math.min(i, end) - start + 1;
+  return result;
 }
 
-/** Read from `start` until `;` (or end) at bracket depth 0. */
-function readUntilSemicolon(text: string, start: number): string {
+const NEW_DECLARATION = /^\s{0,40}(export|declare|import|interface|type)\b/;
+
+/** Read from `start` until `;` (or end) at bracket depth 0, scanning at most SCAN_LIMITS.bracketScan characters. */
+function readUntilSemicolon(text: string, start: number, budget: Budget): string {
+  const end = Math.min(text.length, start + SCAN_LIMITS.bracketScan);
   let i = start;
-  while (i < text.length) {
+  while (i < end) {
     const c = text[i];
     if (c === ";") break;
     if (c === "=" && text[i + 1] === ">") { i += 2; continue; }
-    if (OPEN[c]) { i = matchBracket(text, i); continue; }
-    if (c === "'" || c === '"' || c === "`") { const q = c; i++; while (i < text.length && text[i] !== q) { if (text[i] === "\\") i++; i++; } i++; continue; }
+    if (OPEN[c]) { i = matchBracket(text, i, budget); continue; }
+    if (c === "'" || c === '"' || c === "`") { const q = c; i++; while (i < end && text[i] !== q) { if (text[i] === "\\") i++; i++; } i++; continue; }
     // A new top-level declaration ends an unterminated one.
-    if (c === "\n" && /^\s*(export|declare|import|interface|type)\b/.test(text.slice(i + 1, i + 40))) break;
+    if (c === "\n" && NEW_DECLARATION.test(text.slice(i + 1, i + 40))) break;
     i++;
   }
-  return text.slice(start, i).trim();
+  budget.left -= Math.min(i, end) - start + 1;
+  return text.slice(start, Math.min(i, text.length)).trim();
+}
+
+/** Index of `ch` within SCAN_LIMITS.bracketScan characters of `from`, or -1. */
+function indexWithin(text: string, ch: string, from: number, budget: Budget): number {
+  const end = Math.min(text.length, from + SCAN_LIMITS.bracketScan);
+  let i = from;
+  while (i < end && text[i] !== ch) i++;
+  budget.left -= i - from + 1;
+  return i < end ? i : -1;
+}
+
+/**
+ * A finder for the next index of any of `chars` at or after a position. Calls
+ * must come with positions that do not decrease; each character of `text` is
+ * then examined at most once across all calls.
+ */
+function nextOf(text: string, chars: string): (pos: number) => number {
+  let from = -1, found = -1;
+  return (pos: number) => {
+    if (from >= 0 && pos >= from && (found < 0 || found >= pos)) return found;
+    let i = pos;
+    while (i < text.length && !chars.includes(text[i])) i++;
+    from = pos;
+    found = i < text.length ? i : -1;
+    return found;
+  };
 }
 
 /** Split at a top-level separator character. */
@@ -353,7 +455,7 @@ export function splitTop(text: string, separator: string): string[] {
 }
 
 interface TypeDecl { kind: "interface" | "type"; typeParams: boolean; extendsText?: string; body: string }
-interface ValueDecl { kind: "const" | "function" | "class" | "enum"; text: string }
+interface ValueDecl { kind: "const" | "function" | "class" | "enum"; text: string; overloaded?: true }
 
 interface ParsedFile {
   stars: string[];
@@ -364,79 +466,126 @@ interface ParsedFile {
   types: Map<string, TypeDecl>;
   imports: Map<string, { spec: string; imported: string }>;
   defaultLocal?: string;
+  /** The file's step budget ran out before every declaration was read. */
+  truncated: boolean;
 }
 
-const IDENT = "[A-Za-z_$][\\w$]*";
+// Every quantifier below is bounded, and none is nested, so each match attempt
+// costs at most a few hundred steps whatever the input.
+const WS = "\\s{1,256}";
+const IDENT = "[A-Za-z_$][\\w$]{0,255}";
+const SPEC_MAX = 1000;
+const STAR_EXPORT = /\bexport\s{1,256}\*\s{1,256}from\s{1,256}(['"])([^'"\n]{1,1000})\1/g;
+const BRACE_EXPORT = /\bexport\s{1,256}(type\s{1,256})?\{/g;
+const BRACE_FROM = /\s{0,256}from\s{1,256}(['"])([^'"\n]{1,1000})\1/y;
+const IMPORT_KEYWORD = /\bimport\s/g;
+const DECLARATION = new RegExp(`\\b(export${WS})?(?:declare${WS})?(?:abstract${WS})?(const|let|var|function|class|interface|type|enum)${WS}(${IDENT})`, "g");
+const DEFAULT_DECLARATION = new RegExp(`\\bexport${WS}default${WS}(?:declare${WS})?(?:abstract${WS})?(?:function|class)\\s{0,256}(${IDENT})?`);
+const DEFAULT_IDENT = new RegExp(`\\bexport${WS}default${WS}(${IDENT})`);
+const BRACE_LIST_MAX = 4096;
 
 export function parseDeclarations(source: string): ParsedFile {
   const text = stripComments(source);
   const depth = braceDepths(text);
   const top = (index: number) => depth[index] === 0;
-  const parsed: ParsedFile = { stars: [], reexports: [], locals: [], exported: new Set(), values: new Map(), types: new Map(), imports: new Map() };
+  const budget: Budget = { left: SCAN_LIMITS.parseSteps };
+  const parsed: ParsedFile = { stars: [], reexports: [], locals: [], exported: new Set(), values: new Map(), types: new Map(), imports: new Map(), truncated: false };
 
-  for (const m of text.matchAll(/\bexport\s+\*\s+from\s+(['"])([^'"]+)\1/g)) if (top(m.index!)) parsed.stars.push(m[2]);
+  for (const m of text.matchAll(STAR_EXPORT)) if (top(m.index!)) parsed.stars.push(m[2]);
 
-  for (const m of text.matchAll(/\bexport\s+(type\s+)?\{([^}]*)\}(?:\s*from\s+(['"])([^'"]+)\3)?/g)) {
+  // export { a, b as c } [from '…']: the closing brace is found with a forward-only cursor.
+  const nextClose = nextOf(text, "}");
+  for (const m of text.matchAll(BRACE_EXPORT)) {
+    const open = m.index! + m[0].length;
+    const close = nextClose(open);
+    if (close < 0 || close - open > BRACE_LIST_MAX) continue;
     if (!top(m.index!) || m[1]) continue;
-    for (const raw of m[2].split(",")) {
+    BRACE_FROM.lastIndex = close + 1;
+    const from = BRACE_FROM.exec(text);
+    for (const raw of text.slice(open, close).split(",")) {
       const item = raw.trim();
       if (!item || /^type\s/.test(item)) continue;
-      const [imported, name = imported] = item.split(/\s+as\s+/).map((s) => s.trim());
-      if (m[4]) parsed.reexports.push({ name, imported, spec: m[4] });
+      const [imported, name = imported] = item.split(/\s{1,256}as\s{1,256}/).map((s) => s.trim());
+      if (from) parsed.reexports.push({ name, imported, spec: from[2] });
       else parsed.locals.push({ name, local: imported });
     }
   }
 
-  for (const m of text.matchAll(/\bimport\s+(?:type\s+)?([^'";]*?)\s+from\s+(['"])([^'"]+)\2/g)) {
-    if (!top(m.index!)) continue;
-    const clause = m[1].trim(), spec = m[3];
-    const brace = clause.match(/\{([^}]*)\}/);
-    const head = clause.replace(/\{[^}]*\}/, "").replace(/,/g, " ").trim();
+  // import <clause> from '<spec>': the clause runs to the next quote or semicolon
+  // and must end with `from`; found with forward-only cursors, not a lazy pattern.
+  const nextStop = nextOf(text, `'";`);
+  const nextQuoteOrLine = nextOf(text, `'"\n`);
+  let lastStop = -1, lastFrom = -1;
+  IMPORT_KEYWORD.lastIndex = 0;
+  for (let m = IMPORT_KEYWORD.exec(text); m; m = IMPORT_KEYWORD.exec(text)) {
+    const clauseStart = m.index + m[0].length;
+    const q = nextStop(clauseStart);
+    if (q < 0) break;
+    if (q - clauseStart > SPEC_MAX || text[q] === ";") continue;
+    if (q !== lastStop) {
+      lastStop = q;
+      let j = q - 1;
+      while (j > clauseStart && q - j < 256 && /\s/.test(text[j])) j--;
+      const isFrom = text.slice(j - 3, j + 1) === "from" && !/[\w$]/.test(text[j - 4] ?? "");
+      lastFrom = isFrom ? j - 3 : -1;
+    }
+    if (lastFrom < clauseStart) continue;
+    const end = nextQuoteOrLine(q + 1);
+    if (end < 0 || text[end] !== text[q] || end === q + 1 || end - q - 1 > SPEC_MAX) continue;
+    IMPORT_KEYWORD.lastIndex = end + 1;
+    if (!top(m.index)) continue;
+    const clause = text.slice(clauseStart, lastFrom).trim().replace(/^type\s{1,256}/, ""), spec = text.slice(q + 1, end);
+    const brace = clause.match(/\{([^{}]{0,1000})\}/);
+    const head = clause.replace(/\{[^{}]{0,1000}\}/, "").replace(/,/g, " ").trim();
     if (head && !head.startsWith("*")) parsed.imports.set(head.split(/\s+/)[0], { spec, imported: "default" });
     if (brace) for (const raw of brace[1].split(",")) {
       const item = raw.trim().replace(/^type\s+/, "");
       if (!item) continue;
-      const [imported, local = imported] = item.split(/\s+as\s+/).map((s) => s.trim());
+      const [imported, local = imported] = item.split(/\s{1,256}as\s{1,256}/).map((s) => s.trim());
       parsed.imports.set(local, { spec, imported });
     }
   }
 
-  const declRe = new RegExp(`\\b(export\\s+)?(?:declare\\s+)?(?:abstract\\s+)?(const|let|var|function|class|interface|type|enum)\\s+(${IDENT})`, "g");
-  for (const m of text.matchAll(declRe)) {
+  for (const m of text.matchAll(DECLARATION)) {
+    if (budget.left <= 0) { parsed.truncated = true; break; }
     if (!top(m.index!)) continue;
     const kind = m[2], name = m[3];
     let after = m.index! + m[0].length;
     if (kind === "interface") {
       let typeParams = false;
-      if (text[after] === "<") { typeParams = true; after = matchBracket(text, after); }
-      const open = text.indexOf("{", after);
+      if (text[after] === "<") { typeParams = true; after = matchBracket(text, after, budget); }
+      const open = indexWithin(text, "{", after, budget);
       if (open < 0) continue;
       const between = text.slice(after, open).trim();
       const extendsText = between.startsWith("extends") ? between.slice(7).trim() : undefined;
-      const close = matchBracket(text, open);
+      const close = matchBracket(text, open, budget);
       const previous = parsed.types.get(name);
       const body = text.slice(open, close);
       // Declaration merging: a repeated interface adds members and makes the props partial.
-      parsed.types.set(name, previous
-        ? { kind: "interface", typeParams: true, extendsText: previous.extendsText ?? extendsText, body: previous.body.slice(0, -1) + ";" + body.slice(1) }
-        : { kind: "interface", typeParams, extendsText, body });
+      // A merged body is capped like any other; past the cap the extra members are dropped.
+      if (!previous) parsed.types.set(name, { kind: "interface", typeParams, extendsText, body });
+      else if (previous.body.length + body.length > SCAN_LIMITS.bracketScan) parsed.types.set(name, { ...previous, typeParams: true });
+      else parsed.types.set(name, { kind: "interface", typeParams: true, extendsText: previous.extendsText ?? extendsText, body: previous.body.slice(0, -1) + ";" + body.slice(1) });
     } else if (kind === "type") {
       let typeParams = false;
       let i = after;
-      while (text[i] === " ") i++;
-      if (text[i] === "<") { typeParams = true; i = matchBracket(text, i); }
-      const eq = text.indexOf("=", i);
+      while (text[i] === " " && i - after < 256) i++;
+      if (text[i] === "<") { typeParams = true; i = matchBracket(text, i, budget); }
+      const eq = indexWithin(text, "=", i, budget);
       if (eq < 0 || text.slice(i, eq).trim() !== "") continue;
-      if (!parsed.types.has(name)) parsed.types.set(name, { kind: "type", typeParams, body: readUntilSemicolon(text, eq + 1) });
+      if (!parsed.types.has(name)) parsed.types.set(name, { kind: "type", typeParams, body: readUntilSemicolon(text, eq + 1, budget) });
     } else {
       const valueKind: ValueDecl["kind"] = kind === "function" ? "function" : kind === "class" ? "class" : kind === "enum" ? "enum" : "const";
-      if (!parsed.values.has(name)) parsed.values.set(name, { kind: valueKind, text: readUntilSemicolon(text, after) });
+      const previous = parsed.values.get(name);
+      if (!previous) parsed.values.set(name, { kind: valueKind, text: readUntilSemicolon(text, after, budget) });
+      // A repeated function declaration is an overload: its props are partial.
+      else if (previous.kind === "function" && valueKind === "function") previous.overloaded = true;
     }
     if (m[1]) parsed.exported.add(name);
   }
 
-  const defaultDecl = text.match(new RegExp(`\\bexport\\s+default\\s+(?:declare\\s+)?(?:abstract\\s+)?(?:function|class)\\s*(${IDENT})?`));
-  const defaultIdent = text.match(new RegExp(`\\bexport\\s+default\\s+(${IDENT})\\s*;?`));
+  const defaultDecl = text.match(DEFAULT_DECLARATION);
+  const defaultIdent = text.match(DEFAULT_IDENT);
   if (defaultDecl && top(defaultDecl.index!)) parsed.defaultLocal = defaultDecl[1] ?? "default";
   else if (defaultIdent && top(defaultIdent.index!) && !["function", "class", "abstract", "declare", "interface"].includes(defaultIdent[1])) parsed.defaultLocal = defaultIdent[1];
   return parsed;
@@ -466,30 +615,54 @@ export interface PackageScan {
   exportNames: Set<string>;
   /** Props per export name, for validation. */
   propsByExport: Map<string, { props: string[]; propsState: PropsState }>;
-  /** Bare specifiers re-exported from other packages, which are not followed. */
+  /** Bare specifiers re-exported from other packages, which are not followed: the first 20, each clipped. */
   unfollowed: string[];
+  /** How many distinct bare specifiers were not followed. */
+  unfollowedCount: number;
   truncated: boolean;
 }
 
 type Origin = { file: string; local: string } | { unresolved: true };
+type TypeEval = { names: string[]; state: PropsState };
+type Props = { props: string[]; propsState: PropsState };
+
+const UNKNOWN: TypeEval = { names: [], state: "unknown" };
+const UNKNOWN_PROPS: Props = { props: [], propsState: "unknown" };
 
 class Scanner {
   files = new Map<string, ParsedFile | null>();
   exportMaps = new Map<string, Map<string, Origin>>();
+  /** Type evaluations by depth, file and type text. */
+  evalMemo = new Map<string, TypeEval>();
   unfollowed = new Set<string>();
   truncated = false;
+  bytes = 0;
+  evalBudget = SCAN_LIMITS.evalSteps;
 
   constructor(private container: string) {}
 
-  /** Parse a declaration file, enforcing containment, the file bound and the size bound. Null when skipped. */
-  parse(file: string): ParsedFile | null {
+  /**
+   * Parse a declaration file, enforcing containment, the file, size and total
+   * bounds. Yields to the event loop before each new file. Null when skipped.
+   */
+  async parse(file: string): Promise<ParsedFile | null> {
     if (this.files.has(file)) return this.files.get(file)!;
     const real = realpathOrNull(file);
     if (!real || !isInside(real, this.container)) throw new CodeRepoError("A declarations path resolves outside the package");
     if (!DECL_EXT.test(real)) { this.files.set(file, null); return null; }
     if (this.files.size >= SCAN_LIMITS.files) { this.truncated = true; return null; }
-    if (statSync(real).size > SCAN_LIMITS.fileBytes) { this.truncated = true; this.files.set(file, null); return null; }
-    const parsed = parseDeclarations(readFileSync(real, "utf8"));
+    const stat = statSync(real);
+    if (!stat.isFile()) throw new CodeRepoError("A declaration file is not a regular file");
+    if (stat.size > SCAN_LIMITS.fileBytes || this.bytes + stat.size > SCAN_LIMITS.totalBytes) {
+      this.truncated = true; this.files.set(file, null); return null;
+    }
+    await yieldToEventLoop();
+    if (this.files.has(file)) return this.files.get(file)!;
+    const text = readRegularFile(real, SCAN_LIMITS.fileBytes, "A declaration file");
+    if (text === null) { this.truncated = true; this.files.set(file, null); return null; }
+    this.bytes += stat.size;
+    const parsed = parseDeclarations(text);
+    if (parsed.truncated) this.truncated = true;
     this.files.set(file, parsed);
     return parsed;
   }
@@ -515,13 +688,13 @@ class Scanner {
   }
 
   /** All names a file exports, mapped to where each is declared. */
-  exportsOf(file: string, stack: Set<string> = new Set()): Map<string, Origin> {
+  async exportsOf(file: string, stack: Set<string> = new Set()): Promise<Map<string, Origin>> {
     const cached = this.exportMaps.get(file);
     if (cached) return cached;
     const map = new Map<string, Origin>();
     if (stack.has(file)) return map;
     stack.add(file);
-    const parsed = this.parse(file);
+    const parsed = await this.parse(file);
     if (parsed) {
       const add = (name: string, origin: Origin) => {
         if (map.has(name)) return;
@@ -529,16 +702,16 @@ class Scanner {
         map.set(name, origin);
       };
       for (const name of parsed.exported) add(name, { file, local: name });
-      if (parsed.defaultLocal) add("default", this.localOrigin(file, parsed, parsed.defaultLocal, stack));
-      for (const { name, local } of parsed.locals) add(name, this.localOrigin(file, parsed, local, stack));
+      if (parsed.defaultLocal) add("default", await this.localOrigin(file, parsed, parsed.defaultLocal, stack));
+      for (const { name, local } of parsed.locals) add(name, await this.localOrigin(file, parsed, local, stack));
       for (const { name, imported, spec } of parsed.reexports) {
         const target = this.resolveSpecifier(file, spec);
-        add(name, target ? this.exportsOf(target, stack).get(imported) ?? { unresolved: true } : { unresolved: true });
+        add(name, target ? (await this.exportsOf(target, stack)).get(imported) ?? { unresolved: true } : { unresolved: true });
       }
       for (const spec of parsed.stars) {
         const target = this.resolveSpecifier(file, spec);
         if (!target) continue;
-        for (const [name, origin] of this.exportsOf(target, stack)) if (name !== "default") add(name, origin);
+        for (const [name, origin] of await this.exportsOf(target, stack)) if (name !== "default") add(name, origin);
       }
     }
     stack.delete(file);
@@ -546,20 +719,20 @@ class Scanner {
     return map;
   }
 
-  localOrigin(file: string, parsed: ParsedFile, local: string, stack: Set<string>): Origin {
+  async localOrigin(file: string, parsed: ParsedFile, local: string, stack: Set<string>): Promise<Origin> {
     if (parsed.values.has(local) || parsed.types.has(local) || local === "default") return { file, local };
     const imported = parsed.imports.get(local);
     if (imported) {
       const target = this.resolveSpecifier(file, imported.spec);
-      if (target) return this.exportsOf(target, stack).get(imported.imported) ?? { unresolved: true };
+      if (target) return (await this.exportsOf(target, stack)).get(imported.imported) ?? { unresolved: true };
     }
     return { unresolved: true };
   }
 
   /** Find a named type visible from `file`: declared there or imported into it. */
-  findType(file: string, name: string, depth = 0): { decl: TypeDecl; file: string } | null {
+  async findType(file: string, name: string, depth = 0): Promise<{ decl: TypeDecl; file: string } | null> {
     if (depth > 8) return null;
-    const parsed = this.parse(file);
+    const parsed = await this.parse(file);
     if (!parsed) return null;
     const local = parsed.types.get(name);
     if (local) return { decl: local, file };
@@ -567,54 +740,76 @@ class Scanner {
     let origin: Origin | undefined;
     if (imported) {
       const target = this.resolveSpecifier(file, imported.spec);
-      if (target) origin = this.exportsOf(target).get(imported.imported);
+      if (target) origin = (await this.exportsOf(target)).get(imported.imported);
     } else {
-      origin = this.exportsOf(file).get(name);
+      origin = (await this.exportsOf(file)).get(name);
     }
     if (origin && "file" in origin && (origin.file !== file || origin.local !== name)) return this.findType(origin.file, origin.local, depth + 1);
     return null;
   }
 
-  /** Prop names read from a type expression, and how sure the reading is. */
-  evalType(text: string, file: string, depth = 0): { names: string[]; state: PropsState } {
+  /**
+   * Prop names read from a type expression, and how sure the reading is.
+   * Memoised per (depth, file, type text); every evaluation that is not
+   * memoised spends the scan's budget, and once it is spent the answer is
+   * unknown and the scan is truncated.
+   */
+  async evalType(text: string, file: string, depth = 0): Promise<TypeEval> {
+    const key = `${depth}\u0000${file}\u0000${text}`;
+    const memo = this.evalMemo.get(key);
+    if (memo) return memo;
+    this.evalBudget -= Math.max(text.length, 64);
+    let result = UNKNOWN;
+    if (this.evalBudget < 0) this.truncated = true;
+    else result = await this.evalTypeOnce(text, file, depth);
+    this.evalMemo.set(key, result);
+    return result;
+  }
+
+  private async evalTypeOnce(text: string, file: string, depth: number): Promise<TypeEval> {
     let t = text.trim();
-    while (t.startsWith("(") && matchBracket(t, 0) === t.length) t = t.slice(1, -1).trim();
-    if (depth > 8 || !t) return { names: [], state: "unknown" };
-    if (splitTop(t, "|").length > 1) return { names: [], state: "unknown" };
+    if (depth > 8 || !t || t.length > SCAN_LIMITS.bracketScan) return UNKNOWN;
+    for (let n = 0; n < 8 && t.startsWith("(") && matchBracket(t, 0) === t.length; n++) t = t.slice(1, -1).trim();
+    if (!t) return UNKNOWN;
+    if (splitTop(t, "|").length > 1) return UNKNOWN;
     const parts = splitTop(t, "&");
     if (parts.length > 1) {
       const names = new Set<string>();
-      for (const part of parts) for (const n of this.evalType(part, file, depth + 1).names) names.add(n);
+      for (const part of parts) for (const n of (await this.evalType(part, file, depth + 1)).names) names.add(n);
       return { names: [...names], state: "partial" };
     }
-    if (t.startsWith("{")) return { names: memberNames(t), state: "complete" };
-    const m = t.match(/^(?:import\((['"])([^'"]+)\1\)\.)?([A-Za-z_$][\w$.]*)\s*(<[\s\S]*>)?$/);
-    if (!m) return { names: [], state: "unknown" };
+    if (t.startsWith("{")) {
+      const { names, open } = memberInfo(t);
+      return { names, state: open ? "partial" : "complete" };
+    }
+    const m = t.match(/^(?:import\((['"])([^'"]{1,1000})\1\)\.)?([A-Za-z_$][\w$.]{0,255})\s{0,256}(<[\s\S]*>)?$/);
+    if (!m) return UNKNOWN;
     const [, , importSpec, name, argText] = m;
     const args = argText ? splitTop(argText.slice(1, -1), ",") : [];
     if (name === "Omit" || name === "Pick") {
-      const keys = (args[1] ?? "").match(/(['"])([^'"]+)\1/g)?.map((s) => s.slice(1, -1)) ?? [];
+      const keys = (args[1] ?? "").match(/(['"])([^'"]{1,200})\1/g)?.map((s) => s.slice(1, -1)) ?? [];
       if (name === "Pick") return { names: keys, state: "partial" };
-      const inner = this.evalType(args[0] ?? "", file, depth + 1);
+      const inner = await this.evalType(args[0] ?? "", file, depth + 1);
       return { names: inner.names.filter((n) => !keys.includes(n)), state: "partial" };
     }
     let found: { decl: TypeDecl; file: string } | null = null;
     if (importSpec) {
       const target = this.resolveSpecifier(file, importSpec);
-      if (target) found = this.findType(target, name);
+      if (target) found = await this.findType(target, name);
     } else if (!name.includes(".")) {
-      found = this.findType(file, name);
+      found = await this.findType(file, name);
     }
-    if (!found) return { names: [], state: "unknown" };
+    if (!found) return UNKNOWN;
     const { decl } = found;
-    let result: { names: string[]; state: PropsState };
-    if (decl.kind === "type") result = this.evalType(decl.body, found.file, depth + 1);
+    let result: TypeEval;
+    if (decl.kind === "type") result = await this.evalType(decl.body, found.file, depth + 1);
     else {
-      const names = new Set(memberNames(decl.body));
-      let state: PropsState = "complete";
+      const { names: own, open } = memberInfo(decl.body);
+      const names = new Set(own);
+      let state: PropsState = open ? "partial" : "complete";
       if (decl.extendsText) {
         state = "partial";
-        for (const base of splitTop(decl.extendsText, ",")) for (const n of this.evalType(base, found.file, depth + 1).names) names.add(n);
+        for (const base of splitTop(decl.extendsText, ",")) for (const n of (await this.evalType(base, found.file, depth + 1)).names) names.add(n);
       }
       result = { names: [...names], state };
     }
@@ -622,77 +817,107 @@ class Scanner {
     return result;
   }
 
-  /** Props of a component declared as `local` in `file` (exported as `exportName`). */
-  propsOf(file: string, local: string, exportName: string): { props: string[]; propsState: PropsState } {
-    for (const candidate of [`${local}Props`, `${exportName}Props`]) {
-      if (this.findType(file, candidate)) {
-        const r = this.evalType(candidate, file);
+  /**
+   * Props of a component declared as `local` in `file` (exported as
+   * `exportName`): from its own signature first, then from a same-named
+   * `<Name>Props` type only when the signature gives nothing.
+   */
+  async propsOf(file: string, local: string, exportName: string): Promise<Props> {
+    const signature = await this.signatureProps(file, local);
+    if (signature.propsState !== "unknown") return signature;
+    for (const candidate of new Set([`${local}Props`, `${exportName}Props`])) {
+      if (await this.findType(file, candidate)) {
+        const r = await this.evalType(candidate, file);
         if (r.state !== "unknown") return { props: r.names, propsState: r.state };
       }
     }
-    const value = this.parse(file)?.values.get(local);
-    if (!value) return { props: [], propsState: "unknown" };
+    return signature;
+  }
+
+  /** Props from the component's own declaration: FC<…>-style wrappers or the first parameter. */
+  private async signatureProps(file: string, local: string): Promise<Props> {
+    const value = (await this.parse(file))?.values.get(local);
+    if (!value) return UNKNOWN_PROPS;
+    const props = await this.signatureType(value, file);
+    return value.overloaded && props.propsState === "complete" ? { ...props, propsState: "partial" } : props;
+  }
+
+  private async signatureType(value: ValueDecl, file: string): Promise<Props> {
     let text = value.text;
     if (value.kind === "const") {
-      if (!text.startsWith(":")) return { props: [], propsState: "unknown" };
+      if (!text.startsWith(":")) return UNKNOWN_PROPS;
       text = text.slice(1).trim();
-      const wrapper = text.match(/^(?:React\.)?(?:FC|FunctionComponent|ForwardRefExoticComponent)\s*</);
+      const wrapper = text.match(/^(?:React\.)?(?:FC|FunctionComponent|ForwardRefExoticComponent)\s{0,256}</);
       if (wrapper) {
         const open = wrapper[0].length - 1;
         const close = matchBracket(text, open);
-        const r = this.evalType(text.slice(open + 1, close - 1), file);
+        const r = await this.evalType(text.slice(open + 1, close - 1), file);
         return { props: r.names, propsState: r.state };
       }
     } else if (value.kind !== "function") {
-      return { props: [], propsState: "unknown" };
+      return UNKNOWN_PROPS;
     }
     // First parameter of a function or function type.
     if (text.startsWith("<")) text = text.slice(matchBracket(text, 0)).trim();
-    if (!text.startsWith("(")) return { props: [], propsState: "unknown" };
+    if (!text.startsWith("(")) return UNKNOWN_PROPS;
     const params = splitTop(text.slice(1, matchBracket(text, 0) - 1), ",");
     if (params.length === 0) return { props: [], propsState: "complete" };
     const colon = splitTop(params[0], ":");
-    if (colon.length < 2) return { props: [], propsState: "unknown" };
-    const r = this.evalType(colon.slice(1).join(":"), file);
+    if (colon.length < 2) return UNKNOWN_PROPS;
+    const r = await this.evalType(colon.slice(1).join(":"), file);
     return { props: r.names, propsState: r.state };
   }
 }
 
-/** Member names of a type literal or interface body `{ ... }`. */
-export function memberNames(body: string): string[] {
+/**
+ * Member names of a type literal or interface body `{ ... }`, and whether it
+ * has an index signature or mapped type (`[key: string]`, `[K in Keys]`),
+ * whose keys are not listed by name.
+ */
+export function memberInfo(body: string): { names: string[]; open: boolean } {
   const inner = body.trim().replace(/^\{/, "").replace(/\}$/, "");
-  const names: string[] = [];
+  const names = new Set<string>();
+  let open = false;
   for (const line of splitTop(inner.replace(/\n/g, ";"), ";").flatMap((s) => splitTop(s, ","))) {
-    const m = line.match(/^(?:readonly\s+)?(?:(['"])([^'"]+)\1|([A-Za-z_$][\w$]*))\s*\??\s*[:(<]/);
+    if (/^(?:[+-]?readonly\s{1,64})?\[/.test(line)) { open = true; continue; }
+    const m = line.match(/^(?:readonly\s{1,64})?(?:(['"])([^'"]{1,200})\1|([A-Za-z_$][\w$]{0,255}))\s{0,64}\??\s{0,64}[:(<]/);
     const name = m?.[2] ?? m?.[3];
-    if (name && !names.includes(name)) names.push(name);
+    if (name) names.add(name);
   }
-  return names;
+  return { names: [...names], open };
 }
 
 const PASCAL = /^[A-Z][A-Za-z0-9_$]*$/;
 const isComponentName = (name: string) => PASCAL.test(name) && /[a-z]/.test(name);
 
+/** A props list within the output bounds; a list that had to be cut is no longer complete. */
+function boundProps(props: Props): Props & { cut: boolean } {
+  const kept = props.props.filter((n) => n.length <= SCAN_LIMITS.text).slice(0, SCAN_LIMITS.props);
+  const cut = kept.length < props.props.length;
+  return { props: kept, propsState: cut && props.propsState === "complete" ? "partial" : props.propsState, cut };
+}
+
 /**
  * Scan a DesignSystemPackage (or one of its subpaths) for components.
  * `from` is the package name or `name/subpath`; the package must be listed in the Manifest.
  */
-export function scanPackage(root: string, manifestPath: string, from: string): PackageScan {
+export async function scanPackage(root: string, manifestPath: string, from: string): Promise<PackageScan> {
   const { name, subpath } = splitSpecifier(from);
   const deps = manifestDependencies(readManifest(root, manifestPath));
-  if (!deps.includes(name)) throw new CodeRepoError(`${name} is not a dependency in the Manifest`);
+  if (!deps.includes(name)) throw new CodeRepoError(`${clip(name)} is not a dependency in the Manifest`);
   const manifestDir = dirname(manifestPath);
   const empty = (installed: boolean, version: string | null): PackageScan => ({
     package: from, packageVersion: version, installed, noDeclarations: true, components: [],
-    exportNames: new Set(), propsByExport: new Map(), unfollowed: [], truncated: false,
+    exportNames: new Set(), propsByExport: new Map(), unfollowed: [], unfollowedCount: 0, truncated: false,
   });
 
   const dir = findPackageDir(root, manifestDir, name);
   if (!dir) return empty(false, null);
   const json = readPackageJson(dir);
-  const version = typeof json.version === "string" ? json.version : null;
+  const version = typeof json.version === "string" ? clip(json.version) : null;
+  const versionCut = typeof json.version === "string" && json.version.length > SCAN_LIMITS.text;
   let pkg: PackageCtx = { dir, json };
-  let entry = subpath ? resolveSubpathEntry(pkg, subpath) : resolveMainEntry(pkg);
+  let entry = subpath ? resolveSubpathEntry(pkg, name, subpath) : resolveMainEntry(pkg);
   if (!entry) {
     const typesDir = findPackageDir(root, manifestDir, typesPackageName(name));
     if (typesDir) {
@@ -702,19 +927,20 @@ export function scanPackage(root: string, manifestPath: string, from: string): P
         : existingDecl(pkg, pkg.json.types) ?? existingDecl(pkg, pkg.json.typings) ?? existingDecl(pkg, "index.d.ts");
     }
   }
-  if (!entry) return empty(true, version);
+  if (!entry) return { ...empty(true, version), truncated: versionCut };
 
   const scanner = new Scanner(pkg.dir);
-  const exportsMap = scanner.exportsOf(entry);
+  const exportsMap = await scanner.exportsOf(entry);
   const exportNames = new Set<string>();
-  const propsByExport = new Map<string, { props: string[]; propsState: PropsState }>();
+  const propsByExport = new Map<string, Props>();
   const components: CodeComponent[] = [];
+  let cut = versionCut;
   for (const [exportName, origin] of exportsMap) {
     let local = exportName;
     let kind: ValueDecl["kind"] | "unresolved" | "type" = "unresolved";
     if ("file" in origin) {
       local = origin.local;
-      const parsed = scanner.parse(origin.file);
+      const parsed = await scanner.parse(origin.file);
       const value = parsed?.values.get(origin.local);
       kind = value ? value.kind : parsed?.types.has(origin.local) ? "type" : origin.local === "default" ? "function" : "unresolved";
     }
@@ -723,16 +949,19 @@ export function scanPackage(root: string, manifestPath: string, from: string): P
     if (kind === "enum") continue;
     const rowName = exportName === "default" ? local : exportName;
     if (!isComponentName(rowName)) continue;
-    const props = "file" in origin ? scanner.propsOf(origin.file, origin.local, rowName) : { props: [], propsState: "unknown" as const };
+    if (rowName.length > SCAN_LIMITS.text) { cut = true; continue; }
+    const found = "file" in origin ? await scanner.propsOf(origin.file, origin.local, rowName) : UNKNOWN_PROPS;
+    const { cut: propsCut, ...props } = boundProps(found);
+    if (propsCut) cut = true;
     propsByExport.set(exportName, props);
     components.push({ name: rowName, from, ...(exportName === "default" ? { default: true as const } : {}), ...props });
   }
   components.sort((a, b) => a.name.localeCompare(b.name));
-  const truncated = scanner.truncated || components.length > SCAN_LIMITS.rows;
+  const truncated = cut || scanner.truncated || components.length > SCAN_LIMITS.rows;
   return {
     package: from, packageVersion: version, installed: true, noDeclarations: false,
     components: components.slice(0, SCAN_LIMITS.rows), exportNames, propsByExport,
-    unfollowed: [...scanner.unfollowed].slice(0, 20), truncated,
+    unfollowed: [...scanner.unfollowed].slice(0, SCAN_LIMITS.unfollowed).map((spec) => clip(spec)), unfollowedCount: scanner.unfollowed.size, truncated,
   };
 }
 

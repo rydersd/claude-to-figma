@@ -24196,12 +24196,54 @@ function registerTools26(server) {
 }
 
 // src/llm2figma_mcp/code-repo.ts
-import { existsSync as existsSync3, lstatSync, readFileSync as readFileSync3, realpathSync, statSync } from "fs";
+import { closeSync, constants, existsSync as existsSync3, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from "fs";
 import { basename, dirname as dirname2, isAbsolute as isAbsolute2, join as join2, relative, resolve as resolve2, sep as sep2 } from "path";
 
 class CodeRepoError extends Error {
 }
-var SCAN_LIMITS = { files: 400, fileBytes: 2 * 1024 * 1024, exports: 2000, rows: 100 };
+var SCAN_LIMITS = {
+  files: 400,
+  fileBytes: 2 * 1024 * 1024,
+  totalBytes: 16 * 1024 * 1024,
+  exports: 2000,
+  rows: 100,
+  bracketScan: 64 * 1024,
+  parseSteps: 8 * 1024 * 1024,
+  evalSteps: 4 * 1024 * 1024,
+  text: 200,
+  props: 100,
+  unfollowed: 20
+};
+var clip = (text, max = SCAN_LIMITS.text) => text.length > max ? text.slice(0, max) : text;
+var yieldToEventLoop = () => new Promise((done) => setImmediate(done));
+function readRegularFile(real, maxBytes, label) {
+  if (!statSync(real).isFile())
+    throw new CodeRepoError(`${label} is not a regular file`);
+  let fd;
+  try {
+    fd = openSync(real, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0));
+  } catch {
+    throw new CodeRepoError(`${label} could not be opened as a regular file`);
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile())
+      throw new CodeRepoError(`${label} is not a regular file`);
+    if (stat.size > maxBytes)
+      return null;
+    const buffer = Buffer.alloc(stat.size);
+    let read = 0;
+    while (read < stat.size) {
+      const n = readSync(fd, buffer, read, stat.size - read, read);
+      if (n === 0)
+        break;
+      read += n;
+    }
+    return buffer.subarray(0, read).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
 var DECL_EXT = /\.d\.(ts|mts|cts)$/;
 function isInside(child, parent) {
   return child === parent || child.startsWith(parent.endsWith(sep2) ? parent : parent + sep2);
@@ -24230,7 +24272,7 @@ function resolveManifest(root, manifest) {
   if (!isInside(joined, root))
     throw new CodeRepoError("manifest is outside the CodeRepo");
   if (!existsSync3(joined))
-    throw new CodeRepoError(`Manifest not found: ${rel}`);
+    throw new CodeRepoError(`Manifest not found: ${clip(rel)}`);
   const real = realpathOrNull(joined);
   if (!real || !isInside(real, root))
     throw new CodeRepoError("manifest resolves outside the CodeRepo");
@@ -24240,12 +24282,13 @@ function readJsonInside(file, container) {
   const real = realpathOrNull(file);
   if (!real || !isInside(real, container))
     throw new CodeRepoError(`${basename(file)} resolves outside the CodeRepo`);
-  if (statSync(real).size > SCAN_LIMITS.fileBytes)
+  const text = readRegularFile(real, SCAN_LIMITS.fileBytes, basename(file));
+  if (text === null)
     throw new CodeRepoError(`${basename(file)} is too large`);
   try {
-    return JSON.parse(readFileSync3(real, "utf8"));
+    return JSON.parse(text);
   } catch {
-    throw new CodeRepoError(`${relative(container, real) || basename(real)} is not valid JSON`);
+    throw new CodeRepoError(`${clip(relative(container, real) || basename(real))} is not valid JSON`);
   }
 }
 function readManifest(root, manifestPath) {
@@ -24291,14 +24334,14 @@ function splitSpecifier(from) {
   const name = parts.slice(0, count).join("/");
   const subpath = parts.length > count ? parts.slice(count).join("/") : undefined;
   if (!isValidPackageName(name))
-    throw new CodeRepoError(`Invalid package name: ${name}`);
+    throw new CodeRepoError(`Invalid package name: ${clip(name)}`);
   if (subpath !== undefined && !isValidSubpath(subpath))
-    throw new CodeRepoError(`Invalid package subpath: ${subpath}`);
+    throw new CodeRepoError(`Invalid package subpath: ${clip(subpath)}`);
   return { name, subpath };
 }
 function findPackageDir(root, manifestDir, name) {
   if (!isValidPackageName(name))
-    throw new CodeRepoError(`Invalid package name: ${name}`);
+    throw new CodeRepoError(`Invalid package name: ${clip(name)}`);
   let dir = manifestDir;
   while (isInside(dir, root)) {
     const candidate = join2(dir, "node_modules", ...name.split("/"));
@@ -24425,12 +24468,12 @@ function resolveMainEntry(pkg) {
   const fromExports = json.exports !== undefined ? fromConditions(pkg, exportsEntry(json.exports, ".")) : null;
   return fromExports ?? existingDecl(pkg, json.types) ?? existingDecl(pkg, json.typings) ?? fromTypesVersions(pkg, "index.d.ts") ?? (typeof json.main === "string" ? existingDecl(pkg, json.main) : null) ?? existingDecl(pkg, "index.d.ts");
 }
-function resolveSubpathEntry(pkg, subpath) {
+function resolveSubpathEntry(pkg, name, subpath) {
   const json = pkg.json ?? {};
   if (json.exports !== undefined) {
     const entry = exportsEntry(json.exports, `./${subpath}`);
     if (entry === undefined || entry === null)
-      throw new CodeRepoError(`${json.name ?? "The package"} does not export ./${subpath}`);
+      throw new CodeRepoError(`${clip(name)} does not export ./${clip(subpath)}`);
     return fromConditions(pkg, entry);
   }
   return fromTypesVersions(pkg, subpath) ?? existingDecl(pkg, subpath);
@@ -24443,7 +24486,7 @@ function installedPackageVersion(root, manifestDir, name) {
   if (!dir)
     return null;
   const version = readPackageJson(dir).version;
-  return typeof version === "string" ? version : null;
+  return typeof version === "string" ? clip(version) : null;
 }
 function typesPackageName(name) {
   return `@types/${name.startsWith("@") ? name.slice(1).replace("/", "__") : name}`;
@@ -24510,14 +24553,17 @@ function braceDepths(text) {
   return depth;
 }
 var OPEN = { "{": "}", "(": ")", "[": "]", "<": ">" };
-function matchBracket(text, start) {
+function matchBracket(text, start, budget) {
+  const end = Math.min(text.length, start + SCAN_LIMITS.bracketScan);
   const stack = [];
-  for (let i = start;i < text.length; i++) {
+  let result = end;
+  let i = start;
+  for (;i < end; i++) {
     const c = text[i];
     if (c === "'" || c === '"' || c === "`") {
       const q = c;
       i++;
-      while (i < text.length && text[i] !== q) {
+      while (i < end && text[i] !== q) {
         if (text[i] === "\\")
           i++;
         i++;
@@ -24532,15 +24578,21 @@ function matchBracket(text, start) {
       stack.push(OPEN[c]);
     else if (c === stack[stack.length - 1]) {
       stack.pop();
-      if (stack.length === 0)
-        return i + 1;
+      if (stack.length === 0) {
+        result = i + 1;
+        break;
+      }
     }
   }
-  return text.length;
+  if (budget)
+    budget.left -= Math.min(i, end) - start + 1;
+  return result;
 }
-function readUntilSemicolon(text, start) {
+var NEW_DECLARATION = /^\s{0,40}(export|declare|import|interface|type)\b/;
+function readUntilSemicolon(text, start, budget) {
+  const end = Math.min(text.length, start + SCAN_LIMITS.bracketScan);
   let i = start;
-  while (i < text.length) {
+  while (i < end) {
     const c = text[i];
     if (c === ";")
       break;
@@ -24549,13 +24601,13 @@ function readUntilSemicolon(text, start) {
       continue;
     }
     if (OPEN[c]) {
-      i = matchBracket(text, i);
+      i = matchBracket(text, i, budget);
       continue;
     }
     if (c === "'" || c === '"' || c === "`") {
       const q = c;
       i++;
-      while (i < text.length && text[i] !== q) {
+      while (i < end && text[i] !== q) {
         if (text[i] === "\\")
           i++;
         i++;
@@ -24564,11 +24616,33 @@ function readUntilSemicolon(text, start) {
       continue;
     }
     if (c === `
-` && /^\s*(export|declare|import|interface|type)\b/.test(text.slice(i + 1, i + 40)))
+` && NEW_DECLARATION.test(text.slice(i + 1, i + 40)))
       break;
     i++;
   }
-  return text.slice(start, i).trim();
+  budget.left -= Math.min(i, end) - start + 1;
+  return text.slice(start, Math.min(i, text.length)).trim();
+}
+function indexWithin(text, ch, from, budget) {
+  const end = Math.min(text.length, from + SCAN_LIMITS.bracketScan);
+  let i = from;
+  while (i < end && text[i] !== ch)
+    i++;
+  budget.left -= i - from + 1;
+  return i < end ? i : -1;
+}
+function nextOf(text, chars) {
+  let from = -1, found = -1;
+  return (pos) => {
+    if (from >= 0 && pos >= from && (found < 0 || found >= pos))
+      return found;
+    let i = pos;
+    while (i < text.length && !chars.includes(text[i]))
+      i++;
+    from = pos;
+    found = i < text.length ? i : -1;
+    return found;
+  };
 }
 function splitTop(text, separator) {
   const parts = [];
@@ -24601,35 +24675,78 @@ function splitTop(text, separator) {
   parts.push(text.slice(last));
   return parts.map((p) => p.trim()).filter((p) => p.length > 0);
 }
-var IDENT = "[A-Za-z_$][\\w$]*";
+var WS = "\\s{1,256}";
+var IDENT = "[A-Za-z_$][\\w$]{0,255}";
+var SPEC_MAX = 1000;
+var STAR_EXPORT = /\bexport\s{1,256}\*\s{1,256}from\s{1,256}(['"])([^'"\n]{1,1000})\1/g;
+var BRACE_EXPORT = /\bexport\s{1,256}(type\s{1,256})?\{/g;
+var BRACE_FROM = /\s{0,256}from\s{1,256}(['"])([^'"\n]{1,1000})\1/y;
+var IMPORT_KEYWORD = /\bimport\s/g;
+var DECLARATION = new RegExp(`\\b(export${WS})?(?:declare${WS})?(?:abstract${WS})?(const|let|var|function|class|interface|type|enum)${WS}(${IDENT})`, "g");
+var DEFAULT_DECLARATION = new RegExp(`\\bexport${WS}default${WS}(?:declare${WS})?(?:abstract${WS})?(?:function|class)\\s{0,256}(${IDENT})?`);
+var DEFAULT_IDENT = new RegExp(`\\bexport${WS}default${WS}(${IDENT})`);
+var BRACE_LIST_MAX = 4096;
 function parseDeclarations(source) {
   const text = stripComments(source);
   const depth = braceDepths(text);
   const top = (index) => depth[index] === 0;
-  const parsed = { stars: [], reexports: [], locals: [], exported: new Set, values: new Map, types: new Map, imports: new Map };
-  for (const m of text.matchAll(/\bexport\s+\*\s+from\s+(['"])([^'"]+)\1/g))
+  const budget = { left: SCAN_LIMITS.parseSteps };
+  const parsed = { stars: [], reexports: [], locals: [], exported: new Set, values: new Map, types: new Map, imports: new Map, truncated: false };
+  for (const m of text.matchAll(STAR_EXPORT))
     if (top(m.index))
       parsed.stars.push(m[2]);
-  for (const m of text.matchAll(/\bexport\s+(type\s+)?\{([^}]*)\}(?:\s*from\s+(['"])([^'"]+)\3)?/g)) {
+  const nextClose = nextOf(text, "}");
+  for (const m of text.matchAll(BRACE_EXPORT)) {
+    const open = m.index + m[0].length;
+    const close = nextClose(open);
+    if (close < 0 || close - open > BRACE_LIST_MAX)
+      continue;
     if (!top(m.index) || m[1])
       continue;
-    for (const raw of m[2].split(",")) {
+    BRACE_FROM.lastIndex = close + 1;
+    const from = BRACE_FROM.exec(text);
+    for (const raw of text.slice(open, close).split(",")) {
       const item = raw.trim();
       if (!item || /^type\s/.test(item))
         continue;
-      const [imported, name = imported] = item.split(/\s+as\s+/).map((s) => s.trim());
-      if (m[4])
-        parsed.reexports.push({ name, imported, spec: m[4] });
+      const [imported, name = imported] = item.split(/\s{1,256}as\s{1,256}/).map((s) => s.trim());
+      if (from)
+        parsed.reexports.push({ name, imported, spec: from[2] });
       else
         parsed.locals.push({ name, local: imported });
     }
   }
-  for (const m of text.matchAll(/\bimport\s+(?:type\s+)?([^'";]*?)\s+from\s+(['"])([^'"]+)\2/g)) {
+  const nextStop = nextOf(text, `'";`);
+  const nextQuoteOrLine = nextOf(text, `'"
+`);
+  let lastStop = -1, lastFrom = -1;
+  IMPORT_KEYWORD.lastIndex = 0;
+  for (let m = IMPORT_KEYWORD.exec(text);m; m = IMPORT_KEYWORD.exec(text)) {
+    const clauseStart = m.index + m[0].length;
+    const q = nextStop(clauseStart);
+    if (q < 0)
+      break;
+    if (q - clauseStart > SPEC_MAX || text[q] === ";")
+      continue;
+    if (q !== lastStop) {
+      lastStop = q;
+      let j = q - 1;
+      while (j > clauseStart && q - j < 256 && /\s/.test(text[j]))
+        j--;
+      const isFrom = text.slice(j - 3, j + 1) === "from" && !/[\w$]/.test(text[j - 4] ?? "");
+      lastFrom = isFrom ? j - 3 : -1;
+    }
+    if (lastFrom < clauseStart)
+      continue;
+    const end = nextQuoteOrLine(q + 1);
+    if (end < 0 || text[end] !== text[q] || end === q + 1 || end - q - 1 > SPEC_MAX)
+      continue;
+    IMPORT_KEYWORD.lastIndex = end + 1;
     if (!top(m.index))
       continue;
-    const clause = m[1].trim(), spec = m[3];
-    const brace = clause.match(/\{([^}]*)\}/);
-    const head = clause.replace(/\{[^}]*\}/, "").replace(/,/g, " ").trim();
+    const clause = text.slice(clauseStart, lastFrom).trim().replace(/^type\s{1,256}/, ""), spec = text.slice(q + 1, end);
+    const brace = clause.match(/\{([^{}]{0,1000})\}/);
+    const head = clause.replace(/\{[^{}]{0,1000}\}/, "").replace(/,/g, " ").trim();
     if (head && !head.startsWith("*"))
       parsed.imports.set(head.split(/\s+/)[0], { spec, imported: "default" });
     if (brace)
@@ -24637,12 +24754,15 @@ function parseDeclarations(source) {
         const item = raw.trim().replace(/^type\s+/, "");
         if (!item)
           continue;
-        const [imported, local = imported] = item.split(/\s+as\s+/).map((s) => s.trim());
+        const [imported, local = imported] = item.split(/\s{1,256}as\s{1,256}/).map((s) => s.trim());
         parsed.imports.set(local, { spec, imported });
       }
   }
-  const declRe = new RegExp(`\\b(export\\s+)?(?:declare\\s+)?(?:abstract\\s+)?(const|let|var|function|class|interface|type|enum)\\s+(${IDENT})`, "g");
-  for (const m of text.matchAll(declRe)) {
+  for (const m of text.matchAll(DECLARATION)) {
+    if (budget.left <= 0) {
+      parsed.truncated = true;
+      break;
+    }
     if (!top(m.index))
       continue;
     const kind = m[2], name = m[3];
@@ -24651,58 +24771,71 @@ function parseDeclarations(source) {
       let typeParams = false;
       if (text[after] === "<") {
         typeParams = true;
-        after = matchBracket(text, after);
+        after = matchBracket(text, after, budget);
       }
-      const open = text.indexOf("{", after);
+      const open = indexWithin(text, "{", after, budget);
       if (open < 0)
         continue;
       const between = text.slice(after, open).trim();
       const extendsText = between.startsWith("extends") ? between.slice(7).trim() : undefined;
-      const close = matchBracket(text, open);
+      const close = matchBracket(text, open, budget);
       const previous = parsed.types.get(name);
       const body = text.slice(open, close);
-      parsed.types.set(name, previous ? { kind: "interface", typeParams: true, extendsText: previous.extendsText ?? extendsText, body: previous.body.slice(0, -1) + ";" + body.slice(1) } : { kind: "interface", typeParams, extendsText, body });
+      if (!previous)
+        parsed.types.set(name, { kind: "interface", typeParams, extendsText, body });
+      else if (previous.body.length + body.length > SCAN_LIMITS.bracketScan)
+        parsed.types.set(name, { ...previous, typeParams: true });
+      else
+        parsed.types.set(name, { kind: "interface", typeParams: true, extendsText: previous.extendsText ?? extendsText, body: previous.body.slice(0, -1) + ";" + body.slice(1) });
     } else if (kind === "type") {
       let typeParams = false;
       let i = after;
-      while (text[i] === " ")
+      while (text[i] === " " && i - after < 256)
         i++;
       if (text[i] === "<") {
         typeParams = true;
-        i = matchBracket(text, i);
+        i = matchBracket(text, i, budget);
       }
-      const eq = text.indexOf("=", i);
+      const eq = indexWithin(text, "=", i, budget);
       if (eq < 0 || text.slice(i, eq).trim() !== "")
         continue;
       if (!parsed.types.has(name))
-        parsed.types.set(name, { kind: "type", typeParams, body: readUntilSemicolon(text, eq + 1) });
+        parsed.types.set(name, { kind: "type", typeParams, body: readUntilSemicolon(text, eq + 1, budget) });
     } else {
       const valueKind = kind === "function" ? "function" : kind === "class" ? "class" : kind === "enum" ? "enum" : "const";
-      if (!parsed.values.has(name))
-        parsed.values.set(name, { kind: valueKind, text: readUntilSemicolon(text, after) });
+      const previous = parsed.values.get(name);
+      if (!previous)
+        parsed.values.set(name, { kind: valueKind, text: readUntilSemicolon(text, after, budget) });
+      else if (previous.kind === "function" && valueKind === "function")
+        previous.overloaded = true;
     }
     if (m[1])
       parsed.exported.add(name);
   }
-  const defaultDecl = text.match(new RegExp(`\\bexport\\s+default\\s+(?:declare\\s+)?(?:abstract\\s+)?(?:function|class)\\s*(${IDENT})?`));
-  const defaultIdent = text.match(new RegExp(`\\bexport\\s+default\\s+(${IDENT})\\s*;?`));
+  const defaultDecl = text.match(DEFAULT_DECLARATION);
+  const defaultIdent = text.match(DEFAULT_IDENT);
   if (defaultDecl && top(defaultDecl.index))
     parsed.defaultLocal = defaultDecl[1] ?? "default";
   else if (defaultIdent && top(defaultIdent.index) && !["function", "class", "abstract", "declare", "interface"].includes(defaultIdent[1]))
     parsed.defaultLocal = defaultIdent[1];
   return parsed;
 }
+var UNKNOWN = { names: [], state: "unknown" };
+var UNKNOWN_PROPS = { props: [], propsState: "unknown" };
 
 class Scanner {
   container;
   files = new Map;
   exportMaps = new Map;
+  evalMemo = new Map;
   unfollowed = new Set;
   truncated = false;
+  bytes = 0;
+  evalBudget = SCAN_LIMITS.evalSteps;
   constructor(container) {
     this.container = container;
   }
-  parse(file) {
+  async parse(file) {
     if (this.files.has(file))
       return this.files.get(file);
     const real = realpathOrNull(file);
@@ -24716,12 +24849,27 @@ class Scanner {
       this.truncated = true;
       return null;
     }
-    if (statSync(real).size > SCAN_LIMITS.fileBytes) {
+    const stat = statSync(real);
+    if (!stat.isFile())
+      throw new CodeRepoError("A declaration file is not a regular file");
+    if (stat.size > SCAN_LIMITS.fileBytes || this.bytes + stat.size > SCAN_LIMITS.totalBytes) {
       this.truncated = true;
       this.files.set(file, null);
       return null;
     }
-    const parsed = parseDeclarations(readFileSync3(real, "utf8"));
+    await yieldToEventLoop();
+    if (this.files.has(file))
+      return this.files.get(file);
+    const text = readRegularFile(real, SCAN_LIMITS.fileBytes, "A declaration file");
+    if (text === null) {
+      this.truncated = true;
+      this.files.set(file, null);
+      return null;
+    }
+    this.bytes += stat.size;
+    const parsed = parseDeclarations(text);
+    if (parsed.truncated)
+      this.truncated = true;
     this.files.set(file, parsed);
     return parsed;
   }
@@ -24747,7 +24895,7 @@ class Scanner {
     }
     return null;
   }
-  exportsOf(file, stack = new Set) {
+  async exportsOf(file, stack = new Set) {
     const cached = this.exportMaps.get(file);
     if (cached)
       return cached;
@@ -24755,7 +24903,7 @@ class Scanner {
     if (stack.has(file))
       return map2;
     stack.add(file);
-    const parsed = this.parse(file);
+    const parsed = await this.parse(file);
     if (parsed) {
       const add = (name, origin) => {
         if (map2.has(name))
@@ -24769,18 +24917,18 @@ class Scanner {
       for (const name of parsed.exported)
         add(name, { file, local: name });
       if (parsed.defaultLocal)
-        add("default", this.localOrigin(file, parsed, parsed.defaultLocal, stack));
+        add("default", await this.localOrigin(file, parsed, parsed.defaultLocal, stack));
       for (const { name, local } of parsed.locals)
-        add(name, this.localOrigin(file, parsed, local, stack));
+        add(name, await this.localOrigin(file, parsed, local, stack));
       for (const { name, imported, spec } of parsed.reexports) {
         const target = this.resolveSpecifier(file, spec);
-        add(name, target ? this.exportsOf(target, stack).get(imported) ?? { unresolved: true } : { unresolved: true });
+        add(name, target ? (await this.exportsOf(target, stack)).get(imported) ?? { unresolved: true } : { unresolved: true });
       }
       for (const spec of parsed.stars) {
         const target = this.resolveSpecifier(file, spec);
         if (!target)
           continue;
-        for (const [name, origin] of this.exportsOf(target, stack))
+        for (const [name, origin] of await this.exportsOf(target, stack))
           if (name !== "default")
             add(name, origin);
       }
@@ -24789,21 +24937,21 @@ class Scanner {
     this.exportMaps.set(file, map2);
     return map2;
   }
-  localOrigin(file, parsed, local, stack) {
+  async localOrigin(file, parsed, local, stack) {
     if (parsed.values.has(local) || parsed.types.has(local) || local === "default")
       return { file, local };
     const imported = parsed.imports.get(local);
     if (imported) {
       const target = this.resolveSpecifier(file, imported.spec);
       if (target)
-        return this.exportsOf(target, stack).get(imported.imported) ?? { unresolved: true };
+        return (await this.exportsOf(target, stack)).get(imported.imported) ?? { unresolved: true };
     }
     return { unresolved: true };
   }
-  findType(file, name, depth = 0) {
+  async findType(file, name, depth = 0) {
     if (depth > 8)
       return null;
-    const parsed = this.parse(file);
+    const parsed = await this.parse(file);
     if (!parsed)
       return null;
     const local = parsed.types.get(name);
@@ -24814,65 +24962,84 @@ class Scanner {
     if (imported) {
       const target = this.resolveSpecifier(file, imported.spec);
       if (target)
-        origin = this.exportsOf(target).get(imported.imported);
+        origin = (await this.exportsOf(target)).get(imported.imported);
     } else {
-      origin = this.exportsOf(file).get(name);
+      origin = (await this.exportsOf(file)).get(name);
     }
     if (origin && "file" in origin && (origin.file !== file || origin.local !== name))
       return this.findType(origin.file, origin.local, depth + 1);
     return null;
   }
-  evalType(text, file, depth = 0) {
+  async evalType(text, file, depth = 0) {
+    const key = `${depth}\x00${file}\x00${text}`;
+    const memo = this.evalMemo.get(key);
+    if (memo)
+      return memo;
+    this.evalBudget -= Math.max(text.length, 64);
+    let result = UNKNOWN;
+    if (this.evalBudget < 0)
+      this.truncated = true;
+    else
+      result = await this.evalTypeOnce(text, file, depth);
+    this.evalMemo.set(key, result);
+    return result;
+  }
+  async evalTypeOnce(text, file, depth) {
     let t = text.trim();
-    while (t.startsWith("(") && matchBracket(t, 0) === t.length)
+    if (depth > 8 || !t || t.length > SCAN_LIMITS.bracketScan)
+      return UNKNOWN;
+    for (let n = 0;n < 8 && t.startsWith("(") && matchBracket(t, 0) === t.length; n++)
       t = t.slice(1, -1).trim();
-    if (depth > 8 || !t)
-      return { names: [], state: "unknown" };
+    if (!t)
+      return UNKNOWN;
     if (splitTop(t, "|").length > 1)
-      return { names: [], state: "unknown" };
+      return UNKNOWN;
     const parts = splitTop(t, "&");
     if (parts.length > 1) {
       const names = new Set;
       for (const part of parts)
-        for (const n of this.evalType(part, file, depth + 1).names)
+        for (const n of (await this.evalType(part, file, depth + 1)).names)
           names.add(n);
       return { names: [...names], state: "partial" };
     }
-    if (t.startsWith("{"))
-      return { names: memberNames(t), state: "complete" };
-    const m = t.match(/^(?:import\((['"])([^'"]+)\1\)\.)?([A-Za-z_$][\w$.]*)\s*(<[\s\S]*>)?$/);
+    if (t.startsWith("{")) {
+      const { names, open } = memberInfo(t);
+      return { names, state: open ? "partial" : "complete" };
+    }
+    const m = t.match(/^(?:import\((['"])([^'"]{1,1000})\1\)\.)?([A-Za-z_$][\w$.]{0,255})\s{0,256}(<[\s\S]*>)?$/);
     if (!m)
-      return { names: [], state: "unknown" };
+      return UNKNOWN;
     const [, , importSpec, name, argText] = m;
     const args2 = argText ? splitTop(argText.slice(1, -1), ",") : [];
     if (name === "Omit" || name === "Pick") {
-      const keys = (args2[1] ?? "").match(/(['"])([^'"]+)\1/g)?.map((s) => s.slice(1, -1)) ?? [];
+      const keys = (args2[1] ?? "").match(/(['"])([^'"]{1,200})\1/g)?.map((s) => s.slice(1, -1)) ?? [];
       if (name === "Pick")
         return { names: keys, state: "partial" };
-      const inner = this.evalType(args2[0] ?? "", file, depth + 1);
+      const inner = await this.evalType(args2[0] ?? "", file, depth + 1);
       return { names: inner.names.filter((n) => !keys.includes(n)), state: "partial" };
     }
     let found = null;
     if (importSpec) {
       const target = this.resolveSpecifier(file, importSpec);
       if (target)
-        found = this.findType(target, name);
+        found = await this.findType(target, name);
     } else if (!name.includes(".")) {
-      found = this.findType(file, name);
+      found = await this.findType(file, name);
     }
     if (!found)
-      return { names: [], state: "unknown" };
+      return UNKNOWN;
     const { decl } = found;
     let result;
     if (decl.kind === "type")
-      result = this.evalType(decl.body, found.file, depth + 1);
+      result = await this.evalType(decl.body, found.file, depth + 1);
     else {
-      const names = new Set(memberNames(decl.body));
-      let state = "complete";
+      const { names: own, open } = memberInfo(decl.body);
+      const names = new Set(own);
+      let state = open ? "partial" : "complete";
       if (decl.extendsText) {
         state = "partial";
         for (const base of splitTop(decl.extendsText, ","))
-          for (const n of this.evalType(base, found.file, depth + 1).names)
+          for (const n of (await this.evalType(base, found.file, depth + 1)).names)
             names.add(n);
       }
       result = { names: [...names], state };
@@ -24881,64 +25048,84 @@ class Scanner {
       result = { ...result, state: "partial" };
     return result;
   }
-  propsOf(file, local, exportName) {
-    for (const candidate of [`${local}Props`, `${exportName}Props`]) {
-      if (this.findType(file, candidate)) {
-        const r2 = this.evalType(candidate, file);
-        if (r2.state !== "unknown")
-          return { props: r2.names, propsState: r2.state };
+  async propsOf(file, local, exportName) {
+    const signature = await this.signatureProps(file, local);
+    if (signature.propsState !== "unknown")
+      return signature;
+    for (const candidate of new Set([`${local}Props`, `${exportName}Props`])) {
+      if (await this.findType(file, candidate)) {
+        const r = await this.evalType(candidate, file);
+        if (r.state !== "unknown")
+          return { props: r.names, propsState: r.state };
       }
     }
-    const value = this.parse(file)?.values.get(local);
+    return signature;
+  }
+  async signatureProps(file, local) {
+    const value = (await this.parse(file))?.values.get(local);
     if (!value)
-      return { props: [], propsState: "unknown" };
+      return UNKNOWN_PROPS;
+    const props = await this.signatureType(value, file);
+    return value.overloaded && props.propsState === "complete" ? { ...props, propsState: "partial" } : props;
+  }
+  async signatureType(value, file) {
     let text = value.text;
     if (value.kind === "const") {
       if (!text.startsWith(":"))
-        return { props: [], propsState: "unknown" };
+        return UNKNOWN_PROPS;
       text = text.slice(1).trim();
-      const wrapper = text.match(/^(?:React\.)?(?:FC|FunctionComponent|ForwardRefExoticComponent)\s*</);
+      const wrapper = text.match(/^(?:React\.)?(?:FC|FunctionComponent|ForwardRefExoticComponent)\s{0,256}</);
       if (wrapper) {
         const open = wrapper[0].length - 1;
         const close = matchBracket(text, open);
-        const r2 = this.evalType(text.slice(open + 1, close - 1), file);
+        const r2 = await this.evalType(text.slice(open + 1, close - 1), file);
         return { props: r2.names, propsState: r2.state };
       }
     } else if (value.kind !== "function") {
-      return { props: [], propsState: "unknown" };
+      return UNKNOWN_PROPS;
     }
     if (text.startsWith("<"))
       text = text.slice(matchBracket(text, 0)).trim();
     if (!text.startsWith("("))
-      return { props: [], propsState: "unknown" };
+      return UNKNOWN_PROPS;
     const params = splitTop(text.slice(1, matchBracket(text, 0) - 1), ",");
     if (params.length === 0)
       return { props: [], propsState: "complete" };
     const colon = splitTop(params[0], ":");
     if (colon.length < 2)
-      return { props: [], propsState: "unknown" };
-    const r = this.evalType(colon.slice(1).join(":"), file);
+      return UNKNOWN_PROPS;
+    const r = await this.evalType(colon.slice(1).join(":"), file);
     return { props: r.names, propsState: r.state };
   }
 }
-function memberNames(body) {
+function memberInfo(body) {
   const inner = body.trim().replace(/^\{/, "").replace(/\}$/, "");
-  const names = [];
+  const names = new Set;
+  let open = false;
   for (const line of splitTop(inner.replace(/\n/g, ";"), ";").flatMap((s) => splitTop(s, ","))) {
-    const m = line.match(/^(?:readonly\s+)?(?:(['"])([^'"]+)\1|([A-Za-z_$][\w$]*))\s*\??\s*[:(<]/);
+    if (/^(?:[+-]?readonly\s{1,64})?\[/.test(line)) {
+      open = true;
+      continue;
+    }
+    const m = line.match(/^(?:readonly\s{1,64})?(?:(['"])([^'"]{1,200})\1|([A-Za-z_$][\w$]{0,255}))\s{0,64}\??\s{0,64}[:(<]/);
     const name = m?.[2] ?? m?.[3];
-    if (name && !names.includes(name))
-      names.push(name);
+    if (name)
+      names.add(name);
   }
-  return names;
+  return { names: [...names], open };
 }
 var PASCAL = /^[A-Z][A-Za-z0-9_$]*$/;
 var isComponentName = (name) => PASCAL.test(name) && /[a-z]/.test(name);
-function scanPackage(root, manifestPath, from) {
+function boundProps(props) {
+  const kept = props.props.filter((n) => n.length <= SCAN_LIMITS.text).slice(0, SCAN_LIMITS.props);
+  const cut = kept.length < props.props.length;
+  return { props: kept, propsState: cut && props.propsState === "complete" ? "partial" : props.propsState, cut };
+}
+async function scanPackage(root, manifestPath, from) {
   const { name, subpath } = splitSpecifier(from);
   const deps = manifestDependencies(readManifest(root, manifestPath));
   if (!deps.includes(name))
-    throw new CodeRepoError(`${name} is not a dependency in the Manifest`);
+    throw new CodeRepoError(`${clip(name)} is not a dependency in the Manifest`);
   const manifestDir = dirname2(manifestPath);
   const empty = (installed, version2) => ({
     package: from,
@@ -24949,15 +25136,17 @@ function scanPackage(root, manifestPath, from) {
     exportNames: new Set,
     propsByExport: new Map,
     unfollowed: [],
+    unfollowedCount: 0,
     truncated: false
   });
   const dir = findPackageDir(root, manifestDir, name);
   if (!dir)
     return empty(false, null);
   const json = readPackageJson(dir);
-  const version = typeof json.version === "string" ? json.version : null;
+  const version = typeof json.version === "string" ? clip(json.version) : null;
+  const versionCut = typeof json.version === "string" && json.version.length > SCAN_LIMITS.text;
   let pkg = { dir, json };
-  let entry = subpath ? resolveSubpathEntry(pkg, subpath) : resolveMainEntry(pkg);
+  let entry = subpath ? resolveSubpathEntry(pkg, name, subpath) : resolveMainEntry(pkg);
   if (!entry) {
     const typesDir = findPackageDir(root, manifestDir, typesPackageName(name));
     if (typesDir) {
@@ -24966,18 +25155,19 @@ function scanPackage(root, manifestPath, from) {
     }
   }
   if (!entry)
-    return empty(true, version);
+    return { ...empty(true, version), truncated: versionCut };
   const scanner = new Scanner(pkg.dir);
-  const exportsMap = scanner.exportsOf(entry);
+  const exportsMap = await scanner.exportsOf(entry);
   const exportNames = new Set;
   const propsByExport = new Map;
   const components = [];
+  let cut = versionCut;
   for (const [exportName, origin] of exportsMap) {
     let local = exportName;
     let kind = "unresolved";
     if ("file" in origin) {
       local = origin.local;
-      const parsed = scanner.parse(origin.file);
+      const parsed = await scanner.parse(origin.file);
       const value = parsed?.values.get(origin.local);
       kind = value ? value.kind : parsed?.types.has(origin.local) ? "type" : origin.local === "default" ? "function" : "unresolved";
     }
@@ -24989,12 +25179,19 @@ function scanPackage(root, manifestPath, from) {
     const rowName = exportName === "default" ? local : exportName;
     if (!isComponentName(rowName))
       continue;
-    const props = "file" in origin ? scanner.propsOf(origin.file, origin.local, rowName) : { props: [], propsState: "unknown" };
+    if (rowName.length > SCAN_LIMITS.text) {
+      cut = true;
+      continue;
+    }
+    const found = "file" in origin ? await scanner.propsOf(origin.file, origin.local, rowName) : UNKNOWN_PROPS;
+    const { cut: propsCut, ...props } = boundProps(found);
+    if (propsCut)
+      cut = true;
     propsByExport.set(exportName, props);
     components.push({ name: rowName, from, ...exportName === "default" ? { default: true } : {}, ...props });
   }
   components.sort((a, b) => a.name.localeCompare(b.name));
-  const truncated = scanner.truncated || components.length > SCAN_LIMITS.rows;
+  const truncated = cut || scanner.truncated || components.length > SCAN_LIMITS.rows;
   return {
     package: from,
     packageVersion: version,
@@ -25003,7 +25200,8 @@ function scanPackage(root, manifestPath, from) {
     components: components.slice(0, SCAN_LIMITS.rows),
     exportNames,
     propsByExport,
-    unfollowed: [...scanner.unfollowed].slice(0, 20),
+    unfollowed: [...scanner.unfollowed].slice(0, SCAN_LIMITS.unfollowed).map((spec) => clip(spec)),
+    unfollowedCount: scanner.unfollowed.size,
     truncated
   };
 }
@@ -25033,7 +25231,8 @@ function customFileExists(root, from) {
 
 // src/llm2figma_mcp/code-map.ts
 import { createHash, randomUUID as randomUUID3 } from "crypto";
-import { lstat, mkdir, readFile as readFile2, realpath, rename, unlink, writeFile } from "fs/promises";
+import { constants as constants2 } from "fs";
+import { lstat, mkdir, open, realpath, rename, unlink } from "fs/promises";
 import { dirname as dirname3, join as join3 } from "path";
 var CODE_MAP_DIR = ".l2f";
 var CODE_MAP_FILE = "code-map.json";
@@ -25053,6 +25252,7 @@ function parseCodeMap(text) {
   return json;
 }
 var FIGMA_KEY = /^[A-Za-z0-9:_-]{1,128}$/;
+var isFigmaKey = (key) => FIGMA_KEY.test(key) && key !== "__proto__";
 var DOTTED_NAME = /^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/;
 var TAG = /^[A-Za-z][A-Za-z0-9.:_-]{0,99}$/;
 var PROP_NAME = /^[A-Za-z_$][\w$-]{0,99}$/;
@@ -25109,9 +25309,9 @@ function importShapeError(imp) {
     return typeof imp.tag === "string" && TAG.test(imp.tag) ? null : "import.tag is not a valid tag name";
   if (keys !== "from,name" && keys !== "default,from,name")
     return "import must be {from, name, default?} or {tag}";
-  if (typeof imp.from !== "string" || imp.from.length === 0)
-    return "import.from must be a string";
-  if (typeof imp.name !== "string" || !DOTTED_NAME.test(imp.name))
+  if (typeof imp.from !== "string" || imp.from.length === 0 || imp.from.length > SCAN_LIMITS.text)
+    return `import.from must be a string of 1 to ${SCAN_LIMITS.text} characters`;
+  if (typeof imp.name !== "string" || imp.name.length > SCAN_LIMITS.text || !DOTTED_NAME.test(imp.name))
     return "import.name must be an identifier, optionally dotted";
   if ("default" in imp && imp.default !== true)
     return "import.default may only be true";
@@ -25120,10 +25320,10 @@ function importShapeError(imp) {
 function makeValidationContext(root, manifestPath) {
   return { root, manifestPath, dependencies: manifestDependencies(readManifest(root, manifestPath)), scans: new Map };
 }
-function scanFor(ctx, from) {
+async function scanFor(ctx, from) {
   if (!ctx.scans.has(from)) {
     try {
-      ctx.scans.set(from, scanPackage(ctx.root, ctx.manifestPath, from));
+      ctx.scans.set(from, await scanPackage(ctx.root, ctx.manifestPath, from));
     } catch (error) {
       if (!(error instanceof CodeRepoError))
         throw error;
@@ -25132,8 +25332,8 @@ function scanFor(ctx, from) {
   }
   return ctx.scans.get(from);
 }
-function validateEntry(ctx, figmaKey, input) {
-  if (!FIGMA_KEY.test(figmaKey))
+async function validateEntry(ctx, figmaKey, input) {
+  if (!isFigmaKey(figmaKey))
     return { reason: "figmaKey is not a valid component or component set key" };
   if (!isRecord(input))
     return { reason: "entry must be an object or null" };
@@ -25142,6 +25342,8 @@ function validateEntry(ctx, figmaKey, input) {
     return { reason: `unknown field ${unknownKey}` };
   if (typeof input.figmaName !== "string" || input.figmaName.trim() === "")
     return { reason: "figmaName is required" };
+  if (input.figmaName.length > SCAN_LIMITS.text)
+    return { reason: `figmaName is longer than ${SCAN_LIMITS.text} characters` };
   if (!["package", "custom", "missing"].includes(input.status))
     return { reason: "status must be package, custom or missing" };
   if (input.note !== undefined && typeof input.note !== "string")
@@ -25169,6 +25371,7 @@ function validateEntry(ctx, figmaKey, input) {
   }
   let verified = input.status !== "missing";
   const packages = new Set;
+  let entryMapped = new Set;
   for (const pair of pairs) {
     const mapped = new Set;
     if (pair.props !== undefined) {
@@ -25176,6 +25379,11 @@ function validateEntry(ctx, figmaKey, input) {
       if (error)
         return { reason: pair.where === "entry" ? error : `${pair.where}.${error}` };
     }
+    if (pair.where === "entry")
+      entryMapped = mapped;
+    else if (input.import === undefined)
+      for (const prop of entryMapped)
+        mapped.add(prop);
     if (pair.import === undefined)
       continue;
     const shape = importShapeError(pair.import);
@@ -25208,9 +25416,9 @@ function validateEntry(ctx, figmaKey, input) {
       throw error;
     }
     if (!ctx.dependencies.includes(name))
-      return { reason: `${name} is not a dependency in the Manifest` };
+      return { reason: `${clip(name)} is not a dependency in the Manifest` };
     packages.add(name);
-    const scan = scanFor(ctx, imp.from);
+    const scan = await scanFor(ctx, imp.from);
     if (scan instanceof CodeRepoError)
       return { reason: scan.message };
     if (scan.noDeclarations) {
@@ -25258,7 +25466,7 @@ function mergeCodeMap(base, changes) {
   const written = [], removed = [];
   for (const [key, entry] of Object.entries(changes.entries)) {
     if (entry === null) {
-      if (key in components) {
+      if (Object.hasOwn(components, key)) {
         delete components[key];
         removed.push(key);
       }
@@ -25297,12 +25505,22 @@ function enqueue(path4, task) {
 }
 var hashOf = (text) => text === null ? "absent" : createHash("sha256").update(text).digest("hex");
 async function readIfPresent(file) {
+  let handle;
   try {
-    return await readFile2(file, "utf8");
+    handle = await open(file, constants2.O_RDONLY | (constants2.O_NONBLOCK ?? 0) | (constants2.O_NOFOLLOW ?? 0));
   } catch (error) {
     if (error?.code === "ENOENT")
       return null;
+    if (error?.code === "ELOOP" || error?.code === "EMLINK")
+      throw new CodeRepoError("the code map could not be opened without following a link; refusing to write it");
     throw error;
+  }
+  try {
+    if (!(await handle.stat()).isFile())
+      throw new CodeRepoError("the code map path is not a file; refusing to write it");
+    return await handle.readFile("utf8");
+  } finally {
+    await handle.close();
   }
 }
 async function lstatOrNull(path4) {
@@ -25314,7 +25532,7 @@ async function lstatOrNull(path4) {
     throw error;
   }
 }
-async function checkWritePath(root) {
+async function checkWritePath(root, hooks = {}) {
   const dir = join3(root, CODE_MAP_DIR);
   let dirStat = await lstatOrNull(dir);
   if (dirStat?.isSymbolicLink())
@@ -25330,6 +25548,8 @@ async function checkWritePath(root) {
     if (dirStat.isSymbolicLink() || !dirStat.isDirectory())
       throw new CodeRepoError(".l2f is not a directory; refusing to write the code map");
   }
+  if (hooks.afterDirCheck)
+    await hooks.afterDirCheck(dir);
   if (!isInside(await realpath(dir), root))
     throw new CodeRepoError(".l2f resolves outside the CodeRepo; refusing to write the code map");
   const file = join3(dir, CODE_MAP_FILE);
@@ -25340,11 +25560,24 @@ async function checkWritePath(root) {
     throw new CodeRepoError("the code map path is not a file; refusing to write it");
   return file;
 }
+async function recheckBeforeRename(root, file) {
+  const dir = dirname3(file);
+  const dirStat = await lstatOrNull(dir);
+  if (!dirStat || dirStat.isSymbolicLink() || !dirStat.isDirectory())
+    throw new CodeRepoError(".l2f changed while writing; refusing to write the code map");
+  if (!isInside(await realpath(dir), root))
+    throw new CodeRepoError(".l2f resolves outside the CodeRepo; refusing to write the code map");
+  const check = await lstatOrNull(file);
+  if (check?.isSymbolicLink())
+    throw new CodeRepoError("the code map is a symlink; refusing to write it");
+  if (check && !check.isFile())
+    throw new CodeRepoError("the code map path is not a file; refusing to write it");
+}
 function updateCodeMap(root, update, hooks = {}) {
   const target = join3(root, CODE_MAP_DIR, CODE_MAP_FILE);
   return enqueue(target, async () => {
     for (let attempt = 0;attempt < 2; attempt++) {
-      const file = await checkWritePath(root);
+      const file = await checkWritePath(root, hooks);
       const original = await readIfPresent(file);
       let current = emptyCodeMap();
       if (original !== null) {
@@ -25355,14 +25588,17 @@ function updateCodeMap(root, update, hooks = {}) {
       }
       const { map: map2, result } = update(current);
       const temp = join3(dirname3(file), `.${CODE_MAP_FILE}.${process.pid}.${randomUUID3()}.tmp`);
-      await writeFile(temp, JSON.stringify(map2, null, 2) + `
-`, { flag: "wx" });
       try {
+        const handle = await open(temp, constants2.O_CREAT | constants2.O_EXCL | constants2.O_WRONLY | (constants2.O_NOFOLLOW ?? 0), 420);
+        try {
+          await handle.writeFile(JSON.stringify(map2, null, 2) + `
+`);
+        } finally {
+          await handle.close();
+        }
         if (hooks.beforeRename)
           await hooks.beforeRename(file);
-        const check = await lstatOrNull(file);
-        if (check?.isSymbolicLink())
-          throw new CodeRepoError("the code map is a symlink; refusing to write it");
+        await recheckBeforeRename(root, file);
         if (hashOf(await readIfPresent(file)) === hashOf(original)) {
           await rename(temp, file);
           return { path: file, result };
@@ -25384,23 +25620,33 @@ function asToolError2(error) {
   return { content: [{ type: "text", text: `Code map error: ${message}` }], isError: true };
 }
 var cap = (list) => list.slice(0, SCAN_LIMITS.rows);
+var COMPONENT_BYTES = 48 * 1024;
 var LIMITS = "Reads TypeScript declaration files as text and never runs anything from the repository. Packages without declarations " + "(Vue single-file components, Angular modules, web-component manifests) scan as noDeclarations; map them by hand, unverified.";
 async function scanCodeComponents(args2) {
   const root = openCodeRepo(args2.codeRepo);
   const manifestPath = resolveManifest(root, args2.manifest);
   if (!args2.package) {
     const dependencies = manifestDependencies(readManifest(root, manifestPath));
-    return { dependencies: cap(dependencies), truncated: dependencies.length > SCAN_LIMITS.rows };
+    const listed = cap(dependencies).map((name) => clip(name));
+    return { dependencies: listed, truncated: dependencies.length > SCAN_LIMITS.rows || listed.some((name, i) => name !== dependencies[i]) };
   }
-  const scan = scanPackage(root, manifestPath, args2.package);
+  const scan = await scanPackage(root, manifestPath, args2.package);
+  const components = [];
+  let bytes = 0;
+  for (const component of scan.components) {
+    bytes += JSON.stringify(component).length + 1;
+    if (bytes > COMPONENT_BYTES)
+      break;
+    components.push(component);
+  }
   return {
-    package: scan.package,
+    package: clip(scan.package),
     packageVersion: scan.packageVersion,
     ...scan.installed ? {} : { installed: false },
     noDeclarations: scan.noDeclarations,
-    components: scan.components,
-    ...scan.unfollowed.length ? { unfollowed: scan.unfollowed } : {},
-    truncated: scan.truncated
+    components,
+    ...scan.unfollowedCount ? { unfollowed: scan.unfollowed, unfollowedCount: scan.unfollowedCount } : {},
+    truncated: scan.truncated || components.length < scan.components.length
   };
 }
 async function setCodeMapEntries(args2, hooks) {
@@ -25412,12 +25658,15 @@ async function setCodeMapEntries(args2, hooks) {
   const used = new Set;
   for (const [figmaKey, input] of Object.entries(args2.entries ?? {})) {
     if (input === null) {
-      entries[figmaKey] = null;
+      if (isFigmaKey(figmaKey))
+        entries[figmaKey] = null;
+      else
+        rejected.push({ figmaKey: clip(figmaKey), reason: "figmaKey is not a valid component or component set key" });
       continue;
     }
-    const result2 = validateEntry(ctx, figmaKey, input);
+    const result2 = await validateEntry(ctx, figmaKey, input);
     if ("reason" in result2) {
-      rejected.push({ figmaKey, reason: result2.reason });
+      rejected.push({ figmaKey: clip(figmaKey), reason: clip(result2.reason, 2 * SCAN_LIMITS.text) });
       continue;
     }
     entries[figmaKey] = result2.entry;
@@ -25428,7 +25677,7 @@ async function setCodeMapEntries(args2, hooks) {
   for (const [name, value] of Object.entries(args2.tokens ?? {})) {
     const error = tokenError(name, value);
     if (error)
-      rejected.push({ figmaKey: `token:${name}`, reason: error });
+      rejected.push({ figmaKey: clip(`token:${name}`), reason: clip(error, 2 * SCAN_LIMITS.text) });
     else
       tokens[name] = value;
   }
