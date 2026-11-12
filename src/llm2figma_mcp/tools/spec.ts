@@ -7,7 +7,7 @@ import {
   SPEC_LOCK_VERSION, SPEC_VERSION, lockNodesFromTree, specHash, type SpecFile, type SpecLockFile,
 } from "../../shared/spec.js";
 import { WALK_LIMITS } from "../../shared/walk.js";
-import { backUp, readExistingPair, readSpecPair, resolveSpecPaths, specBaseDir, writeFileAtomic } from "../spec-files.js";
+import { backUp, readExistingPair, readSpecPair, resolveSpecPaths, specBaseDir, writeFileAtomic, type SpecPaths } from "../spec-files.js";
 import { computePlan, prepareSpec, type LiveRead, type Plan, type PlanIssue, type PlanOperation } from "../spec-plan.js";
 
 // Spec sync (L2F_SPEC_SYNC). pull_spec writes a subtree to a Spec file the model
@@ -66,12 +66,36 @@ function fileStamp(date: Date): string {
   return date.toISOString().replace(/[:.]/g, "-");
 }
 
+// Per-path in-process mutex: a pull holds its Spec path from reading the
+// existing pair to writing the SpecLock, so two pulls to one path run one after
+// the other and never leave a Spec from one and a SpecLock from the other.
+const pathLocks = new Map<string, Promise<void>>();
+
+export async function withPathLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const previous = pathLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const tail = previous.then(() => held);
+  pathLocks.set(key, tail);
+  await previous;
+  try {
+    return await run();
+  } finally {
+    release();
+    if (pathLocks.get(key) === tail) pathLocks.delete(key);
+  }
+}
+
 export async function pullSpec(args: PullArgs, send: SendCommandFn, options: SpecToolOptions = {}): Promise<PullResult> {
   const env = options.env ?? process.env;
-  const { nodeId, path, maxNodes, maxDepth, replaceEdited = false } = args;
+  const { nodeId, path } = args;
   if (nodeId.includes(";")) throw new Error(`Cannot pull ${nodeId}: it is inside an instance. Instances are exported as leaves; pull a node outside the instance.`);
-
   const paths = await resolveSpecPaths(path, specBaseDir(env, options.cwd));
+  return withPathLock(paths.specPath, () => pullLocked(args, paths, send, options));
+}
+
+async function pullLocked(args: PullArgs, paths: SpecPaths, send: SendCommandFn, options: SpecToolOptions): Promise<PullResult> {
+  const { nodeId, maxNodes, maxDepth, replaceEdited = false } = args;
   const existing = await readExistingPair(paths);
   if (!replaceEdited) {
     const reason = refusal(existing.spec, existing.lock, paths.specPath);
@@ -80,8 +104,11 @@ export async function pullSpec(args: PullArgs, send: SendCommandFn, options: Spe
 
   // Re-pulling the same root: the plugin refuses a different file or page, so a
   // duplicated file (identical node ids) cannot silently replace the original.
+  // With replaceEdited and a recorded file key, only the key is held to: the
+  // file may have been renamed and the node moved to another page since.
   const previous = existing.spec && existing.spec.rootId === nodeId ? existing.spec : null;
-  const expect = previous ? { fileKey: previous.fileKey, fileName: previous.fileName, pageId: previous.pageId } : {};
+  const keyOnly = !!(previous && replaceEdited && previous.fileKey);
+  const expect = !previous ? {} : keyOnly ? { fileKey: previous.fileKey } : { fileKey: previous.fileKey, fileName: previous.fileName, pageId: previous.pageId };
   const exported: any = await send("export_spec", { nodeId, expect, maxNodes, maxDepth }, EXPORT_TIMEOUT_MS);
   if (!exported || typeof exported !== "object" || !exported.tree || typeof exported.rootId !== "string" || typeof exported.pageId !== "string") {
     throw new Error("The Figma plugin returned no Spec tree. Rebuild and re-run the plugin (bun run build) so it knows export_spec.");
@@ -91,6 +118,9 @@ export async function pullSpec(args: PullArgs, send: SendCommandFn, options: Spe
   const fileKey: string | null = exported.fileKey ?? userKey ?? null;
   if (previous && previous.fileKey && fileKey && previous.fileKey !== fileKey) {
     throw new Error(`Wrong file: ${paths.specPath} is for file key ${previous.fileKey}, but the connected file's key is ${fileKey}.`);
+  }
+  if (keyOnly && !fileKey) {
+    throw new Error(`Cannot confirm the connected file is the one ${paths.specPath} was pulled from (file key ${previous!.fileKey}): it has no file key. Rejoin the channel with the file key, or pull to a new path.`);
   }
 
   const spec: SpecFile = {
@@ -123,7 +153,7 @@ export async function pullSpec(args: PullArgs, send: SendCommandFn, options: Spe
   };
   if (backups.length) result.backups = backups;
   if (result.truncated) {
-    result.note = "The node budget cut some subtrees off. Each is an OpaqueNode with truncated: true and nothing inside it can be edited; pull again with a larger maxNodes or maxDepth to edit them.";
+    result.note = "A budget (maxNodes, maxDepth or the 8 MB Spec size) stopped the read. Each node not read is an OpaqueNode with truncated: true and a reason, in its parent's children; it cannot be edited. Pull a smaller subtree, or again with a larger maxNodes or maxDepth, to edit them.";
   }
   return result;
 }
@@ -214,7 +244,8 @@ function planNote(plan: Plan): string | undefined {
 export async function planSpec(args: { path: string }, send: SendCommandFn, options: SpecToolOptions = {}): Promise<PlanSummary> {
   const env = options.env ?? process.env;
   const paths = await resolveSpecPaths(args.path, specBaseDir(env, options.cwd));
-  const { spec, lock } = await readSpecPair(paths);
+  // Under the pull's path lock, so a pull in progress never pairs one Spec with another's SpecLock.
+  const { spec, lock } = await withPathLock(paths.specPath, () => readSpecPair(paths));
   if (lock.pendingApply) {
     throw new Error(`Refusing to plan ${paths.specPath}: an apply (plan ${lock.pendingApply}) was started and did not finish, so Figma may hold part of it. Pull again (pull_spec with replaceEdited: true backs up the Spec) and redo the edits.`);
   }
@@ -223,7 +254,7 @@ export async function planSpec(args: { path: string }, send: SendCommandFn, opti
 
   const live = await send("read_spec_nodes", {
     rootId: lock.rootId, expect: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId },
-    baseHashes: pre.baseHashes, truncatedIds: pre.truncatedIds, sizeIds: pre.sizeIds,
+    baseHashes: pre.baseHashes, truncated: pre.truncated, sizeIds: pre.sizeIds,
     maxNodes: WALK_LIMITS.maxNodes, maxDepth: WALK_LIMITS.maxDepth,
   }, READ_TIMEOUT_MS) as LiveRead;
   if (!live || typeof live !== "object" || !live.nodes || typeof live.nodes !== "object" || live.rootId !== lock.rootId) {
@@ -262,7 +293,7 @@ export async function planSpec(args: { path: string }, send: SendCommandFn, opti
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn, options: SpecToolOptions = {}) {
   server.tool(
     "pull_spec",
-    "Write a Figma subtree to a Spec file on disk (JSON, name ending .l2f.json) so a design can be edited in place by editing the file, plus a SpecLock beside it (<name>.l2f.lock.json, never edit it) recording what Figma held at the pull. The Spec uses create_node_tree's node format (text content is `text`, colours are hex or $var:Collection/Name) and every node carries its Figma `id`; a node without an id is one to create. Values equal to create_node_tree's defaults, and values Figma derives from layout (x/y inside auto-layout, width/height on HUG or FILL axes, text height), are left out. Nodes the format cannot express (groups, ellipses, lines, boolean operations, sections, components, rotated nodes, grid frames) are OpaqueNodes {type: \"$opaque\", id, name, nodeType} with no children; an instance is a leaf with componentKey (or componentId for a local component) and flattened properties. A subtree the node budget cut off is an OpaqueNode with truncated: true. Returns only paths and counts, never the tree: read the file. Refuses to overwrite a Spec with unapplied edits, a pair whose apply did not finish, or a file that is not a Spec; replaceEdited: true renames the old pair to .bak first. Re-pulling the same root checks it is the same file (by file key when known, else by file name: a copy renamed to the original's name is not detected) and page. Paths: relative to L2F_SPEC_DIR (or the server's working directory); absolute paths must be inside it; symlinked Spec files are refused.",
+    "Write a Figma subtree to a Spec file on disk (JSON, name ending .l2f.json) so a design can be edited in place by editing the file, plus a SpecLock beside it (<name>.l2f.lock.json, never edit it) recording what Figma held at the pull. The Spec uses create_node_tree's node format (text content is `text`, colours are hex or $var:Collection/Name) and every node carries its Figma `id`; a node without an id is one to create. An absent key means its default (what create_node_tree leaves); values Figma derives from layout (x/y inside auto-layout, width/height on HUG or FILL axes, text height unless the box is fixed) are left out, while x/y outside auto-layout, FIXED width/height and auto-layout padding/spacing are always written. Nodes the format cannot express (groups, ellipses, lines, boolean operations, sections, components, rotated nodes, grid frames, text with mixed styles) are OpaqueNodes {type: \"$opaque\", id, name, nodeType, reason} with no children; an instance is a leaf with componentSetKey/componentSetId for a variant (properties pick the variant), else componentKey/componentId, and flattened properties. The walk is breadth-first; nodes a budget (maxNodes, maxDepth, 8 MB) left unread are OpaqueNodes with truncated: true in their parent's children. Returns only paths and counts, never the tree: read the file. Refuses to overwrite a Spec with unapplied edits, a pair whose apply did not finish, or a file that is not a Spec; replaceEdited: true renames the old pair to .bak first. Re-pulling the same root checks it is the same file (by file key when known, else by file name: a copy renamed to the original's name is not detected) and page; with replaceEdited and a known file key only the key is checked. Paths: relative to L2F_SPEC_DIR (or the server's working directory); absolute paths must be inside it; symlinked Spec files are refused.",
     {
       nodeId: z.string().min(1).describe("Root of the subtree: a frame, text, rectangle, vector or instance"),
       path: z.string().min(1).describe("Spec file path ending in .l2f.json; relative to L2F_SPEC_DIR or the server's working directory. The directory must exist"),

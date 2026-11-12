@@ -9,8 +9,8 @@
 // docs/Spec-Sync.md and the plan's "Spec sync" section for the tables.
 
 import {
-  OPAQUE_TYPE, SPEC_DEFAULTS, SPEC_TYPES, SPEC_VOCABULARY, hashString, normalizeNode, normalizeSpecTree, stableStringify,
-  type ParentLayout, type SpecFile, type SpecLockFile, type SpecType,
+  OPAQUE_TYPE, SPEC_DEFAULTS, SPEC_TYPES, SPEC_VOCABULARY, canonicalValue, isVarPaint, lockProps, normalizeNode, normalizeSpecTree,
+  stableStringify, type ParentLayout, type SpecFile, type SpecLockFile, type SpecType,
 } from "../shared/spec.js";
 
 // What read_spec_nodes returns per live node. `props` only when propsHash
@@ -112,8 +112,8 @@ export interface Plan extends PlanBody {
 interface DesiredNode {
   id: string;
   props: Record<string, unknown>;
-  // `props` in the SpecLock's form (pathHash for pathData when the lock uses it).
-  compare?: Record<string, unknown>;
+  // lockProps(props): the SpecLock's form (pathHash for pathData), for comparison.
+  compare: Record<string, unknown>;
   parentId: string | null;
   parentLayout: ParentLayout;
   path: number[];
@@ -126,50 +126,29 @@ export interface PreparedSpec {
   desiredChildren: Map<string, string[]>;
   creates: Array<Extract<PlanOperation, { op: "create" }>>;
   baseHashes: Record<string, string>;
-  // SpecLock nodes recorded as cut off by the node budget: read them the same way.
-  truncatedIds: string[];
+  // SpecLock nodes recorded as cut off by a budget, with their recorded reason:
+  // the live read reads them as the same placeholders.
+  truncated: Record<string, string>;
   // Nodes whose Spec width or height differs from the base: the read returns
   // their live size, since an update naming one dimension needs the other.
   sizeIds: string[];
-  // The SpecLock records vector paths as pathHash rather than pathData.
-  pathHashed: boolean;
 }
 
 const MAX_LISTED_ERRORS = 10;
 const RESIZABLE = new Set(["frame", "rectangle", "vector"]);
+// Figma keeps a node's geometry when its context changes; never implied.
+const GEOMETRY = new Set(["x", "y", "width", "height"]);
 
-const COLOR_KEYS = new Set(["fillColor", "strokeColor", "fontColor"]);
-
-// A colour in one comparable form: a bound paint at full opacity may be written
-// as "$var:Name" or {"$var": "Name", "opacity": 1}; both compare equal.
-function comparableColor(value: unknown): unknown {
-  if (value && typeof value === "object" && !Array.isArray(value) && typeof (value as any).$var === "string") {
-    const opacity = (value as any).opacity;
-    return opacity === undefined || opacity >= 1 ? `$var:${(value as any).$var}` : { $var: (value as any).$var, opacity };
-  }
-  return value;
-}
-
-const comparable = (key: string, value: unknown) => (COLOR_KEYS.has(key) ? comparableColor(value) : value);
-const sameValue = (key: string, a: unknown, b: unknown) => stableStringify(comparable(key, a)) === stableStringify(comparable(key, b));
+// Every value on both sides has been through normalizeNode (canonicalValue), so
+// "$var:Name" and {"$var": "Name", "opacity": 1} are already one form.
 const same = (a: unknown, b: unknown) => stableStringify(a) === stableStringify(b);
-
-// The full-opacity object form of a bound colour as the "$var:" string the
-// normaliser reads; other values unchanged.
-function withColorStrings(raw: Record<string, any>): Record<string, any> {
-  let out = raw;
-  for (const key of COLOR_KEYS) {
-    const value = comparableColor(raw[key]);
-    if (typeof value === "string" && value !== raw[key]) out = { ...out, [key]: value };
-  }
-  return out;
-}
+const COLOR_KEYS = new Set(["fillColor", "strokeColor", "fontColor"]);
 
 // Keys a Spec node may carry besides its type's writable vocabulary.
 const STRUCTURAL_KEYS = new Set(["id", "type", "children"]);
 // create_node_tree shorthands the normaliser resolves (fontWeight -> fontStyle).
 const SHORTHANDS: Partial<Record<SpecType, readonly string[]>> = { text: ["fontWeight"] };
-const OPAQUE_KEYS = new Set(["id", "type", "name", "nodeType", "truncated", "children"]);
+const OPAQUE_KEYS = new Set(["id", "type", "name", "nodeType", "truncated", "reason", "children"]);
 
 // Keys in a raw Spec node that its type cannot write: a plan error, never a
 // silent no-op.
@@ -180,12 +159,24 @@ function unknownKeys(raw: Record<string, any>): string[] {
   return Object.keys(raw).filter(k => !STRUCTURAL_KEYS.has(k) && !allowed.has(k));
 }
 
-// When the SpecLock records vector paths as pathHash, compare the Spec's
-// pathData in that form; the update still carries pathData.
-function lockForm(props: Record<string, unknown>, pathHashed: boolean): Record<string, unknown> {
-  if (!pathHashed || typeof props.pathData !== "string") return props;
-  const { pathData, ...rest } = props;
-  return { ...rest, pathHash: hashString(pathData as string) };
+// Values normalizeNode would drop as unwritable, which would otherwise read as
+// "deleted" and reset the property to its default: a plan error instead.
+function unwritableValues(raw: Record<string, any>): string[] {
+  if (!SPEC_TYPES.includes(raw.type)) return [];
+  const bad: string[] = [];
+  for (const key of SPEC_VOCABULARY[raw.type as SpecType]) {
+    const value = raw[key];
+    if (value === undefined) continue;
+    if (value === null) { bad.push(`${key} is null (delete the key to mean its default)`); continue; }
+    if (COLOR_KEYS.has(key) && typeof value === "object" && !isVarPaint(value) && !("r" in (value as object))) {
+      bad.push(`${key} ${JSON.stringify(value)} is not a colour`);
+    } else if (canonicalValue(key, value) === undefined) {
+      bad.push(`${key} ${JSON.stringify(value)} cannot be written`);
+    } else if (key === "fontSize" && !Number.isInteger(canonicalValue(key, value))) {
+      bad.push(`fontSize ${JSON.stringify(value)} must be a whole number of pixels`);
+    }
+  }
+  return bad;
 }
 const layoutOf = (raw: Record<string, any>): ParentLayout => ({ layoutMode: typeof raw.layoutMode === "string" ? raw.layoutMode : "NONE" });
 const where = (path: number[]) => (path.length ? `tree.children[${path.join("].children[")}]` : "tree");
@@ -231,9 +222,14 @@ export function prepareSpec(spec: SpecFile, lock: SpecLockFile, rootParentLayout
       errors.push(`${at}${id ? ` (${id})` : ""}: ${stray.join(", ")} cannot be written on a ${String(raw.type)} node`);
       return;
     }
+    const unwritable = unwritableValues(raw);
+    if (unwritable.length) {
+      errors.push(`${at}${id ? ` (${id})` : ""}: ${unwritable.join("; ")}`);
+      return;
+    }
     let props: Record<string, unknown>;
     try {
-      props = normalizeNode(withColorStrings(raw), parentLayout);
+      props = normalizeNode(raw, parentLayout);
     } catch (error) {
       errors.push(`${at}${id ? ` (${id})` : ""}: ${error instanceof Error ? error.message : String(error)}`);
       return;
@@ -255,11 +251,11 @@ export function prepareSpec(spec: SpecFile, lock: SpecLockFile, rootParentLayout
         if (base.props.type !== props.type) {
           errors.push(`${at} (${id}): type changed from ${String(base.props.type)} to ${String(props.type)}; delete the node and add a new one without an id instead`);
         } else if (props.type === OPAQUE_TYPE && !same(props, base.props)) {
-          errors.push(`${at} (${id}): "${nameOf(base.props, id)}" is an OpaqueNode; it can only be moved, reordered or removed, not edited`);
+          errors.push(`${at} (${id}): "${nameOf(base.props, id)}" is an OpaqueNode; it can only be moved or reordered, not edited`);
         }
       }
       seen.add(id);
-      desired.set(id, { id, props, parentId, parentLayout, path, raw });
+      desired.set(id, { id, props, compare: lockProps(props), parentId, parentLayout, path, raw });
     } else {
       if (props.type === OPAQUE_TYPE) errors.push(`${at}: an OpaqueNode cannot be created`);
       if (!underNew && parentId !== null) {
@@ -285,20 +281,17 @@ export function prepareSpec(spec: SpecFile, lock: SpecLockFile, rootParentLayout
   if (errors.length) failWith(errors);
 
   const baseHashes: Record<string, string> = {};
-  const truncatedIds: string[] = [];
+  const truncated: Record<string, string> = {};
   for (const [id, node] of Object.entries(lock.nodes)) {
     baseHashes[id] = node.propsHash;
-    if (node.props.truncated === true) truncatedIds.push(id);
+    if (node.props.truncated === true) truncated[id] = typeof node.props.reason === "string" ? node.props.reason : "node budget";
   }
-  // Desired props in the SpecLock's form, for comparison.
-  const pathHashed = Object.values(lock.nodes).some(n => "pathHash" in n.props);
-  for (const node of desired.values()) node.compare = lockForm(node.props, pathHashed);
   const sizeIds: string[] = [];
   for (const [id, node] of desired) {
     const base = lock.nodes[id].props;
     if (RESIZABLE.has(String(node.props.type)) && (!same(node.props.width, base.width) || !same(node.props.height, base.height))) sizeIds.push(id);
   }
-  return { desired, desiredChildren, creates, baseHashes, truncatedIds, sizeIds, pathHashed };
+  return { desired, desiredChildren, creates, baseHashes, truncated, sizeIds };
 }
 
 function stripIds(node: Record<string, any>): Record<string, any> {
@@ -360,7 +353,7 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
   const liveProps = (id: string): Record<string, unknown> | undefined => {
     const node = liveNodes[id];
     if (!node) return undefined;
-    if (node.props) return lockForm(node.props, prepared.pathHashed);
+    if (node.props) return node.props;
     return base[id] && base[id].propsHash === node.propsHash ? base[id].props : undefined;
   };
   const touch = (id: string | null) => {
@@ -388,7 +381,7 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
   // --- Properties ---
   for (const [id, want] of prepared.desired) {
     const was = base[id];
-    const wanted = want.compare ?? want.props;
+    const wanted = want.compare;
     if (unread.has(id)) {
       if (!sameProps(wanted, was.props) || want.parentId !== was.parentId) {
         conflicts.push({ id, name: label(id), kind: "unread", detail: "Figma has more nodes here than this read could see; pull with a larger maxNodes" });
@@ -408,7 +401,11 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
       continue;
     }
     if (was.props.type === OPAQUE_TYPE) {
-      if (!same(now, was.props)) drift.push({ id, name: label(id), kind: "property", keys: diffKeys(was.props, now) });
+      // A placeholder the live read cut off for another budget than the pull did
+      // is the same unread node: its reason is not drift.
+      const ignore = was.props.truncated === true && now.truncated === true ? ["reason"] : [];
+      const keys = diffKeys(was.props, now).filter(k => !ignore.includes(k));
+      if (keys.length) drift.push({ id, name: label(id), kind: "property", keys });
       continue;
     }
     const type = want.props.type as SpecType;
@@ -417,27 +414,43 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
     const conflicted: string[] = [];
     const keys = new Set([...Object.keys(was.props), ...Object.keys(wanted), ...Object.keys(now)]);
     keys.delete("type");
+    // Auto-layout keys absent from base, Spec and Figma that the Spec's new
+    // context requires (turning layoutMode on, or layoutWrap to WRAP): absent
+    // means the create default (padding 10, itemReverseZIndex true), while
+    // Figma would derive its own (padding 0), so the default is written.
+    const implied: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(SPEC_DEFAULTS[type])) {
+      if (keys.has(key) || GEOMETRY.has(key) || !applicable(want.props, key, value, want.parentLayout)) continue;
+      implied[key] = value;
+      keys.add(key);
+    }
     for (const key of [...keys].sort()) {
       const b = was.props[key];
-      const d = wanted[key];
+      const d = key in implied ? implied[key] : wanted[key];
       const l = now[key];
-      // Left out of the Spec because Figma derives it there: not a reset.
-      if (d === undefined && b !== undefined && !applicable(want.props, key, b, want.parentLayout)) continue;
-      const desiredChanged = !sameValue(key, d, b);
-      const liveChanged = !sameValue(key, l, b);
+      // Left out of the Spec because Figma derives it there: not a reset. A
+      // vector's path is compared as pathHash and always applicable.
+      if (d === undefined && b !== undefined && key !== "pathHash" && !applicable(want.props, key, b, want.parentLayout)) continue;
+      const desiredChanged = !same(d, b);
+      const liveChanged = !same(l, b);
       if (!desiredChanged && !liveChanged) continue;
       if (desiredChanged && !liveChanged) {
         let value = d;
         if (value === undefined) {
           value = SPEC_DEFAULTS[type][key];
-          if (value === undefined) { errors.push(`${where(want.path)} (${id}): ${key} cannot be removed; set the value you want instead`); continue; }
+          if (value === undefined) {
+            const shown = key === "pathHash" ? "pathData" : key;
+            const hint = type === "text" && key === "name" ? " (a text node is named by its text only while Figma's auto-rename is on; rename it in Figma)" : "";
+            errors.push(`${where(want.path)} (${id}): ${shown} cannot be removed; set the value you want instead${hint}`);
+            continue;
+          }
         }
         // A path compared by hash is written as the Spec's pathData.
         if (key === "pathHash") set.pathData = want.props.pathData;
         else set[key] = value;
       } else if (!desiredChanged) {
         drifted.push(key);
-      } else if (sameValue(key, d, l)) {
+      } else if (same(d, l)) {
         converged++;
       } else {
         conflicted.push(key);
@@ -538,6 +551,16 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
       conflicts.push({ id, name: label(id), kind: "unread", detail: "not removed: part of its subtree could not be read; pull with a larger maxNodes" });
       continue;
     }
+    // An OpaqueNode's own subtree was never read, so removing it, or anything
+    // that contains one, could delete content the Spec never showed.
+    const opaque = [id, ...dropped].find(n => base[n].props.type === OPAQUE_TYPE);
+    if (opaque) {
+      conflicts.push({
+        id, name: label(id), kind: "remove",
+        detail: `not removed: ${opaque === id ? "it is" : `it contains ${opaque}, which is`} an OpaqueNode (${String(base[opaque].props.reason ?? base[opaque].props.nodeType)}); delete it in Figma`,
+      });
+      continue;
+    }
     if (!liveNodes[id]) { converged++; continue; }
     const handAdded = [...liveUnder(id, new Set())].some(d => !base[d]);
     const changed = liveNodes[id].propsHash !== base[id].propsHash || liveNodes[id].parentId !== bp
@@ -582,7 +605,7 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
 }
 
 function sameProps(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
-  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) if (!sameValue(key, a[key], b[key])) return false;
+  for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) if (!same(a[key], b[key])) return false;
   return true;
 }
 

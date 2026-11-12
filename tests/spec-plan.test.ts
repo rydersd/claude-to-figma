@@ -20,7 +20,7 @@ import {
   PLAN_LIMITS, PLAN_LIST_LIMIT, PlanStore, READ_TIMEOUT_MS, planSpec, pullSpec, registerTools as registerSpecTools,
 } from "../src/llm2figma_mcp/tools/spec";
 import { registerWhenEnabled } from "../src/shared/flags";
-import { hashProps, hashString, lockNodesFromTree, specHash } from "../src/shared/spec";
+import { hashProps, hashString, lockNodesFromTree, normalizeSpecTree, specHash } from "../src/shared/spec";
 import { computePlan, prepareSpec } from "../src/llm2figma_mcp/spec-plan";
 
 const originalFigma = (globalThis as any).figma;
@@ -247,7 +247,7 @@ describe("spec sync plan (PR 11c)", () => {
       expect(result.operations).toEqual([{ op: "create", path: [3, 1], parentId: row.id, index: 1, type: "frame", name: "New" }]);
       const op: any = store.get(result.planId).operations[0];
       expect(op.after).toBe(byName("DotA").id);
-      expect(op.node).toEqual({ type: "frame", name: "New", children: [{ type: "text", name: "Inner", text: "Inner", textAutoResize: "WIDTH_AND_HEIGHT" }] });
+      expect(op.node).toEqual({ type: "frame", name: "New", children: [{ type: "text", text: "Inner", textAutoResize: "WIDTH_AND_HEIGHT" }] });
       expect(store.get(result.planId).expectedHashes[row.id]).toBeDefined();
     });
 
@@ -371,7 +371,7 @@ describe("spec sync plan (PR 11c)", () => {
       expect(sent.filter(s => s.command === "read_spec_nodes")).toEqual([]);
     });
 
-    test("an OpaqueNode can be moved and removed", async () => {
+    test("an OpaqueNode can be moved, but removing it is a conflict, never an operation", async () => {
       const { root, byName, group } = await seed();
       const { path } = await pull(root);
       editSpec(path, (spec, find) => { find("Row").children.unshift(spec.tree.children.pop()); });
@@ -379,7 +379,9 @@ describe("spec sync plan (PR 11c)", () => {
       expect(result.operations).toEqual([{ op: "move", id: group.id, name: "Logo", fromParentId: root.id, parentId: byName("Row").id, index: 0 }]);
       editSpec(path, (_s, find) => { find("Row").children.shift(); });
       result = await plan();
-      expect(result.operations).toEqual([{ op: "remove", id: group.id, name: "Logo" }]);
+      expect(result.operations).toEqual([]);
+      expect(result.counts.removes).toBe(0);
+      expect(result.conflicts).toEqual([expect.objectContaining({ id: group.id, kind: "remove", detail: expect.stringContaining("it is an OpaqueNode (unsupported type)") })]);
     });
 
     test("any operation on an id containing ';' is an error", async () => {
@@ -460,20 +462,26 @@ describe("spec sync plan (PR 11c)", () => {
 
     test("a node the pull cut off stays opaque in the read, even though plan reads with the largest budget", async () => {
       const { root, kids } = await wide();
+      // Breadth-first: Root, K0, K1 and K0's three children are read; K1's children are cut off.
       const { lockPath } = await pullSpec({ nodeId: root.id, path: "w.l2f.json", maxNodes: 6 }, send as any, opts());
-      expect(readJson(lockPath).nodes[kids[1].id].props.truncated).toBe(true);
+      const cut = kids[1].children.map((c: any) => c.id);
+      for (const id of cut) expect(readJson(lockPath).nodes[id].props).toMatchObject({ truncated: true, reason: "node budget" });
       const result = await plan("w.l2f.json");
       expect(result.counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
       const read = sent.find(s => s.command === "read_spec_nodes");
-      expect(read.params).toMatchObject({ truncatedIds: [kids[1].id], maxNodes: 10000, maxDepth: 100 });
+      expect(read.params).toMatchObject({ truncated: Object.fromEntries(cut.map((id: string) => [id, "node budget"])), maxNodes: 10000, maxDepth: 100 });
       expect(read.timeoutMs).toBe(READ_TIMEOUT_MS);
     });
 
     test("a truncated OpaqueNode deleted from the Spec is never removed", async () => {
       const { root, kids } = await wide();
       const { path } = await pullSpec({ nodeId: root.id, path: "w.l2f.json", maxNodes: 6 }, send as any, opts());
-      editSpec(path, (spec) => { spec.tree.children.pop(); });
-      const result = await plan("w.l2f.json");
+      editSpec(path, (spec) => { spec.tree.children[1].children.pop(); }); // a truncated placeholder
+      let result = await plan("w.l2f.json");
+      expect(result.counts.removes).toBe(0);
+      expect(result.conflicts).toEqual([expect.objectContaining({ id: kids[1].children[2].id, kind: "unread" })]);
+      editSpec(path, (spec) => { spec.tree.children.pop(); }); // K1, which holds the other placeholders
+      result = await plan("w.l2f.json");
       expect(result.counts.removes).toBe(0);
       expect(result.conflicts).toEqual([expect.objectContaining({ id: kids[1].id, kind: "unread" })]);
     });
@@ -489,7 +497,7 @@ describe("spec sync plan (PR 11c)", () => {
       let result = await planSpec({ path: "w.l2f.json" }, tight as any, opts());
       expect(result.operations).toEqual([]);
       expect(result.counts.removes).toBe(0);
-      expect(result.counts.unread).toBe(4);
+      expect(result.counts.unread).toBe(3); // K1's three children: breadth-first reads K1 itself
       expect(result.conflicts.every(c => c.kind === "unread")).toBe(true);
       expect(result.conflicts.map(c => c.kind)).not.toContain("missing");
       editSpec(path, (spec) => { spec.tree.children.pop(); });
@@ -547,13 +555,13 @@ describe("spec sync plan (PR 11c)", () => {
       const { root, byName } = await seed();
       const { path } = await pull(root);
       editSpec(path, (_s, find) => {
-        delete find("Swatch").fillColor;             // base had #FF0000 -> back to "no paint"
+        delete find("Swatch").fillColor;             // base had #FF0000 -> back to a new rectangle's #D9D9D9
         find("Card").layoutSizingHorizontal = "HUG"; // makes the base width derived
         delete find("Card").width;
       });
       const result = await plan();
       const ops = store.get(result.planId).operations;
-      expect(ops).toContainEqual(expect.objectContaining({ id: byName("Swatch").id, set: { fillColor: "#00000000" } }));
+      expect(ops).toContainEqual(expect.objectContaining({ id: byName("Swatch").id, set: { fillColor: "#D9D9D9" } }));
       expect(ops).toContainEqual(expect.objectContaining({ id: root.id, set: { layoutSizingHorizontal: "HUG" } }));
     });
 
@@ -583,18 +591,173 @@ describe("spec sync plan (PR 11c)", () => {
       const root = makeNode("FRAME", { name: "Icons" }, page);
       const icon = makeNode("VECTOR", { name: "Icon", vectorPaths: [{ windingRule: "NONZERO", data: "M 0 0 L 10 10" }], vectorNetwork: { vertices: [{}], segments: [] } }, root);
       const { path, lockPath } = await pullSpec({ nodeId: root.id, path: "v.l2f.json" }, send as any, opts());
-      // Rewrite the lock in the pathHash form.
-      const lock = readJson(lockPath);
-      const { pathData, ...rest } = lock.nodes[icon.id].props;
-      lock.nodes[icon.id].props = { ...rest, pathHash: hashString(pathData) };
-      lock.nodes[icon.id].propsHash = hashProps(lock.nodes[icon.id].props);
-      writeFileSync(lockPath, JSON.stringify(lock));
+      // The SpecLock stores lockProps(props): pathHash, never the path.
+      const stored = readJson(lockPath).nodes[icon.id];
+      expect(stored.props.pathData).toBeUndefined();
+      expect(stored.props.pathHash).toBe(hashString(readJson(path).tree.children[0].pathData));
+      expect(stored.propsHash).toBe(hashProps(stored.props));
       let result = await plan("v.l2f.json");
       expect(result.counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
       editSpec(path, (_s, find) => { find("Icon").pathData = "M 0 0 L 20 20"; });
       result = await plan("v.l2f.json");
       expect(result.operations).toEqual([{ op: "update", id: icon.id, name: "Icon", keys: ["pathData"] }]);
       expect(store.get(result.planId).operations[0]).toMatchObject({ set: { pathData: "M 0 0 L 20 20" } });
+    });
+  });
+
+  // PR 11b's final Spec format, checked through computePlan directly: base,
+  // Spec and live are written as Spec trees and turned into a SpecLock and a
+  // live read the way pull_spec and read_spec_nodes build them.
+  describe("PR 11b's Spec format", () => {
+    const header = { fileKey: null, fileName: "f", pageId: "0:1", rootId: "1:1" };
+    const lockOf = (tree: any): any => ({
+      l2fLock: 1, ...header, pulledAt: "", specHash: "", supersededFrameId: null, pendingApply: null,
+      nodes: lockNodesFromTree(normalizeSpecTree(tree), "0:1"),
+    });
+    const liveOf = (tree: any): any => {
+      const entries = lockNodesFromTree(normalizeSpecTree(tree), "0:1");
+      const out: any = {};
+      for (const [id, e] of Object.entries(entries)) out[id] = { propsHash: e.propsHash, parentId: e.parentId, children: e.children, props: e.props };
+      return { ...header, rootParentId: "0:1", rootParentLayoutMode: null, truncated: false, nodeCount: Object.keys(out).length, nodes: out };
+    };
+    const clone = (t: any) => JSON.parse(JSON.stringify(t));
+    // Plan `spec` against `base`, with Figma at `live` (default: unchanged since the pull).
+    const threeWay = (base: any, spec: any, live: any = base) => {
+      const lock = lockOf(base);
+      const file: any = { l2fSpec: 1, ...header, tree: spec };
+      return computePlan({ spec: file, lock, live: liveOf(live), prepared: prepareSpec(file, lock) });
+    };
+    const card = () => ({
+      id: "1:1", type: "frame", name: "Card", x: 0, y: 0, width: 300, height: 200, children: [
+        { id: "2:1", type: "rectangle", name: "Swatch", x: 10, y: 10, width: 40, height: 40 },
+        { id: "3:1", type: "text", text: "Hello", x: 10, y: 60, textAutoResize: "WIDTH_AND_HEIGHT" },
+      ],
+    });
+
+    test("keys are checked against SPEC_VOCABULARY per type; visible is in every type's", () => {
+      const spec = clone(card());
+      spec.children[0].visible = false;
+      expect(threeWay(card(), spec).operations).toEqual([{ op: "update", id: "2:1", name: "Swatch", nodeType: "rectangle", set: { visible: false } }]);
+      spec.children[0].fontSize = 12;
+      expect(() => threeWay(card(), spec)).toThrow("tree.children[0] (2:1): fontSize cannot be written on a rectangle node");
+      const instance = { id: "1:1", type: "instance", name: "Btn", componentKey: "k", x: 0, y: 0, width: 80, height: 40 };
+      expect(() => threeWay(instance, { ...instance, fillColor: "#FF0000" })).toThrow("fillColor cannot be written on a instance node");
+    });
+
+    test("a value the write path cannot take is a plan error, never a silent reset to the default", () => {
+      const base = card();
+      base.children[0].fillColor = "#FF0000";
+      for (const [value, message] of [[{ foo: 1 }, "is not a colour"], [null, "is null"]] as const) {
+        const spec = clone(base);
+        spec.children[0].fillColor = value;
+        expect(() => threeWay(base, spec)).toThrow(message);
+      }
+      const spec = clone(base);
+      spec.children[1].fontSize = 13.5;
+      expect(() => threeWay(base, spec)).toThrow("fontSize 13.5 must be a whole number of pixels");
+    });
+
+    test("bound paints use 11b's canonical forms, opacity included", () => {
+      const base = card();
+      base.children[0].fillColor = { $var: "Colors/Primary", opacity: 0.5 };
+      const same = clone(base);
+      same.children[0].fillColor = { $var: "$var:Colors/Primary", opacity: 0.5 };
+      expect(threeWay(base, same).counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
+      const full = clone(base);
+      full.children[0].fillColor = { $var: "Colors/Primary", opacity: 1 };
+      expect(threeWay(base, full).operations).toEqual([expect.objectContaining({ id: "2:1", set: { fillColor: "$var:Colors/Primary" } })]);
+      const lighter = clone(base);
+      lighter.children[0].fillColor = { $var: "Colors/Primary", opacity: 0.3 };
+      expect(threeWay(base, lighter).operations).toEqual([expect.objectContaining({ id: "2:1", set: { fillColor: { $var: "Colors/Primary", opacity: 0.3 } } })]);
+    });
+
+    test("a variant instance: a VARIANT value is a property update; its componentSetKey cannot be deleted", () => {
+      const base = {
+        id: "1:1", type: "frame", name: "Card", x: 0, y: 0, width: 300, height: 200, children: [
+          { id: "4:1", type: "instance", name: "Pay", componentSetKey: "set-key", x: 0, y: 0, width: 120, height: 48, properties: { Size: "Large", "Label#4:1": "Pay" } },
+        ],
+      };
+      const spec = clone(base);
+      spec.children[0].properties.Size = "Small";
+      expect(threeWay(base, spec).operations).toEqual([
+        expect.objectContaining({ op: "update", id: "4:1", nodeType: "instance", set: { properties: { Size: "Small", "Label#4:1": "Pay" } } }),
+      ]);
+      delete spec.children[0].componentSetKey;
+      expect(() => threeWay(base, spec)).toThrow("(4:1): componentSetKey cannot be removed");
+      const local = clone(base);
+      delete local.children[0].componentSetKey;
+      (local.children[0] as any).componentSetId = "7:1";
+      expect(threeWay(local, clone(local)).counts.operations).toBe(0);
+    });
+
+    test("OpaqueNodes carry reason: editing it is an error; removing one, or a subtree holding one, is a conflict", () => {
+      const base = card();
+      base.children.push({ id: "5:1", type: "frame", name: "Holder", x: 0, y: 100, width: 50, height: 50, children: [
+        { id: "6:1", type: "$opaque", name: "Logo", nodeType: "GROUP", reason: "unsupported type" },
+      ] } as any);
+      expect(threeWay(base, clone(base)).counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
+      const edited = clone(base);
+      edited.children[2].children[0].reason = "rotated";
+      expect(() => threeWay(base, edited)).toThrow('(6:1): "Logo" is an OpaqueNode; it can only be moved or reordered');
+      const dropHolder = clone(base);
+      dropHolder.children.pop();
+      let body = threeWay(base, dropHolder);
+      expect(body.operations).toEqual([]);
+      expect(body.conflicts).toEqual([expect.objectContaining({ id: "5:1", kind: "remove", detail: expect.stringContaining("it contains 6:1, which is an OpaqueNode") })]);
+      const dropLogo = clone(base);
+      dropLogo.children[2].children = [];
+      body = threeWay(base, dropLogo);
+      expect(body.operations).toEqual([]);
+      expect(body.conflicts).toEqual([expect.objectContaining({ id: "6:1", kind: "remove" })]);
+    });
+
+    test("a truncated placeholder the live read cut off for another budget is not drift", () => {
+      const base = card();
+      base.children.push({ id: "7:1", type: "$opaque", name: "Deep", nodeType: "FRAME", truncated: true, reason: "node budget" } as any);
+      const live = clone(base);
+      live.children[2].reason = "byte budget";
+      expect(threeWay(base, clone(base), live).counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
+      live.children[2].name = "Renamed";
+      expect(threeWay(base, clone(base), live).drift).toEqual([expect.objectContaining({ id: "7:1", keys: ["name"] })]);
+    });
+
+    test("text named by its text (no name) is not a 'no default' error; deleting a real name is", () => {
+      const base = card();
+      expect(threeWay(base, clone(base)).counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
+      const renamed = clone(base);
+      renamed.children[1].name = "Greeting";
+      const drifted = threeWay(base, clone(base), renamed);
+      expect(drifted.operations).toEqual([]);
+      expect(drifted.drift).toEqual([expect.objectContaining({ id: "3:1", kind: "property", keys: ["name"] })]);
+      const edited = clone(base);
+      edited.children[1].text = "Hi";
+      expect(threeWay(base, edited).operations).toEqual([expect.objectContaining({ id: "3:1", set: { text: "Hi" } })]);
+      expect(() => threeWay(renamed, clone(base))).toThrow("(3:1): name cannot be removed; set the value you want instead (a text node is named by its text");
+    });
+
+    test("SPEC_DEFAULTS and NEVER_DROPPED: no spurious resets, and turning auto-layout on writes create's padding", () => {
+      // White frame, #D9D9D9 rectangle, visible: all absent, all defaults; an
+      // unrelated edit plans nothing else.
+      const spec = clone(card());
+      spec.children[0].cornerRadius = 4;
+      expect(threeWay(card(), spec).operations).toEqual([expect.objectContaining({ id: "2:1", set: { cornerRadius: 4 } })]);
+      // x/y kept at 0 (NEVER_DROPPED) compare equal to a Spec that keeps them.
+      expect(threeWay(card(), clone(card())).counts.operations).toBe(0);
+      // Turning auto-layout on: the children's x/y become derived (not reset),
+      // and padding/spacing absent from the Spec mean create's defaults, which
+      // Figma would not give (it keeps padding 0), so they are written.
+      const auto = clone(card());
+      auto.layoutMode = "VERTICAL";
+      const body = threeWay(card(), auto);
+      expect(body.operations).toEqual([expect.objectContaining({
+        id: "1:1", set: { layoutMode: "VERTICAL", paddingTop: 10, paddingRight: 10, paddingBottom: 10, paddingLeft: 10, itemSpacing: 0, itemReverseZIndex: true },
+      })]);
+      // Deleting a non-default fill writes the type's default, not "no paint".
+      const base = card();
+      (base as any).fillColor = "#F7F7F7";
+      const noFill = clone(base);
+      delete noFill.fillColor;
+      expect(threeWay(base, noFill).operations).toEqual([expect.objectContaining({ id: "1:1", set: { fillColor: "#FFFFFF" } })]);
     });
   });
 

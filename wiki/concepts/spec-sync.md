@@ -10,9 +10,11 @@ Why the Spec and SpecLock look the way they do, and the traps found while buildi
 
 The SpecLock entry's `props` are byte-for-byte the Spec node minus `id` and `children` (`lockNodesFromTree`). That invariant is what makes a three-way diff possible: base, desired and live are all in the same form.
 
-## "No paint" is a default, Figma's creation paint is not
+## Absent means default, and the default is what create really leaves
 
-`create_node_tree` does not write a fill when `fillColor` is absent, so Figma's own creation paint stays (white on frames in the real editor, and it differs by node type; nothing in the test mocks). A Spec cannot depend on that, so `SPEC_DEFAULTS` says an absent paint means no paint (`#00000000`, which `applyColorPaint` writes as `[]`). Consequence for 11d: when it creates a node from a Spec it must pass `SPEC_DEFAULTS` for every absent property explicitly. Otherwise a new frame comes back white, the re-lock records `#FFFFFF`, and the next plan reads the Spec's missing `fillColor` as a deletion. `itemReverseZIndex` has the same issue, because `createFrame`'s default comes from the plugin's `firstOnTop` setting.
+`create_node_tree` does not write a fill when `fillColor` is absent, so Figma's own creation paint stays: white on a frame, `#D9D9D9` on a rectangle. `SPEC_DEFAULTS` records those, so a frame created from a Spec without `fillColor` exports without one. The test mocks start new nodes with those creation paints; a mock that starts every node with no paint hides the mismatch.
+
+Values Figma derives differently from create are never dropped as defaults (`NEVER_DROPPED` in `src/shared/spec.ts`): `x`/`y` outside auto-layout, `width`/`height` on FIXED axes, and padding, spacing and `itemReverseZIndex` under auto-layout (turning auto-layout on in Figma keeps padding 0 and `itemReverseZIndex` false; create makes them 10 and true). So a key absent from a pulled Spec always means its default, and a key the model deletes can be written back to that default.
 
 ## A variable reference must resolve back to the same variable
 
@@ -20,7 +22,11 @@ A bound paint is exported as `$var:Collection/Name` only when `getVariableByName
 
 ## Truncation must not look like deletion
 
-`walkTree` reports `truncatedParents`. A frame whose children were cut off becomes an OpaqueNode with `truncated: true`, and any of its children that were visited before the budget ran out are dropped. Its SpecLock entry has `children: []`, and nothing under it has a lock entry, so 11c cannot read the missing children as removals. A root whose own children are cut off is an error, not a one-node Spec.
+The export walks breadth-first. A node it does not read, because the node budget, the depth limit or the 8 MB byte budget ran out, becomes `{type: "$opaque", truncated: true, reason}` in its parent's `children`, in its place. Every child list is then complete, so 11c can never read an unread node as removed, and a budget never fails a pull. An earlier depth-first version turned the whole cut-off parent opaque and failed the pull when the cut fell under any root child but the last. The byte budget reserves room for the placeholders of children not read yet, so the tree, placeholders included, stays within 8 MB.
+
+## Concurrent pulls to one path
+
+Two pulls to one path could interleave between "read the existing pair" and "write the SpecLock", leaving a Spec from one pull and a SpecLock from the other. `pullSpec` holds a per-path in-process mutex for the whole pull.
 
 ## Test trap: the variable index is shared module state, and Bun reorders files
 
@@ -29,7 +35,9 @@ A bound paint is exported as `$var:Collection/Name` only when `getVariableByName
 ## Planning (PR 11c): what the comparison had to get right
 
 - **The live read must use the pull's normaliser, not a cheaper one.** `read_spec_nodes` runs the same walk as `export_spec` (`readSubtree` in the plugin's `spec.ts`) and builds entries with `lockNodesFromTree`, so an untouched node hashes exactly like its SpecLock entry. Only nodes whose hash differs send `props`; an unchanged 2,000-node design costs one hash each.
-- **The read budget is the largest, and the SpecLock's cut-off nodes are forced opaque.** Reading with the pull's budget is not stable: a node added by hand early in pre-order shifts where the budget runs out. So the plan reads with `maxNodes` 10000 and sends `truncatedIds`; the plugin treats those as truncated OpaqueNodes whatever the budget, so they hash the same as at the pull. A node the read newly cuts off makes it and its base descendants `unread`: never removed, never `missing`.
+- **The read budget is the largest, and the SpecLock's cut-off nodes are forced opaque.** Reading with the pull's budget is not stable: a node added by hand early in pre-order shifts where the budget runs out. So the plan reads with `maxNodes` 10000 and sends `truncated`, a map from each cut-off id to the `reason` the SpecLock recorded; the plugin emits those placeholders, reason included, whatever the budget, so they hash the same as at the pull. A node the read newly cuts off makes it and its base descendants `unread`: never removed, never `missing`. A placeholder the live read cut off for a different budget only differs in `reason`, which is not drift.
+- **The normaliser silently drops what it cannot write; the planner must not.** `normalizeNode` drops unknown keys and unwritable values (`canonicalValue` returns undefined, a fractional `fontSize`). In a Spec that would read as "key deleted" and reset the property to its default, so the planner checks raw keys against `SPEC_VOCABULARY` and raw values against `canonicalValue` first, and refuses.
+- **Turning auto-layout on is the one context change that implies values.** Padding, spacing and `itemReverseZIndex` are NEVER_DROPPED under auto-layout, so a Spec that turns `layoutMode` on without them means create's defaults, which Figma would not give (it keeps padding 0). The update writes them. Geometry that becomes required in a new context (x/y after leaving auto-layout) is not implied: writing 0,0 would collapse the node.
 - **"Absent from the Spec" needs a context check.** Before reading a missing key as "reset to default", the planner re-normalises the node with the base value put back. If the normaliser drops it again, Figma derives it in the new context (FILL width, x inside auto-layout) and nothing is written.
 - **Minimal moves.** Per parent, the nodes kept are the longest increasing run of positions between the two orders (both filtered to their common members); the rest are moves. A swap is one move, and which of the two is reported is arbitrary but deterministic, so tests must accept either.
 - **The other dimension needs a live value.** Normalised props drop derived sizes, so the server sends `sizeIds` (nodes whose Spec width or height changed, known before the read) and the plugin returns their live size.
