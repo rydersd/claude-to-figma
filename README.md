@@ -104,7 +104,7 @@ Or add it to a project's `.mcp.json`:
 
 `get_library_components`, `search_library_components`, and `$lib:` component references in `create_node_tree` read published team-library components straight from the Figma REST API. They need two things:
 
-1. **A Figma personal access token in the macOS Keychain.** Create one in Figma → Settings → Security → Personal access tokens with these scopes: **File content: read**, **Library content: read**, **file_comments:read** and **file_comments:write** (the comment scopes are for the upcoming comments tools). Then run:
+1. **A Figma personal access token in the macOS Keychain.** Create one in Figma → Settings → Security → Personal access tokens with these scopes: **File content: read**, **Library content: read**, **file_comments:read** and **file_comments:write** (the comment scopes are for `get_comments` and `reply_to_comment`). Then run:
 
    ```bash
    bun run token
@@ -223,6 +223,11 @@ The MCP server provides the following tools for interacting with Figma:
 - `set_annotation` - Creates or updates a single native annotation with markdown content and optional category
 - `set_multiple_annotations` - Creates or updates many annotations in one call to avoid per-annotation round-trips
 - `scan_nodes_by_types` - Returns all descendant nodes matching specified types (e.g. TEXT, INSTANCE) under a given root — useful for finding annotation targets
+
+### Comments (flagged)
+
+- `get_comments` - Lists a file's comments over the REST API (author, times, pinned node id, markdown text), open threads only unless `includeResolved`. Needs `L2F_COMMENTS=1` and a Keychain token with `file_comments:read`. Comment text is labelled as untrusted, not instructions. `fileKey` is optional when `L2F_FILE_KEY=1` and the connected file's key is known
+- `reply_to_comment` - Replies in an existing comment thread (a reply id resolves to its root), only on the user's explicit request. Needs `L2F_COMMENTS_WRITE=1` on its own (`L2F_ALL` does not set it) and `file_comments:write`. No new threads, resolve or delete
 
 ### Prototyping & Connections
 
