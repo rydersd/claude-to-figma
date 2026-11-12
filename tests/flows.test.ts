@@ -6,9 +6,9 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { getFlows, setFlows } from "../src/llm2figma_plugin/src/prototyping";
+import { READ_BACK_ERROR, getFlows, setFlows } from "../src/llm2figma_plugin/src/prototyping";
 import { assertEditorAllowed } from "../src/llm2figma_plugin/src/editor-gate";
-import { BackgroundSchema, NO_FILE_KEY, buildPrototypeLink, registerFlowTools } from "../src/llm2figma_mcp/tools/prototyping";
+import { BackgroundPaintsSchema, BackgroundSchema, NO_FILE_KEY, buildPrototypeLink, registerFlowTools } from "../src/llm2figma_mcp/tools/prototyping";
 import { registerWhenEnabled } from "../src/shared/flags";
 
 const KEY = "AbC123xyz789QrStUv";
@@ -35,6 +35,7 @@ function makePage(id: string, name: string): any {
   Object.defineProperty(p, "flowStartingPoints", {
     get: () => flows,
     set: (value) => { flowWrites++; flows = value.map((f: any) => ({ ...f })); },
+    configurable: true,
   });
   Object.defineProperty(p, "prototypeBackgrounds", {
     get: () => backgrounds,
@@ -66,6 +67,10 @@ beforeEach(() => {
     editorType: "figma",
     root: { name: "Shop app / v2" },
     getNodeByIdAsync: async (id: string) => nodes.get(id) ?? null,
+    showUI: () => {},
+    on: () => {},
+    ui: { postMessage: () => {} },
+    clientStorage: { getAsync: async () => undefined, setAsync: async () => {} },
   };
 });
 afterAll(() => { (globalThis as any).figma = originalFigma; });
@@ -76,15 +81,6 @@ const FLOWS = [
 ];
 
 describe("plugin getFlows / setFlows", () => {
-  test("round trip: writing back what was read leaves the page unchanged", async () => {
-    await setFlows({ pageId: "0:1", flows: FLOWS, background: "#1a2b3c" });
-    const first = await getFlows({ pageId: "0:1" });
-    const before = structuredClone(page.flowStartingPoints);
-    await setFlows({ pageId: "0:1", flows: first.flows.map(({ name, nodeId }: any) => ({ name, nodeId })), background: first.background! });
-    expect(page.flowStartingPoints).toEqual(before);
-    expect(await getFlows({ pageId: "0:1" })).toEqual(first);
-  });
-
   test("reports name, starting frame and the outermost section", async () => {
     const result = await setFlows({ pageId: "0:1", flows: FLOWS });
     expect(result.flows).toEqual([
@@ -175,6 +171,68 @@ describe("plugin getFlows / setFlows", () => {
     expect(page.flowStartingPoints).toEqual(FLOWS);
   });
 
+  test("a failed restore still rethrows the original error, and says the flows were not restored", async () => {
+    await setFlows({ pageId: "0:1", flows: FLOWS });
+    failBackground = true;
+    let writes = 0;
+    const desc = Object.getOwnPropertyDescriptor(page, "flowStartingPoints")!;
+    Object.defineProperty(page, "flowStartingPoints", {
+      get: desc.get,
+      set: (value) => { if (++writes > 1) throw new Error("restore rejected"); desc.set!(value); },
+    });
+    const error = await setFlows({ pageId: "0:1", flows: [], background: "#000000" }).then(() => null, (e: Error) => e);
+    expect(error?.message).toBe("background rejected (previous flows could not be restored)");
+  });
+
+  test("a read-back failure after a good write is reported as written, not as a failure", async () => {
+    const realGet = (globalThis as any).figma.getNodeByIdAsync;
+    let calls = 0;
+    // loadPage, then one lookup per flow while validating; everything after that is the read-back.
+    (globalThis as any).figma.getNodeByIdAsync = async (id: string) => {
+      if (++calls > 1 + FLOWS.length) throw new Error("boom");
+      return realGet(id);
+    };
+    const result = await setFlows({ pageId: "0:1", flows: FLOWS });
+    expect(result).toEqual({ pageId: "0:1", written: true, readBackError: READ_BACK_ERROR });
+    expect(page.flowStartingPoints).toEqual(FLOWS);
+  });
+
+  test("duplicate flow names in one call are rejected with nothing written", async () => {
+    const error = await setFlows({ pageId: "0:1", flows: [{ name: "Same", nodeId: "1:1" }, { name: "Same", nodeId: "1:3" }] })
+      .then(() => null, (e: Error) => e.message);
+    expect(error).toContain("Same (1:3): flow name used more than once");
+    expect(flowWrites).toBe(0);
+  });
+
+  test("dropMissing leaves out flows whose starting frame is gone and lists them", async () => {
+    await setFlows({ pageId: "0:1", flows: [...FLOWS, { name: "Pay", nodeId: "1:3" }] });
+    nodes.delete("1:3");
+    const read = await getFlows({ pageId: "0:1" });
+    const result: any = await setFlows({ pageId: "0:1", flows: read.flows, dropMissing: true });
+    expect(result.dropped).toEqual([{ name: "Pay", nodeId: "1:3" }]);
+    expect(page.flowStartingPoints).toEqual(FLOWS);
+    // dropMissing never hides a frame that exists but is not a top-level frame.
+    await expect(setFlows({ pageId: "0:1", flows: [{ name: "Child", nodeId: "1:4" }], dropMissing: true })).rejects.toThrow("Child (1:4)");
+  });
+
+  test("backgroundPaints is written exactly, and contradicting background is refused", async () => {
+    const paint = { type: "SOLID", color: { r: 0.1, g: 0.2, b: 0.3 }, opacity: 0.5, visible: false, blendMode: "MULTIPLY" };
+    await setFlows({ pageId: "0:1", flows: [], backgroundPaints: [paint] });
+    expect(page.prototypeBackgrounds).toEqual([paint]);
+    await setFlows({ pageId: "0:1", flows: [], backgroundPaints: [] });
+    expect(page.prototypeBackgrounds).toEqual([]);
+    const writes = flowWrites;
+    await expect(setFlows({ pageId: "0:1", flows: [], background: "#000000", backgroundPaints: [paint] })).rejects.toThrow("not both");
+    await expect(setFlows({ pageId: "0:1", flows: [], backgroundPaints: [{ type: "GRADIENT_LINEAR" }] })).rejects.toThrow("Invalid backgroundPaints");
+    expect(flowWrites).toBe(writes);
+  });
+
+  test("background: null leaves the background alone", async () => {
+    await setFlows({ pageId: "0:1", flows: [], background: "#123456" });
+    await setFlows({ pageId: "0:1", flows: FLOWS, background: null, backgroundPaints: null });
+    expect(backgroundWrites).toBe(1);
+  });
+
   test("a background that is not one solid paint is reported, not invented", async () => {
     failBackground = false;
     page.prototypeBackgrounds = [{ type: "GRADIENT_LINEAR" }];
@@ -186,16 +244,118 @@ describe("plugin getFlows / setFlows", () => {
   });
 });
 
+// --- Round trip through the real tools: get_flows output into set_flows, unchanged ---
+
+// A send that runs the plugin's own functions, so the server schema and the plugin are tested together.
+const pluginSend = async (command: string, params?: any) => {
+  if (command === "get_flows") return getFlows(params);
+  if (command === "set_flows") return setFlows(params);
+  if (command === "get_document_info") return { fileKey: KEY };
+  throw new Error("unexpected " + command);
+};
+
+describe("round trip from a page the tool did not set up", () => {
+  const backgrounds: Record<string, any[]> = {
+    gradient: [{ type: "GRADIENT_LINEAR", visible: true, opacity: 1, blendMode: "NORMAL", gradientStops: [], gradientTransform: [[1, 0, 0], [0, 1, 0]] }],
+    "multiple paints": [
+      { type: "SOLID", visible: true, opacity: 1, blendMode: "NORMAL", color: { r: 1, g: 1, b: 1 } },
+      { type: "IMAGE", visible: true, opacity: 1, blendMode: "NORMAL", scaleMode: "FILL", imageHash: "abc" },
+    ],
+    empty: [],
+    "solid with visible:false": [{ type: "SOLID", visible: false, opacity: 0.37, blendMode: "MULTIPLY", color: { r: 0.123456, g: 0.654321, b: 0.999 } }],
+  };
+
+  for (const [label, paints] of Object.entries(backgrounds)) {
+    test(`${label}: set_flows accepts get_flows output unchanged and the page does not change`, async () => {
+      // Set directly on the page, as Figma or a person would, not through set_flows.
+      page.prototypeBackgrounds = structuredClone(paints);
+      page.flowStartingPoints = [{ name: "Main", nodeId: "1:1" }, { name: "Onboarding", nodeId: "1:2" }];
+      const before = { flows: structuredClone(page.flowStartingPoints), backgrounds: structuredClone(page.prototypeBackgrounds) };
+      const tools = capture(pluginSend);
+      const read = JSON.parse(await output(tools.get_flows, { pageId: "0:1" }));
+      const args = z.object(tools.set_flows.schema).parse(read);
+      const written = JSON.parse(await output(tools.set_flows, args));
+      expect({ flows: page.flowStartingPoints, backgrounds: page.prototypeBackgrounds }).toEqual(before);
+      expect(written).toEqual(read);
+    });
+  }
+
+  test("a missing starting frame: refused by default, dropped and listed with dropMissing", async () => {
+    page.prototypeBackgrounds = structuredClone(backgrounds.gradient);
+    page.flowStartingPoints = [{ name: "Main", nodeId: "1:1" }, { name: "Pay", nodeId: "1:3" }];
+    nodes.delete("1:3");
+    const tools = capture(pluginSend);
+    const read = JSON.parse(await output(tools.get_flows, { pageId: "0:1" }));
+    expect(read.flows[1]).toMatchObject({ name: "Pay", missing: true });
+    const args = z.object(tools.set_flows.schema).parse(read);
+    expect(await output(tools.set_flows, args)).toContain("Pay (1:3): node not found");
+    expect(page.flowStartingPoints).toHaveLength(2);
+    const dropped = JSON.parse(await output(tools.set_flows, { ...args, dropMissing: true }));
+    expect(dropped.dropped).toEqual([{ name: "Pay", nodeId: "1:3" }]);
+    expect(page.flowStartingPoints).toEqual([{ name: "Main", nodeId: "1:1" }]);
+    expect(page.prototypeBackgrounds).toEqual(backgrounds.gradient);
+  });
+});
+
+describe("sectionId uses the plugin's real section logic", () => {
+  test("flows in a nested section count under their top-level section", async () => {
+    await setFlows({ pageId: "0:1", flows: [...FLOWS, { name: "Pay", nodeId: "1:3" }] });
+    const result = await getFlows({ pageId: "0:1", sectionId: "2:1" });
+    expect(result.flows.map((f: any) => f.name)).toEqual(["Onboarding"]);
+    const links = JSON.parse(await output(capture(pluginSend).get_prototype_links, { pageId: "0:1", sectionId: "2:1" }));
+    expect(links.links.map((l: any) => l.name)).toEqual(["Onboarding"]);
+  });
+  test("an inner section, a frame, or an unknown id is not a top-level section on this page", async () => {
+    await setFlows({ pageId: "0:1", flows: FLOWS });
+    for (const id of ["2:2", "1:1", "nope"]) {
+      await expect(getFlows({ pageId: "0:1", sectionId: id })).rejects.toThrow(`${id} is not a top-level section on this page`);
+      expect(await output(capture(pluginSend).get_prototype_links, { pageId: "0:1", sectionId: id }))
+        .toBe(`Error getting prototype links: ${id} is not a top-level section on this page (Prototype)`);
+    }
+  });
+});
+
+// --- Dispatch through the plugin's real command handler in main.ts ---
+
+let onmessage: ((msg: any) => Promise<void>) | undefined;
+async function dispatch(command: string, params: any): Promise<any> {
+  const fig = (globalThis as any).figma;
+  if (!onmessage) {
+    (globalThis as any).__html__ = "";
+    fig.ui = { postMessage: () => {} };
+    await import("../src/llm2figma_plugin/src/main");
+    onmessage = fig.ui.onmessage;
+  }
+  const posted: any[] = [];
+  fig.ui = { postMessage: (message: any) => posted.push(message) };
+  await onmessage!({ type: "execute-command", id: "t1", command, params });
+  return posted.find((message) => message.id === "t1");
+}
+
+describe("plugin dispatch (main.ts)", () => {
+  test("set_flows and get_flows are routed to the flow functions", async () => {
+    const set = await dispatch("set_flows", { pageId: "0:1", flows: FLOWS, background: "#102030" });
+    expect(set.type).toBe("command-result");
+    expect(page.flowStartingPoints).toEqual(FLOWS);
+    const get = await dispatch("get_flows", { pageId: "0:1" });
+    expect(get.type).toBe("command-result");
+    expect(get.result.flows.map((f: any) => f.name)).toEqual(["Main", "Onboarding"]);
+    expect(get.result.background).toBe("#102030");
+  });
+  test("missing parameters and Dev Mode are refused by the dispatcher", async () => {
+    expect(await dispatch("get_flows", {})).toMatchObject({ type: "command-error" });
+    expect((await dispatch("set_flows", { pageId: "0:1" })).error).toContain("pageId and flows");
+    (globalThis as any).figma.editorType = "dev";
+    expect((await dispatch("set_flows", { pageId: "0:1", flows: [] })).error).toContain("not available in the dev editor");
+    expect((await dispatch("get_flows", { pageId: "0:1" })).type).toBe("command-result");
+  });
+});
+
 describe("editor gate", () => {
   test("get_flows reads, so Dev Mode allows it; set_flows mutates, so Dev Mode refuses it", () => {
     expect(() => assertEditorAllowed("get_flows", "dev")).not.toThrow();
     expect(() => assertEditorAllowed("set_flows", "dev")).toThrow("set_flows is not available in the dev editor");
     expect(() => assertEditorAllowed("set_flows", "figma")).not.toThrow();
-  });
-  test("both commands are dispatched by the plugin", () => {
-    const main = readFileSync("src/llm2figma_plugin/src/main.ts", "utf8");
-    expect(main).toContain('case "get_flows":');
-    expect(main).toContain('case "set_flows":');
   });
 });
 
@@ -216,10 +376,10 @@ describe("buildPrototypeLink", () => {
 // --- Server tools ---
 
 type Tool = { description: string; schema: Record<string, z.ZodTypeAny>; run: (args: any) => Promise<any> };
-function capture(send: (command: string, params?: any) => Promise<any>, userKey?: string) {
+function capture(send: (command: string, params?: any) => Promise<any>, userKey?: string, fileKeyEnabled = true) {
   const tools: Record<string, Tool> = {};
   const server = { tool: (name: string, description: string, schema: any, run: any) => { tools[name] = { description, schema, run }; } };
-  registerFlowTools(server as any, send as any, () => userKey);
+  registerFlowTools(server as any, send as any, { userFileKey: () => userKey, fileKeyEnabled });
   return tools;
 }
 const output = async (tool: Tool, args: any) => (await tool.run(args)).content[0].text as string;
@@ -256,7 +416,18 @@ describe("set_flows schema", () => {
   test("flows need a name and node id; an empty list is allowed", () => {
     expect(schema.safeParse({ pageId: "0:1", flows: [] }).success).toBe(true);
     expect(schema.safeParse({ pageId: "0:1", flows: [{ name: "", nodeId: "1:1" }] }).success).toBe(false);
+    expect(schema.safeParse({ pageId: "0:1", flows: [{ name: "   ", nodeId: "1:1" }] }).success).toBe(false);
+    expect(schema.parse({ pageId: "0:1", flows: [{ name: "  Main ", nodeId: "1:1" }] }).flows[0].name).toBe("Main");
     expect(schema.safeParse({ pageId: "0:1", flows: [{ name: "A" }] }).success).toBe(false);
+  });
+  test("background may be null; backgroundPaints is [] or one SOLID paint with 0..1 channels", () => {
+    expect(schema.safeParse({ pageId: "0:1", flows: [], background: null, backgroundPaints: null }).success).toBe(true);
+    const solid = { type: "SOLID", color: { r: 0.1, g: 0.2, b: 0.3, a: 1 }, visible: false, opacity: 0.5, blendMode: "NORMAL" };
+    for (const ok of [[], [solid], [{ type: "SOLID", color: { r: 0, g: 0, b: 0 } }]]) expect(BackgroundPaintsSchema.safeParse(ok).success).toBe(true);
+    for (const bad of [[solid, solid], [{ ...solid, type: "GRADIENT_LINEAR" }], [{ ...solid, color: { r: 2, g: 0, b: 0 } }], [{ ...solid, opacity: -1 }], "#000000"]) {
+      expect(BackgroundPaintsSchema.safeParse(bad).success).toBe(false);
+    }
+    expect(schema.safeParse({ pageId: "0:1", flows: [], dropMissing: "yes" }).success).toBe(false);
   });
   test("passes the call through and reports plugin errors", async () => {
     const calls: any[] = [];
@@ -267,7 +438,7 @@ describe("set_flows schema", () => {
     expect(await output(tools.set_flows, { pageId: "0:1", flows: FLOWS, background: "#000000" })).toBe(
       "Error setting flows: Nothing written. 1 flow(s) do not start at a top-level frame",
     );
-    expect(calls).toEqual([["set_flows", { pageId: "0:1", flows: FLOWS, background: "#000000" }]]);
+    expect(calls).toEqual([["set_flows", { pageId: "0:1", flows: FLOWS, background: "#000000", backgroundPaints: undefined, dropMissing: undefined }]]);
   });
 });
 
@@ -280,8 +451,9 @@ describe("get_prototype_links", () => {
       { name: "Pay", nodeId: "1:3", nodeName: null, section: null, missing: true },
     ],
   };
-  const fakeSend = (pluginKey: string | null, calls: string[] = []) => async (command: string) => {
+  const fakeSend = (pluginKey: string | null, calls: string[] = [], params: any[] = []) => async (command: string, param?: any) => {
     calls.push(command);
+    params.push(param);
     if (command === "get_document_info") return { name: "Prototype", fileKey: pluginKey };
     if (command === "get_flows") return flowsResult;
     throw new Error("unexpected " + command);
@@ -309,9 +481,36 @@ describe("get_prototype_links", () => {
     expect(result.fileKeySource).toBe("user");
     expect(result.links[0].link).toContain("/proto/UserKey0000000000/");
   });
-  test("sectionId keeps only flows in that top-level section", async () => {
-    const result = JSON.parse(await output(capture(fakeSend(KEY)).get_prototype_links, { pageId: "0:1", sectionId: "2:1" }));
-    expect(result.links.map((l: any) => l.name)).toEqual(["Onboarding"]);
+  test("sectionId is passed to the plugin, which filters and checks it", async () => {
+    const params: any[] = [];
+    await output(capture(fakeSend(KEY, [], params)).get_prototype_links, { pageId: "0:1", sectionId: "2:1" });
+    expect(params).toEqual([undefined, { pageId: "0:1", sectionId: "2:1" }]);
+  });
+  test("L2F_FILE_KEY off: the plugin's key is used, the join_channel key never is", async () => {
+    const withPluginKey = JSON.parse(await output(capture(fakeSend(KEY), "UserKey0000000000", false).get_prototype_links, { pageId: "0:1" }));
+    expect(withPluginKey.fileKeySource).toBe("plugin");
+    expect(withPluginKey.links[0].link).toBe(buildPrototypeLink(KEY, "Shop", "1:1"));
+    const calls: string[] = [];
+    expect(await output(capture(fakeSend(null, calls), "UserKey0000000000", false).get_prototype_links, { pageId: "0:1" })).toBe(NO_FILE_KEY);
+    expect(calls).toEqual(["get_document_info"]);
+  });
+  test("the flag defaults to the server environment", async () => {
+    const run = async (env: string | undefined) => {
+      const saved = process.env.L2F_FILE_KEY;
+      if (env === undefined) delete process.env.L2F_FILE_KEY; else process.env.L2F_FILE_KEY = env;
+      const savedAll = process.env.L2F_ALL;
+      delete process.env.L2F_ALL;
+      try {
+        const tools: Record<string, any> = {};
+        registerFlowTools({ tool: (name: string, _d: string, _s: any, fn: any) => { tools[name] = fn; } } as any, fakeSend(null) as any, { userFileKey: () => "UserKey0000000000" });
+        return (await tools.get_prototype_links({ pageId: "0:1" })).content[0].text as string;
+      } finally {
+        if (saved === undefined) delete process.env.L2F_FILE_KEY; else process.env.L2F_FILE_KEY = saved;
+        if (savedAll !== undefined) process.env.L2F_ALL = savedAll;
+      }
+    };
+    expect(await run(undefined)).toBe(NO_FILE_KEY);
+    expect(JSON.parse(await run("1")).fileKeySource).toBe("user");
   });
   test("every link uses https", async () => {
     const text = await output(capture(fakeSend(KEY)).get_prototype_links, { pageId: "0:1" });

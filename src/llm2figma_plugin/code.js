@@ -5601,7 +5601,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
     return "not on a page";
   }
-  var toHexByte = (unit) => Math.round(Math.min(1, Math.max(0, unit)) * 255).toString(16).padStart(2, "0");
+  var toHexByte = (unit2) => Math.round(Math.min(1, Math.max(0, unit2)) * 255).toString(16).padStart(2, "0");
   function solidToHex(paint) {
     const { r, g, b } = paint.color;
     const alpha = paint.opacity ?? 1;
@@ -5614,16 +5614,29 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const opacity = match[2] ? parseInt(match[2], 16) / 255 : 1;
     return { type: "SOLID", color: { r: byte(0), g: byte(2), b: byte(4) }, opacity };
   }
+  function writableBackgroundPaints(paints) {
+    if (paints.length > 1 || paints.length === 1 && paints[0].type !== "SOLID") return null;
+    return JSON.parse(JSON.stringify(paints));
+  }
+  function requireTopLevelSection(sectionId, page) {
+    const section = (page.children || []).find((child) => child.id === sectionId);
+    if (!section || section.type !== "SECTION") {
+      throw new Error(`${sectionId} is not a top-level section on this page (${page.name})`);
+    }
+  }
   async function getFlows(params) {
     const page = await loadPage(params.pageId);
+    if (params.sectionId !== void 0) requireTopLevelSection(params.sectionId, page);
     const flows = [];
     for (const start of page.flowStartingPoints || []) {
       const node = await figma.getNodeByIdAsync(start.nodeId);
+      const section = node ? topLevelSection(node) : null;
+      if (params.sectionId !== void 0 && section?.id !== params.sectionId) continue;
       flows.push({
         name: start.name,
         nodeId: start.nodeId,
         nodeName: node ? node.name : null,
-        section: node ? topLevelSection(node) : null,
+        section,
         missing: !node
       });
     }
@@ -5635,33 +5648,70 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       fileName: figma.root ? figma.root.name : null,
       flows,
       background: solid ? solidToHex(paints[0]) : null,
+      backgroundPaints: writableBackgroundPaints(paints),
       ...paints.length > 0 && !solid ? { backgroundPaintTypes: paints.map((p) => p.type) } : {}
     };
   }
+  var unit = (value) => typeof value === "number" && value >= 0 && value <= 1;
+  function backgroundToWrite(background, backgroundPaints) {
+    if (backgroundPaints != null) {
+      const valid = Array.isArray(backgroundPaints) && backgroundPaints.length <= 1 && backgroundPaints.every((paint) => paint && paint.type === "SOLID" && paint.color && unit(paint.color.r) && unit(paint.color.g) && unit(paint.color.b) && (paint.color.a === void 0 || unit(paint.color.a)) && (paint.opacity === void 0 || unit(paint.opacity)));
+      if (!valid) throw new Error("Invalid backgroundPaints: at most one SOLID paint, with color r, g, b (and a) between 0 and 1.");
+      if (background != null && !(backgroundPaints.length === 1 && solidToHex(backgroundPaints[0]) === background.toLowerCase())) {
+        throw new Error("Pass either background or backgroundPaints, not both: they describe different backgrounds.");
+      }
+      return backgroundPaints;
+    }
+    return background != null ? [hexToSolid(background)] : null;
+  }
+  var READ_BACK_ERROR = "The flows were written, but reading them back failed. Call get_flows to see the page.";
   async function setFlows(params) {
     const page = await loadPage(params.pageId);
-    const paint = params.background !== void 0 ? hexToSolid(params.background) : null;
-    const seen = /* @__PURE__ */ new Set();
+    const paints = backgroundToWrite(params.background, params.backgroundPaints);
+    const seenNodes = /* @__PURE__ */ new Set();
+    const seenNames = /* @__PURE__ */ new Set();
     const rejected = [];
+    const kept = [];
+    const dropped = [];
     for (const flow of params.flows) {
-      const problem = seen.has(flow.nodeId) ? "listed more than once" : flowStartProblem(await figma.getNodeByIdAsync(flow.nodeId), page);
-      seen.add(flow.nodeId);
+      const node = await figma.getNodeByIdAsync(flow.nodeId);
+      if (!node && params.dropMissing) {
+        dropped.push({ name: flow.name, nodeId: flow.nodeId });
+        continue;
+      }
+      const problem = seenNames.has(flow.name) ? "flow name used more than once" : seenNodes.has(flow.nodeId) ? "listed more than once" : flowStartProblem(node, page);
+      seenNodes.add(flow.nodeId);
+      seenNames.add(flow.name);
       if (problem) rejected.push(`${flow.name} (${flow.nodeId}): ${problem}`);
+      else kept.push({ name: flow.name, nodeId: flow.nodeId });
     }
     if (rejected.length > 0) {
-      throw new Error(`Nothing written. ${rejected.length} flow(s) do not start at a top-level frame on page ${page.name}: ${rejected.join("; ")}`);
+      throw new Error(`Nothing written. ${rejected.length} flow(s) cannot be written to page ${page.name}: ${rejected.join("; ")}`);
     }
     const previous = page.flowStartingPoints;
-    page.flowStartingPoints = params.flows.map((flow) => ({ name: flow.name, nodeId: flow.nodeId }));
-    if (paint) {
+    page.flowStartingPoints = kept;
+    if (paints) {
       try {
-        page.prototypeBackgrounds = [paint];
+        page.prototypeBackgrounds = paints;
       } catch (error) {
-        page.flowStartingPoints = previous;
-        throw error;
+        let restored = true;
+        try {
+          page.flowStartingPoints = previous;
+        } catch {
+          restored = false;
+        }
+        if (restored) throw error;
+        const original = error instanceof Error ? error : new Error(String(error));
+        original.message += " (previous flows could not be restored)";
+        throw original;
       }
     }
-    return await getFlows({ pageId: page.id });
+    const extra = params.dropMissing ? { dropped } : {};
+    try {
+      return { ...await getFlows({ pageId: page.id }), ...extra };
+    } catch {
+      return { pageId: page.id, written: true, readBackError: READ_BACK_ERROR, ...extra };
+    }
   }
 
   // src/llm2figma_plugin/src/node-tree.ts
