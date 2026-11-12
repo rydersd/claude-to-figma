@@ -26,7 +26,7 @@
     "build:claude-plugin": "./scripts/build-claude-plugin.sh"
   },
   "devDependencies": {
-    "@figma/plugin-typings": "^1.123.0",
+    "@figma/plugin-typings": "1.142.0",
     "@types/bun": "latest",
     "bun-types": "^1.2.5",
     "tsup": "^8.4.0",
@@ -35,7 +35,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.13.1",
     "uuid": "latest",
-    "ws": "latest",
+    "ws": "8.18.1",
     "zod": "3.22.4"
   }
 }
