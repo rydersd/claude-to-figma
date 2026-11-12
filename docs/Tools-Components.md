@@ -22,7 +22,7 @@ Tools for design-system work: components, instances, variants, styles, variables
 
 ## Team library components
 
-Two tools discover **published team-library components** (the Assets panel equivalent) over the Figma REST API, independent of the WebSocket/plugin path — see [[Architecture#rest-discovery-team-libraries|REST discovery]]. Both require `FIGMA_API_TOKEN` and `FIGMA_LIBRARY_FILE_KEYS` (see [[Getting-Started#team-library-setup|team library setup]]); without them they return setup instructions instead of erroring.
+Two tools discover **published team-library components** (the Assets panel equivalent) over the Figma REST API, independent of the WebSocket/plugin path — see [[Architecture#rest-discovery-team-libraries|REST discovery]]. Both require a Figma token in the macOS Keychain (`bun run token`) and `FIGMA_LIBRARY_FILE_KEYS` (see [[Getting-Started#team-library-setup|team library setup]]); without them they return setup instructions instead of erroring.
 
 - `get_library_components {verbose?, refresh?}` — lists every component set across the configured libraries. Compact by default (name, variant count, truncated description, library); `verbose: true` adds each variant's name/key and the full `propertyValues` map. `refresh: true` refetches instead of using the session cache.
 
@@ -84,6 +84,6 @@ The safe sequence: `diff_components` → `migrate_instance` (dry-run) → `batch
 - [[Tools-Reading-and-Inspection#scanning--querying|design_query]] — find every instance before migrating
 - [[Create-Node-Tree#color-shorthand-and-variable-binding|$var: binding]] — token-bound colors in generated trees
 - [[Create-Node-Tree#library-component-instances-lib-refs|Library component instances in create_node_tree]] — `$lib:` refs, variant selection, text overrides
-- [[Getting-Started#team-library-setup|Team library setup]] — `FIGMA_API_TOKEN` / `FIGMA_LIBRARY_FILE_KEYS`
+- [[Getting-Started#team-library-setup|Team library setup]] — Keychain token / `FIGMA_LIBRARY_FILE_KEYS`
 - [[Tools-Batch-Operations]] — bulk operations beyond component migration
 - [[Design-Round-Trip]] — verifying migrations visually before committing

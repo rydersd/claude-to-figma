@@ -65,6 +65,19 @@ if [ "$INSTALL_LAUNCHER" -eq 1 ]; then
   echo "✓ Installed l2f and compatible c2f launcher in $LAUNCHER_DIR (add it to PATH if needed)"
 fi
 
+# setup only rewrites its own entries. A token under another scope or server
+# name is left alone, so say where one remains on every exit, including the
+# failure paths below. The file name only, never a value.
+warn_leftover_token() {
+  local claude_json="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+  if grep -qs 'FIGMA_API_TOKEN' "$claude_json"; then
+    echo ""
+    echo "  $claude_json still mentions FIGMA_API_TOKEN."
+    echo "  Delete that entry and revoke the old token in Figma; llm2figma reads the token from the Keychain only."
+  fi
+}
+trap warn_leftover_token EXIT
+
 if [ "$REGISTER_USER" -eq 1 ]; then
   if ! command -v claude >/dev/null 2>&1; then
     echo "✗ claude CLI not found, so the user-scope server was not registered." >&2
@@ -72,8 +85,9 @@ if [ "$REGISTER_USER" -eq 1 ]; then
     exit 1
   fi
   # Build the new entry from any existing user-scope LLM2Figma or legacy
-  # ClaudeToFigma entry, keeping its env (library credentials) and connection
-  # flags such as --server=…; only the bun and server paths are replaced.
+  # ClaudeToFigma entry, keeping its env (library file keys, never the token)
+  # and connection flags such as --server=…; only the bun and server paths are
+  # replaced. Entries are never printed: they are passed to claude only.
   CLAUDE_JSON="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
   NEW_ENTRY="$("$BUN_PATH" "$SCRIPT_DIR/write-mcp-config.ts" --user-entry "$CLAUDE_JSON" "$BUN_PATH" "$SERVER_TS")"
   PREVIOUS_ENTRY="$("$BUN_PATH" "$SCRIPT_DIR/write-mcp-config.ts" --user-get "$CLAUDE_JSON" LLM2Figma)"
@@ -84,7 +98,7 @@ if [ "$REGISTER_USER" -eq 1 ]; then
      [ -z "$("$BUN_PATH" "$SCRIPT_DIR/write-mcp-config.ts" --user-get "$CLAUDE_JSON" LLM2Figma)" ]; then
     if [ -n "$PREVIOUS_ENTRY" ]; then
       claude mcp add-json --scope user LLM2Figma "$PREVIOUS_ENTRY" >/dev/null 2>&1 ||
-        echo "  Could not restore the previous LLM2Figma entry: $PREVIOUS_ENTRY" >&2
+        echo "  Could not restore the previous LLM2Figma entry either." >&2
     fi
     echo "✗ claude mcp add-json failed, so llm2figma is not registered for your user." >&2
     echo "  Fix the error above, then re-run: bun setup --user" >&2
@@ -92,6 +106,11 @@ if [ "$REGISTER_USER" -eq 1 ]; then
   fi
   # Remove the legacy duplicate only after the replacement is registered.
   claude mcp remove --scope user ClaudeToFigma >/dev/null 2>&1 || true
+  if [ -n "$("$BUN_PATH" "$SCRIPT_DIR/write-mcp-config.ts" --user-get "$CLAUDE_JSON" ClaudeToFigma)" ]; then
+    echo "✗ llm2figma is registered, but the old ClaudeToFigma entry could not be removed." >&2
+    echo "  Remove it yourself: claude mcp remove --scope user ClaudeToFigma" >&2
+    exit 1
+  fi
   echo "✓ Registered llm2figma for your user: available in every project"
 else
   echo ""

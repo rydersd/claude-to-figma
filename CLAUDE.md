@@ -29,7 +29,7 @@ bun setup                # Full setup (install + write .mcp.json)
 
 `bun run build` uses tsup/esbuild, which **strips types without checking them** — a build can succeed on code that does not typecheck. Run `bun run typecheck` separately; "build succeeded" is not evidence the code compiles.
 
-Tests: `bun run test:unit` runs unit and plugin-contract tests (no Figma needed). `tests/library-live.test.ts` hits the real Figma REST API and only runs when `FIGMA_API_TOKEN`/`FIGMA_LIBRARY_FILE_KEYS` are set (skipped otherwise). The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel and time out otherwise. No linter is configured.
+Tests: `bun run test:unit` runs unit and plugin-contract tests (no Figma needed). `tests/library-live.test.ts` hits the real Figma REST API and only runs when `FIGMA_LIBRARY_FILE_KEYS` is set (skipped otherwise) and reads the token from the macOS Keychain. The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel and time out otherwise. No linter is configured.
 
 ## Architecture
 
@@ -103,12 +103,12 @@ claude mcp add LLM2Figma -- bun /path-to-repo/src/llm2figma_mcp/server.ts
 
 ### Team library tools (optional)
 
-`get_library_components` / `search_library_components` and `$lib:` refs in `create_node_tree` need two environment variables set before the MCP server starts:
+`get_library_components` / `search_library_components` and `$lib:` refs in `create_node_tree` need:
 
-- `FIGMA_API_TOKEN` — a Figma personal access token with the `File content: read` and `Library content: read` scopes
-- `FIGMA_LIBRARY_FILE_KEYS` — comma-separated file keys (from each library file's URL: `figma.com/design/<FILE_KEY>/...`) of the libraries to index
+- A Figma personal access token in the **macOS Keychain** (service `llm2figma`, account `figma-api-token`), stored with `bun run token` (`scripts/store-figma-token.sh`; hidden prompt, then a check against `/v1/me`). Scopes: `File content: read`, `Library content: read`, `file_comments:read`, `file_comments:write`. `src/llm2figma_mcp/keychain.ts` (`getFigmaToken()`) reads it at call time, uncached; it is never taken from env or `.mcp.json`, and must never appear in a log, tool result or error.
+- `FIGMA_LIBRARY_FILE_KEYS` — comma-separated file keys (from each library file's URL: `figma.com/design/<FILE_KEY>/...`) of the libraries to index, set in the `LLM2Figma` server's `env` block in `.mcp.json`, then restart the MCP server.
 
-Export both in your shell (e.g. `~/.zshrc`) and reference them from `.mcp.json` as `"${FIGMA_API_TOKEN}"` / `"${FIGMA_LIBRARY_FILE_KEYS}"` in the `LLM2Figma` server's `env` block, then restart the MCP server. Without them, the two library tools soft-fail with setup instructions instead of erroring.
+Without them, the two library tools soft-fail with setup instructions instead of erroring. Keychain is macOS only; on Linux/WSL they soft-fail. `bun setup` drops any `FIGMA_API_TOKEN` left in `.mcp.json` (and `bun setup --user` from the user-scope entry; other scopes in `~/.claude.json` are only reported, by file name); users upgrading should also delete an old `export FIGMA_API_TOKEN` from their shell profile and revoke that token.
 
 ## Claude Code plugin (`plugin/`)
 

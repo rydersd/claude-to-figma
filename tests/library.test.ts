@@ -21,6 +21,7 @@ import {
   formatLibraryList,
   formatSearchResults,
 } from "../src/llm2figma_mcp/tools/library";
+import { FigmaTokenError } from "../src/llm2figma_mcp/keychain";
 
 describe("parseVariantProperties", () => {
   test("parses State=Default, Size=MD variant names", () => {
@@ -219,46 +220,64 @@ describe("resolveLibraryRef", () => {
 
 describe("getLibraryConfig", () => {
   test("splits and trims comma-separated file keys", () => {
-    const cfg = getLibraryConfig({ FIGMA_API_TOKEN: "figd_x", FIGMA_LIBRARY_FILE_KEYS: " abc , def ,, " } as any);
-    expect(cfg.token).toBe("figd_x");
+    const cfg = getLibraryConfig({ FIGMA_LIBRARY_FILE_KEYS: " abc , def ,, " } as any);
     expect(cfg.fileKeys).toEqual(["abc", "def"]);
   });
 
-  test("empty env yields no token and no keys", () => {
-    const cfg = getLibraryConfig({} as any);
-    expect(cfg.token).toBeUndefined();
-    expect(cfg.fileKeys).toEqual([]);
+  test("never reads a token from env", () => {
+    const cfg = getLibraryConfig({ FIGMA_API_TOKEN: "figd_env", FIGMA_LIBRARY_FILE_KEYS: "abc" } as any);
+    expect(cfg).toEqual({ fileKeys: ["abc"] });
+  });
+
+  test("empty env yields no keys", () => {
+    expect(getLibraryConfig({} as any).fileKeys).toEqual([]);
   });
 });
 
 describe("loadLibraryIndex", () => {
   const realFetch = globalThis.fetch;
-  const realToken = process.env.FIGMA_API_TOKEN;
   const realKeys = process.env.FIGMA_LIBRARY_FILE_KEYS;
+  const tokenReader = (token: string) => {
+    const reader = async () => { reader.calls++; return token; };
+    reader.calls = 0;
+    return reader;
+  };
 
   function restore() {
     globalThis.fetch = realFetch;
-    if (realToken === undefined) delete process.env.FIGMA_API_TOKEN; else process.env.FIGMA_API_TOKEN = realToken;
     if (realKeys === undefined) delete process.env.FIGMA_LIBRARY_FILE_KEYS; else process.env.FIGMA_LIBRARY_FILE_KEYS = realKeys;
     clearLibraryCache();
   }
 
-  test("throws LibraryConfigError with setup help when unconfigured", async () => {
-    delete process.env.FIGMA_API_TOKEN;
+  test("throws LibraryConfigError with setup help when no file keys are set", async () => {
     delete process.env.FIGMA_LIBRARY_FILE_KEYS;
     clearLibraryCache();
     try {
-      await expect(loadLibraryIndex()).rejects.toBeInstanceOf(LibraryConfigError);
+      await expect(loadLibraryIndex({ readToken: tokenReader("figd_test") })).rejects.toBeInstanceOf(LibraryConfigError);
+      expect(CONFIG_HELP).toMatch(/Keychain/);
+      expect(CONFIG_HELP).not.toContain("FIGMA_API_TOKEN");
+    } finally { restore(); }
+  });
+
+  test("a Keychain failure becomes LibraryConfigError carrying the setup text", async () => {
+    process.env.FIGMA_LIBRARY_FILE_KEYS = "KEY1";
+    clearLibraryCache();
+    const readToken = async () => { throw new FigmaTokenError("No Figma API token in the Keychain."); };
+    try {
+      await expect(loadLibraryIndex({ readToken })).rejects.toThrow(/No Figma API token/);
+      await expect(loadLibraryIndex({ readToken })).rejects.toBeInstanceOf(LibraryConfigError);
     } finally { restore(); }
   });
 
   test("fetches components + component_sets per file key and caches the result", async () => {
-    process.env.FIGMA_API_TOKEN = "figd_test";
     process.env.FIGMA_LIBRARY_FILE_KEYS = "KEY1";
     clearLibraryCache();
+    const readToken = tokenReader("figd_test");
     let calls: string[] = [];
-    globalThis.fetch = (async (url: any) => {
+    const tokens: string[] = [];
+    globalThis.fetch = (async (url: any, init: any) => {
       calls.push(String(url));
+      tokens.push(init?.headers?.["X-Figma-Token"]);
       const path = String(url);
       const body = path.includes("/component_sets")
         ? { meta: { component_sets: FIXTURE_SETS } }
@@ -268,23 +287,39 @@ describe("loadLibraryIndex", () => {
       return new Response(JSON.stringify(body), { status: 200 });
     }) as any;
     try {
-      const index = await loadLibraryIndex();
+      const index = await loadLibraryIndex({ readToken });
       expect(index.find((s) => s.setName === "Badge")).toBeTruthy();
+      expect(tokens.every((t) => t === "figd_test")).toBe(true);
+      expect(readToken.calls).toBe(1);
       const callCount = calls.length;
-      await loadLibraryIndex(); // second call served from cache
+      await loadLibraryIndex({ readToken }); // second call served from cache, no Keychain read
       expect(calls.length).toBe(callCount);
-      await loadLibraryIndex({ refresh: true }); // refresh refetches
+      expect(readToken.calls).toBe(1);
+      await loadLibraryIndex({ refresh: true, readToken }); // refresh refetches and re-reads the token
       expect(calls.length).toBeGreaterThan(callCount);
+      expect(readToken.calls).toBe(2);
     } finally { restore(); }
   });
 
-  test("maps HTTP errors to actionable hints", async () => {
-    process.env.FIGMA_API_TOKEN = "figd_bad";
+  test("maps HTTP errors to actionable hints without echoing the token", async () => {
     process.env.FIGMA_LIBRARY_FILE_KEYS = "KEY1";
     clearLibraryCache();
     globalThis.fetch = (async () => new Response("{}", { status: 403 })) as any;
     try {
-      await expect(loadLibraryIndex()).rejects.toThrow(/scopes|token/i);
+      const error = await loadLibraryIndex({ readToken: tokenReader("figd_SENTINEL") }).catch((e) => e);
+      expect(error.message).toMatch(/scopes|token/i);
+      expect(error.message).not.toContain("figd_SENTINEL");
+    } finally { restore(); }
+  });
+
+  test("a thrown fetch error never carries the runtime's text, which can quote the header", async () => {
+    process.env.FIGMA_LIBRARY_FILE_KEYS = "KEY1";
+    clearLibraryCache();
+    globalThis.fetch = (async () => { throw new TypeError("Header 'X-Figma-Token' has invalid value: 'figd_SENTINEL'"); }) as any;
+    try {
+      const error = await loadLibraryIndex({ readToken: tokenReader("figd_SENTINEL") }).catch((e) => e);
+      expect(error.message).toMatch(/could not reach api\.figma\.com/);
+      expect(error.message).not.toContain("figd_SENTINEL");
     } finally { restore(); }
   });
 });

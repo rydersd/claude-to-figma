@@ -24,11 +24,20 @@ function connectionArgs(args: unknown): string[] {
 export function migrateServerEntry(servers: any, bunPath: string, serverPath: string) {
   const previousServer = { ...servers?.ClaudeToFigma, ...servers?.LLM2Figma };
   const env = { L2F_ALL: "${L2F_ALL:-}", ...flagRefs, ...servers?.ClaudeToFigma?.env, ...servers?.LLM2Figma?.env };
+  // The Figma token lives in the macOS Keychain only; drop any copy an earlier setup left here.
+  delete env.FIGMA_API_TOKEN;
   return {
     ...previousServer, type: "stdio", command: bunPath,
     args: [serverPath, ...connectionArgs(previousServer.args)],
     env,
   };
+}
+
+/** A server entry without the Figma token an earlier setup may have left in its env. */
+export function withoutToken(entry: any) {
+  if (!entry?.env || !("FIGMA_API_TOKEN" in entry.env)) return entry;
+  const { FIGMA_API_TOKEN: _dropped, ...env } = entry.env;
+  return { ...entry, env };
 }
 
 export function makeMcpConfig(previous: any, bunPath: string, repoRoot: string, stamp: any) {
@@ -54,8 +63,10 @@ if (import.meta.main) {
   } else if (mode === "--user-get") {
     // Print a user-scope server entry as JSON, or nothing when absent.
     const [claudeJson, name] = rest;
+    // The entry is used to restore a failed registration, so it goes back on a
+    // command line: the token is dropped here and never restored.
     const entry = (await readJson(claudeJson)).mcpServers?.[name];
-    if (entry) console.log(JSON.stringify(entry));
+    if (entry) console.log(JSON.stringify(withoutToken(entry)));
   } else {
     const [repoRoot, bunPath, hostname, user, generatedAt] = [mode, ...rest];
     const path = resolve(repoRoot, ".mcp.json");

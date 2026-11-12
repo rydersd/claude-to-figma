@@ -36,7 +36,7 @@ Alongside the WebSocket/plugin pipeline above, the MCP server has a second, inde
 Claude Code ←(stdio)→ MCP Server ──(HTTPS)──→ api.figma.com
 ```
 
-Fetched component sets are grouped and cached in memory per file key for the MCP server's session lifetime (`refresh: true` on either tool forces a refetch); nothing here depends on a plugin being connected to a channel. Requires `FIGMA_API_TOKEN` + `FIGMA_LIBRARY_FILE_KEYS` — see [[Getting-Started#team-library-setup|team library setup]].
+Fetched component sets are grouped and cached in memory per file key for the MCP server's session lifetime (`refresh: true` on either tool forces a refetch); nothing here depends on a plugin being connected to a channel. Requires a Figma token in the macOS Keychain (read per REST call, never from env) + `FIGMA_LIBRARY_FILE_KEYS` — see [[Getting-Started#team-library-setup|team library setup]].
 
 ## Key runtime patterns
 
