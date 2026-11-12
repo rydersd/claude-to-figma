@@ -31,7 +31,7 @@ Tools for auto layout, spacing, visual styling, and node organization — the bu
 ## Organization & geometry
 
 - `move_node` — reposition to new (x, y)
-- `resize_node` — change width and height
+- `resize_node` — change width and height. With `L2F_VERIFY=1` it reads the size back: Figma's `resize()` applies what it can and throws nothing, so the result reports `requested`, `applied`, `partial` and a `cause` (`layoutSizing*` HUG or FILL, `minWidth`/`minHeight`, `maxWidth`/`maxHeight`, text auto-resize, or "unexplained"); see [verification](Tools-Reading-and-Inspection.md#geometry-verification-l2f_verify)
 - `clone_node` — duplicate with an optional offset
 - `delete_node` / `delete_multiple_nodes` — remove nodes
 - `insert_child_at` — move a node into a parent at a specific index

@@ -6,6 +6,7 @@ import { setCharacters, setTextDecoration } from './text';
 import { normalizeSvgPath } from './vectors';
 import { setOpacity, setRotation, setBlendMode, setCornerRadius, setEffects } from './styling';
 import { setPadding, setItemSpacing } from './layout';
+import { resizeWithReadBack } from './verify';
 
 // Shared helper: check if a node has a bound variable on a given field
 function hasBoundVariable(node: any, field: any) {
@@ -179,12 +180,8 @@ export async function batchMutate(params: any) {
           var resizeNode: any = await figma.getNodeByIdAsync(op.nodeId);
           if (!resizeNode) throw new Error("Node not found: " + op.nodeId);
           if (!("resize" in resizeNode) && !("resizeWithoutConstraints" in resizeNode)) throw new Error("Node does not support resize: " + op.nodeId);
-          if ("resize" in resizeNode) {
-            resizeNode.resize(op.width, op.height);
-          } else {
-            resizeNode.resizeWithoutConstraints(op.width, op.height);
-          }
-          result = { op: "resize", nodeId: op.nodeId, name: resizeNode.name, width: op.width, height: op.height };
+          var resizeCheck = resizeWithReadBack(resizeNode, op.width, op.height);
+          result = { op: "resize", nodeId: op.nodeId, name: resizeNode.name, width: op.width, height: op.height, ...resizeCheck };
           break;
 
         case "delete":

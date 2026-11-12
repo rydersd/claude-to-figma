@@ -280,7 +280,7 @@ The MCP server provides the following tools for interacting with Figma:
 ### Layout & Organization
 
 - `move_node` - Repositions a node to new (x, y) coordinates
-- `resize_node` - Changes a node's width and height
+- `resize_node` - Changes a node's width and height. With `L2F_VERIFY=1` it reads the size back: Figma's `resize()` applies what it can and throws nothing, so the result reports `requested`, `applied`, `partial` and a `cause` (`layoutSizing*` HUG or FILL, `minWidth`/`minHeight`, `maxWidth`/`maxHeight`, text auto-resize, or "unexplained")
 - `delete_node` - Removes a single node from the document
 - `delete_multiple_nodes` - Removes multiple nodes by ID array in one call
 - `clone_node` - Duplicates a node with an optional (x, y) offset for the copy
@@ -332,12 +332,15 @@ The MCP server provides the following tools for interacting with Figma:
 - `batch_reparent` - Moves multiple nodes under a new parent node at an optional child index
 - `batch_set_fill_color` - Applies the same fill color to multiple nodes at once
 - `batch_clone` - Duplicates one source node to multiple (x, y) positions with optional names per clone
-- `batch_mutate` - Executes a mixed array of operations (rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path, set_opacity, set_rotation, set_blend_mode, set_corner_radius, set_effects, set_padding, set_item_spacing, set_text_decoration) in a single round-trip — each operation runs independently. The last eight were previously standalone tools, consolidated here to keep the tool surface lean.
+- `batch_mutate` - Executes a mixed array of operations (rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path, set_opacity, set_rotation, set_blend_mode, set_corner_radius, set_effects, set_padding, set_item_spacing, set_text_decoration) in a single round-trip — each operation runs independently. The last eight were previously standalone tools, consolidated here to keep the tool surface lean. With `L2F_VERIFY=1`, `resize` operations are read back and partial resizes are listed with their cause
 
 ### Inspection & Linting
 
 - `scan_node_styles` - Walks a frame tree and returns fill, stroke, font, layout, corner-radius, and component data for every descendant — includes a `boundVariable` flag on each color for detecting hardcoded vs token-bound values; accepts a `fields` whitelist to project only the keys you need
 - `screenshot_region` - Captures a PNG screenshot of a rectangular canvas region at optional scale
+- `assert_contained` (`L2F_VERIFY=1`) - Checks each direct child's `absoluteBoundingBox` against its parent's (0.5px tolerance); a child with no box is `unmeasurable`, rotated children are listed. Containment alone does not prove placement, because sections auto-grow around displaced children, so pass `expected` (a snapshot id or `{childId: {x, y}}` offsets) to check positions
+- `snapshot_positions` (`L2F_VERIFY=1`) - Records id, name, parent and absolute box for a subtree in a bounded plugin-side store and returns a `snapshotId` (30-minute expiry, 64 snapshots, lost on plugin reload)
+- `diff_positions` (`L2F_VERIFY=1`) - Compares a snapshot with the document now: `missing` (deleted or absorbed), `added` (for example auto-generated wrappers) and `moved` (box changed or reparented). An unknown or expired id is an error, never an empty diff
 
 ### Query & Eval
 

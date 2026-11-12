@@ -18153,8 +18153,55 @@ function registerTools3(server, sendCommandToFigma2) {
   });
 }
 
-// src/llm2figma_mcp/tools/layout.ts
+// src/llm2figma_mcp/tools/verify.ts
+var size = (s) => `${s.width}x${s.height}`;
+function describeReadBack(r) {
+  if (!r.requested || !r.applied || typeof r.partial !== "boolean")
+    return null;
+  return r.partial ? `requested ${size(r.requested)}, Figma applied ${size(r.applied)} (partial: ${r.cause})` : `applied ${size(r.applied)} as requested`;
+}
+var Offset = z2.object({ x: z2.number(), y: z2.number() });
 function registerTools4(server, sendCommandToFigma2) {
+  server.tool("assert_contained", "Check that every direct child of a node sits inside the parent, comparing each child's absoluteBoundingBox to the parent's (0.5px tolerance by default; shadows and other render bounds are ignored). A child with no box is reported unmeasurable, never passed. A bare containment pass does NOT prove placement: a section auto-grows around children that were placed at the wrong offset (for example sec.x + 160 instead of 160, since section children are positioned relative to the section). Pass `expected` to check positions too: a snapshotId from snapshot_positions (taken on the parent or an ancestor; also reports parentGrewSinceSnapshot and snapshotTruncated) or a map of child id to {x, y} offset of the child's absoluteBoundingBox from the parent's. Offsets are always box minus box, never node x/y (a GROUP's children have x/y relative to the group's parent). placementOk is true only when every expected child was measured and matched and, for a snapshot, no child is missing from it; it is null when nothing could be decided (no parent box, a snapshot that did not read all of this parent's children, or rotated nodes, which are listed in rotated / placementUnchecked and not compared). A rotated parent makes contained null unless a child is clearly outside. Lists are capped at 100; counts are full.", {
+    parentId: z2.string().describe("The node whose direct children are checked"),
+    expected: z2.union([z2.string(), z2.record(Offset)]).optional().describe("A snapshotId, or {childId: {x, y}} offsets from the parent's top-left"),
+    tolerance: z2.number().min(0).max(10).optional().describe("Allowed overshoot in px (default 0.5)")
+  }, async ({ parentId, expected, tolerance }) => {
+    try {
+      const result = await sendCommandToFigma2("assert_contained", { parentId, expected, tolerance });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: `Error checking containment: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+  server.tool("snapshot_positions", "Record the id, name, parentId and absoluteBoundingBox of a node and its descendants in a plugin-side store, and return its snapshotId. Use before a reparent, auto-layout change or bulk edit, then call diff_positions with that id. Bounded walk (default 2000 nodes, depth 30) with an explicit truncated flag. Snapshots expire after 30 minutes, at most 64 are kept, and all are lost when the plugin reloads.", {
+    nodeId: z2.string().describe("Root of the subtree to record"),
+    maxNodes: z2.number().int().min(1).max(1e4).optional().describe("Node budget including the root (default 2000)"),
+    maxDepth: z2.number().int().min(0).max(100).optional().describe("Maximum depth below the root (default 30)")
+  }, async ({ nodeId, maxNodes, maxDepth }) => {
+    try {
+      const result = await sendCommandToFigma2("snapshot_positions", { nodeId, maxNodes, maxDepth }, 60000);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: `Error taking snapshot: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+  server.tool("diff_positions", "Compare a snapshot from snapshot_positions with the document now. Returns missing ids (no longer exist: deleted, or absorbed into a wrapper by suggest-auto-layout), added ids (new in the subtree, such as auto-generated wrapper frames), and moved nodes (absoluteBoundingBox changed beyond the tolerance, or reparented; a reparent with boxChanged false is a zero-drift move). After a truncated snapshot, nodes under a parent whose children the snapshot did not finish reading are listed as unsnapshotted, not added. Snapshot nodes the re-walk does not reach are looked up by id, so missing always means gone. Every list is capped at 100 (listsTruncated); counts are full. Pass the explicit snapshotId; an unknown or expired id is an error, never an empty diff.", {
+    snapshotId: z2.string().describe("The id snapshot_positions returned"),
+    tolerance: z2.number().min(0).max(10).optional().describe("Box change ignored below this many px (default 0.5)")
+  }, async ({ snapshotId, tolerance }) => {
+    try {
+      const result = await sendCommandToFigma2("diff_positions", { snapshotId, tolerance }, 60000);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: `Error diffing positions: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+}
+
+// src/llm2figma_mcp/tools/layout.ts
+function registerTools5(server, sendCommandToFigma2, env = process.env) {
+  const verifyEnabled = isEnabled("VERIFY", env);
   server.tool("set_layout_mode", "Set the layout mode and wrap behavior of a frame in Figma", {
     nodeId: z2.string().describe("The ID of the frame to modify"),
     layoutMode: z2.enum(["NONE", "HORIZONTAL", "VERTICAL"]).describe("Layout mode for the frame"),
@@ -18228,6 +18275,9 @@ function registerTools4(server, sendCommandToFigma2) {
     try {
       const result = await sendCommandToFigma2("resize_node", { nodeId, width, height });
       const typedResult = result;
+      const readBack = verifyEnabled ? describeReadBack(result) : null;
+      if (readBack)
+        return { content: [{ type: "text", text: `Resized node "${typedResult.name}": ${readBack}` }] };
       return { content: [{ type: "text", text: `Resized node "${typedResult.name}" to width ${width} and height ${height}` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Error resizing node: ${error instanceof Error ? error.message : String(error)}` }] };
@@ -18307,7 +18357,7 @@ function registerTools4(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/text.ts
-function registerTools5(server, sendCommandToFigma2) {
+function registerTools6(server, sendCommandToFigma2) {
   server.tool("set_text_content", "Set the text content of an existing text node in Figma", {
     nodeId: z2.string().describe("The ID of the text node to modify"),
     text: z2.string().describe("New text content")
@@ -18495,7 +18545,7 @@ ${failed.map((r) => `- range ${r.index} [${r.start}-${r.end}]: ${r.error}`).join
 }
 
 // src/llm2figma_mcp/tools/components.ts
-function registerTools6(server, sendCommandToFigma2) {
+function registerTools7(server, sendCommandToFigma2) {
   server.tool("get_styles", "Get all styles from the current Figma document", {}, async () => {
     try {
       const result = await sendCommandToFigma2("get_styles");
@@ -18622,7 +18672,7 @@ function registerTools6(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/vectors.ts
-function registerTools7(server, sendCommandToFigma2) {
+function registerTools8(server, sendCommandToFigma2) {
   server.tool("create_vector", "Create a vector node from SVG path data in Figma. Supports inline strokeColor/strokeWeight/strokeCap to avoid a separate set_stroke_color call.", {
     pathData: z2.string().describe("SVG path data string (the 'd' attribute value)"),
     x: z2.number().describe("X position"),
@@ -18708,7 +18758,7 @@ function registerTools7(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/batch.ts
-function registerTools8(server, sendCommandToFigma2) {
+function registerTools9(server, sendCommandToFigma2) {
   server.tool("rename_node", "Rename a node's layer name in Figma", {
     nodeId: z2.string().describe("The ID of the node to rename"),
     name: z2.string().describe("The new name for the node")
@@ -18827,7 +18877,7 @@ ${cloneList}` }] };
 }
 
 // src/llm2figma_mcp/tools/annotations.ts
-function registerTools9(server, sendCommandToFigma2) {
+function registerTools10(server, sendCommandToFigma2) {
   server.tool("get_annotations", "Get all annotations in the current document or specific node", {
     nodeId: z2.string().describe("node ID to get annotations for specific node"),
     includeCategories: z2.boolean().optional().default(true).describe("Whether to include category information")
@@ -18914,7 +18964,7 @@ ${failedResults.map((item) => `- ${item.nodeId}: ${item.error || "Unknown error"
 }
 
 // src/llm2figma_mcp/tools/connections.ts
-function registerTools10(server, sendCommandToFigma2) {
+function registerTools11(server, sendCommandToFigma2) {
   server.tool("get_reactions", "Get Figma Prototyping Reactions from multiple nodes. CRITICAL: The output MUST be processed using the 'reaction_to_connector_strategy' prompt IMMEDIATELY to generate parameters for connector lines via the 'create_connections' tool.", {
     nodeIds: z2.array(z2.string()).describe("Array of node IDs to get reactions from")
   }, async ({ nodeIds }) => {
@@ -18961,7 +19011,7 @@ function registerTools10(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/navigation.ts
-function registerTools11(server, sendCommandToFigma2, env = process.env, channels = { joinChannel, autoJoinChannel }) {
+function registerTools12(server, sendCommandToFigma2, env = process.env, channels = { joinChannel, autoJoinChannel }) {
   const fileKeyEnabled = isEnabled("FILE_KEY", env);
   server.tool("set_focus", "Set focus on a specific node in Figma by selecting it and scrolling viewport to it", {
     nodeId: z2.string().describe("The ID of the node to focus on")
@@ -19251,14 +19301,14 @@ async function resolveImageToBase64(source, options = {}) {
     if (!reader)
       throw new Error("Image response had no body");
     const chunks = [];
-    let size = 0;
+    let size2 = 0;
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done)
           break;
-        size += value.byteLength;
-        if (size > MAX_IMAGE_BYTES) {
+        size2 += value.byteLength;
+        if (size2 > MAX_IMAGE_BYTES) {
           await reader.cancel();
           throw new Error("Image exceeds the 6MB limit. Resize it first.");
         }
@@ -19279,7 +19329,7 @@ async function resolveImageToBase64(source, options = {}) {
   return bytes.toString("base64");
 }
 var defaultPinnedTransport = createPinnedTransport();
-function registerTools12(server, sendCommandToFigma2) {
+function registerTools13(server, sendCommandToFigma2) {
   server.tool("set_image_fill", "Fill a node with an image from a URL, local file path, or base64 data. The server fetches the bytes and the plugin creates a real Figma image fill. Figma rejects images larger than 4096px per side. scaleMode maps from CSS: FILL = background-size:cover (default), FIT = contain, TILE = repeat.", {
     nodeId: z2.string().describe("The ID of the node to fill"),
     ...ImageSourceSchema
@@ -19635,7 +19685,7 @@ function asToolError(error) {
 ${error.message}` : `Library error: ${error instanceof Error ? error.message : String(error)}`;
   return { content: [{ type: "text", text: message }] };
 }
-function registerTools13(server, _sendCommandToFigma) {
+function registerTools14(server, _sendCommandToFigma) {
   server.tool("get_library_components", "List every published component set available from the configured Figma team libraries (the Assets panel equivalent). Compact by default; verbose:true adds per-variant names, keys, and property values. Requires a Figma token in the macOS Keychain + FIGMA_LIBRARY_FILE_KEYS.", {
     verbose: z2.boolean().optional().describe("Include per-variant names, keys, and property values"),
     refresh: z2.boolean().optional().describe("Refetch from the Figma API instead of the session cache")
@@ -19945,7 +19995,7 @@ function summarizeTreeResult(result, verbose) {
   const { nodes, ...rest } = result;
   return { ...rest, rootId: rest.rootId || nodes[0]?.id, nodeCount: nodes.length };
 }
-function registerTools14(server, sendCommandToFigma2) {
+function registerTools15(server, sendCommandToFigma2) {
   server.tool("create_node_tree", "Create (or sync) an entire node hierarchy in one call from a nested JSON tree of frames, text, rectangles, vectors, and library component instances. Supports $repeat, $var: variable binding, $lib: library component refs, hex/gradient/image fills, effects, per-corner radii, and absolute positioning. Pass rootId (instead of parentId) to reconcile an existing tree in place. Returns a compact summary; pass verbose:true for the full node map. For the full spec format, call the 'node_tree_guide' prompt.", {
     tree: NodeTreeSchema.describe("The root node of the tree to create or sync"),
     parentId: z2.string().optional().describe("Parent node ID for create mode"),
@@ -20037,7 +20087,7 @@ function registerTools14(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/screenshot.ts
-function registerTools15(server, sendCommandToFigma2) {
+function registerTools16(server, sendCommandToFigma2) {
   server.tool("screenshot_region", "Capture a screenshot of a canvas region by coordinates. Useful for visually verifying sections of large designs (e.g., sitemap swimlanes) without needing a wrapping frame. Returns a PNG image.", {
     x: z2.number().describe("X coordinate of the top-left corner of the region"),
     y: z2.number().describe("Y coordinate of the top-left corner of the region"),
@@ -20201,7 +20251,8 @@ var OperationSchema = z2.discriminatedUnion("op", [
     decoration: z2.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).describe("Text decoration")
   })
 ]);
-function registerTools16(server, sendCommandToFigma2) {
+function registerTools17(server, sendCommandToFigma2, env = process.env) {
+  const verifyEnabled = isEnabled("VERIFY", env);
   server.tool("batch_mutate", "Execute multiple mixed operations in a single round-trip \u2014 the primary tool for tweaking existing nodes. Supports: rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path, set_opacity, set_rotation, set_blend_mode, set_corner_radius, set_effects, set_padding, set_item_spacing, set_text_decoration. Operations run sequentially \u2014 later operations can depend on earlier ones. Dramatically reduces MCP call count for bulk updates.", {
     operations: z2.array(OperationSchema).min(1).max(100).describe("Array of operations to execute. Each must have an 'op' field plus operation-specific params.")
   }, async ({ operations }) => {
@@ -20217,6 +20268,21 @@ Failed:
 ${failedResults.map((r) => `- ${r.op} ${r.nodeId}: ${r.error}`).join(`
 `)}`;
       }
+      if (verifyEnabled) {
+        const resizes = typedResult.results.filter((r) => r.success && r.op === "resize" && describeReadBack(r) !== null);
+        if (resizes.length > 0) {
+          const partial = resizes.filter((r) => r.partial);
+          responseText += `
+
+Resize read-back: ${resizes.length - partial.length}/${resizes.length} applied as requested`;
+          if (partial.length > 0) {
+            responseText += `
+Partial:
+${partial.map((r) => `- ${r.nodeId} "${r.name}": ${describeReadBack(r)}`).join(`
+`)}`;
+          }
+        }
+      }
       return {
         content: [{ type: "text", text: responseText }]
       };
@@ -20229,7 +20295,7 @@ ${failedResults.map((r) => `- ${r.op} ${r.nodeId}: ${r.error}`).join(`
 }
 
 // src/llm2figma_mcp/tools/lint.ts
-function registerTools17(server, sendCommandToFigma2) {
+function registerTools18(server, sendCommandToFigma2) {
   server.tool("scan_node_styles", "Walk a frame tree and return style data (fills, strokes, fonts, layout, corner radius, component info) for every descendant in a single round-trip. Use this for design linting \u2014 the result includes a boundVariable flag on each fill/stroke so you can detect hardcoded colors vs token-bound ones. Returns bounded nodes and coverage metadata, or summary:true for compact validation counts and up to ten unbound-color node IDs. A truncated scan covers only part of the composition.", {
     nodeId: z2.string().describe("Root node ID to scan"),
     maxDepth: z2.number().int().min(1).max(50).optional().describe("Maximum tree depth to walk (default 10)"),
@@ -20251,7 +20317,7 @@ function registerTools17(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/introspect.ts
-function registerTools18(server, sendCommandToFigma2) {
+function registerTools19(server, sendCommandToFigma2) {
   server.tool("introspect", "Discover the full manipulation surface of a component or frame in one call. Returns a flat property map with semantic keys (e.g. 'badge.text', 'header.fill') where each entry describes a text, color, instance, boolean, or component_property that can be changed. Also reports wrapper frames, name collisions, and nesting depth \u2014 use this output to feed set_properties or optimize_structure.", {
     nodeId: z2.string().describe("Root node ID to introspect"),
     maxDepth: z2.number().int().min(1).max(50).optional().describe("Maximum tree depth to walk (default 20)")
@@ -20351,7 +20417,7 @@ ${JSON.stringify(typedResult.results)}`;
 }
 
 // src/llm2figma_mcp/tools/visual.ts
-function registerTools19(server, sendCommandToFigma2) {
+function registerTools20(server, sendCommandToFigma2) {
   server.tool("set_layout_positioning", "Set a child node to absolute or auto positioning within an auto-layout frame. ABSOLUTE is the 'Ignore auto layout' toggle \u2014 the node floats above siblings without affecting flow. Use with set_constraints to pin position.", {
     nodeId: z2.string().describe("The ID of the child node"),
     positioning: z2.enum(["ABSOLUTE", "AUTO"]).describe("ABSOLUTE = ignore auto-layout (float), AUTO = participate in auto-layout flow"),
@@ -20500,7 +20566,7 @@ function registerTools19(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/eval.ts
-function registerTools20(server, sendCommandToFigma2) {
+function registerTools21(server, sendCommandToFigma2) {
   server.tool("figma_eval", "WARNING: Executes arbitrary JavaScript in the Figma plugin sandbox. Can read, modify, or delete any nodes in the document. Use with caution. Code is the body of an async function receiving: figma, hexToFigmaColor, appendOrInsertChild, loadAllFonts, getVariableByName, bindVariableToColor, resolveColorValue, sendProgressUpdate, introspectNode, setProperties. Use `return` to send results. Figma nodes auto-serialize to {id, name, type}.", {
     code: z2.string().describe("JavaScript code body. Use `return` for results. `figma` and helpers available as locals.")
   }, async ({ code }) => {
@@ -20519,7 +20585,7 @@ function registerTools20(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/migration.ts
-function registerTools21(server, sendCommandToFigma2) {
+function registerTools22(server, sendCommandToFigma2) {
   server.tool("diff_components", "Compare two components (old vs new) and produce a semantic property mapping + structural diff. Uses introspect on both components, then runs a 4-pass matching algorithm (exact key, suffix, type+name similarity, positional fallback) to map properties between versions. Use this before migrate_instance to understand what changed and review/adjust the mapping.", {
     sourceId: z2.string().describe("Node ID of the old/source component"),
     targetId: z2.string().describe("Node ID of the new/target component"),
@@ -20677,7 +20743,7 @@ var ReactionSchema = z2.object({
   trigger: TriggerSchema,
   actions: z2.array(ActionSchema).min(1).describe("Actions to execute when triggered")
 });
-function registerTools22(server, sendCommandToFigma2) {
+function registerTools23(server, sendCommandToFigma2) {
   server.tool("set_reactions", "Set prototype interactions on a Figma node. Replaces the entire reactions array. Use this to wire click-to-navigate, hover overlays, scroll-to, or any prototype interaction. Each reaction has a trigger (ON_CLICK, ON_HOVER, etc.) and one or more actions (NAVIGATE, OVERLAY, BACK, URL, etc.). For NODE actions, destinationId must reference an existing frame ID.", {
     nodeId: z2.string().describe("The node to set reactions on"),
     reactions: z2.array(ReactionSchema).describe("Array of reactions to set")
@@ -21231,7 +21297,7 @@ function parseWireframe(filePath) {
     estimatedTokenSavings: `~${savings}% (${inputTokens} input tokens -> ${outputTokens} output tokens)`
   };
 }
-function registerTools23(server, _sendCommandToFigma) {
+function registerTools24(server, _sendCommandToFigma) {
   server.tool("parse_wireframe", "Parse an HTML wireframe file and emit compact section specs for build_page_section. Reads the HTML, identifies sections by CSS classes and HTML comments, maps each to a template + props, and returns the complete page manifest. Eliminates the need to read/parse HTML manually \u2014 ~10x token savings vs reading raw HTML.", {
     filePath: z2.string().describe("Absolute path to the HTML wireframe file")
   }, async ({ filePath }) => {
@@ -23066,7 +23132,7 @@ function getTemplateSummaries() {
 }
 
 // src/llm2figma_mcp/tools/page-compiler.ts
-function registerTools24(server, sendCommandToFigma2) {
+function registerTools25(server, sendCommandToFigma2) {
   server.tool("build_page_section", "Build a single page section in Figma using a compact semantic spec. Accepts a template name and props \u2014 the server handles zone-aware token selection, node tree generation, and dispatches via create_node_tree internally. ~10x fewer tokens than manual create_node_tree calls. Use get_section_templates to see available templates and their required props.", {
     template: z2.string().describe("Template name (e.g., 'hero_takeover', 'slds_data_table')"),
     parentId: z2.string().describe("Parent frame ID to add the section into"),
@@ -23141,7 +23207,7 @@ function registerTools24(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/events.ts
-function registerTools25(server, sendCommandToFigma2) {
+function registerTools26(server, sendCommandToFigma2) {
   server.tool("figma_events_subscribe", "Start or stop receiving Figma design events (selection changes, node mutations, page switches). Events accumulate in a buffer and are read with figma_events_poll.", {
     enabled: z2.boolean().describe("true to start streaming, false to stop")
   }, async ({ enabled }) => {
@@ -24173,7 +24239,7 @@ class ReferenceCache {
     return { scope, cleared };
   }
 }
-function registerTools26(server) {
+function registerTools27(server) {
   const cache = new ReferenceCache;
   server.tool("reference_cache", "Reuse palettes, font choices, component/root IDs, layout helper snippets, and already-read skill guidance within this MCP session. Scope every entry to a file/page or task ID. Entries expire after 30 minutes by default; refresh after library updates, deletions, or reference changes. List returns keys only. Max 64 entries, 64KB each; oldest entries are evicted.", {
     action: z2.enum(["get", "set", "list", "clear"]),
@@ -24204,7 +24270,6 @@ var registerFeature = (feature, register) => registerWhenEnabled(feature, regist
 registerTools(server, sendCommandToFigma);
 registerTools2(server, sendCommandToFigma);
 registerTools3(server, sendCommandToFigma);
-registerTools4(server, sendCommandToFigma);
 registerTools5(server, sendCommandToFigma);
 registerTools6(server, sendCommandToFigma);
 registerTools7(server, sendCommandToFigma);
@@ -24212,7 +24277,7 @@ registerTools8(server, sendCommandToFigma);
 registerTools9(server, sendCommandToFigma);
 registerTools10(server, sendCommandToFigma);
 registerTools11(server, sendCommandToFigma);
-registerTools14(server, sendCommandToFigma);
+registerTools12(server, sendCommandToFigma);
 registerTools15(server, sendCommandToFigma);
 registerTools16(server, sendCommandToFigma);
 registerTools17(server, sendCommandToFigma);
@@ -24223,12 +24288,14 @@ registerTools21(server, sendCommandToFigma);
 registerTools22(server, sendCommandToFigma);
 registerTools23(server, sendCommandToFigma);
 registerTools24(server, sendCommandToFigma);
-registerTools12(server, sendCommandToFigma);
-registerTools13(server, sendCommandToFigma);
 registerTools25(server, sendCommandToFigma);
+registerTools13(server, sendCommandToFigma);
+registerTools14(server, sendCommandToFigma);
+registerTools26(server, sendCommandToFigma);
+registerFeature("VERIFY", registerTools4);
 registerFeature("COMMENTS", registerReadTools);
 registerFeature("COMMENTS_WRITE", registerWriteTools);
-registerTools26(server);
+registerTools27(server);
 registerSetupTools(server);
 registerPrompts(server);
 async function main() {
