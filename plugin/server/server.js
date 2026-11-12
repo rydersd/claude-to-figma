@@ -17191,6 +17191,7 @@ import fs2 from "fs";
 import net from "net";
 import path2 from "path";
 import { execFileSync, spawn } from "child_process";
+import { randomUUID as randomUUID2 } from "crypto";
 
 // src/relay-protocol.ts
 var RELAY_PROTOCOL_VERSION = "2";
@@ -17238,67 +17239,200 @@ async function relayVersion(port) {
     return null;
   }
 }
-async function stopOwnRelay(pidFile, port) {
-  let pid;
+var relayPidFile = (dataDir, port) => path2.join(dataDir, `relay-${port}.pid`);
+var relayLockFile = (dataDir, port) => path2.join(dataDir, `relay-${port}.lock`);
+var legacyRelayPidFile = (dataDir) => path2.join(dataDir, "relay.pid");
+function isPluginRelayCommand(command, pluginRoot) {
+  const args = command.trim().split(/\s+/).slice(1);
+  while (args.length > 0 && args[0].startsWith("-"))
+    args.shift();
+  const script = args.join(" ");
+  if (!path2.isAbsolute(script))
+    return false;
+  const installDir = path2.dirname(path2.resolve(pluginRoot));
+  const [version, ...rest] = path2.relative(installDir, path2.resolve(script)).split(path2.sep);
+  return Boolean(version) && version !== ".." && rest.length === 2 && rest[0] === "server" && rest[1] === "relay.js";
+}
+async function stopOwnRelay(host) {
+  let legacyFile = null;
   try {
-    pid = Number(fs2.readFileSync(pidFile, "utf-8").trim());
-    const command = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf-8" });
-    if (!command.includes(path2.join("server", "relay.js")))
+    let record2;
+    try {
+      record2 = fs2.readFileSync(relayPidFile(host.pluginData, host.port), "utf-8");
+    } catch (error) {
+      if (error?.code !== "ENOENT")
+        return false;
+      legacyFile = legacyRelayPidFile(host.pluginData);
+      record2 = fs2.readFileSync(legacyFile, "utf-8");
+    }
+    const pid = Number(record2.trim());
+    if (!Number.isInteger(pid) || pid <= 1)
       return false;
-    process.kill(pid, "SIGTERM");
+    const command = host.run("ps", ["-p", String(pid), "-o", "command="]);
+    if (!isPluginRelayCommand(command.trim(), host.pluginRoot))
+      return false;
+    const listeners = host.run("lsof", ["-nP", `-iTCP:${host.port}`, "-sTCP:LISTEN", "-t"]).split(/\s+/).filter(Boolean);
+    if (!listeners.includes(String(pid)))
+      return false;
+    host.kill(pid);
   } catch {
     return false;
   }
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
-    if (!await isRelayListening(port))
+    if (!await host.isListening()) {
+      if (legacyFile) {
+        try {
+          fs2.renameSync(legacyFile, `${legacyFile}.migrated`);
+        } catch {}
+      }
       return true;
-    await new Promise((r) => setTimeout(r, 100));
+    }
+    await host.sleep(100);
   }
   return false;
+}
+var LOCK_STALE_MS = 1e4;
+var LOCK_WAIT_MS = 15000;
+function removeLockIf(lockPath, isMine) {
+  const aside = `${lockPath}.${randomUUID2()}`;
+  try {
+    fs2.renameSync(lockPath, aside);
+  } catch {
+    return false;
+  }
+  let mine = false;
+  try {
+    mine = isMine(aside);
+  } catch {}
+  if (!mine) {
+    try {
+      fs2.linkSync(aside, lockPath);
+    } catch {}
+  }
+  try {
+    fs2.unlinkSync(aside);
+  } catch {}
+  return mine;
+}
+async function acquireRelayLock(host) {
+  const lockPath = relayLockFile(host.pluginData, host.port);
+  const token = `${process.pid}:${randomUUID2()}`;
+  const holdsLock = () => {
+    try {
+      return fs2.readFileSync(lockPath, "utf-8") === token;
+    } catch {
+      return false;
+    }
+  };
+  fs2.mkdirSync(host.pluginData, { recursive: true });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  while (true) {
+    try {
+      const fd = fs2.openSync(lockPath, "wx");
+      fs2.writeSync(fd, token);
+      fs2.closeSync(fd);
+      const keepAlive = setInterval(() => {
+        if (!holdsLock())
+          return;
+        try {
+          const now = new Date;
+          fs2.utimesSync(lockPath, now, now);
+        } catch {}
+      }, 2000);
+      keepAlive.unref?.();
+      return () => {
+        clearInterval(keepAlive);
+        if (holdsLock())
+          removeLockIf(lockPath, (file) => fs2.readFileSync(file, "utf-8") === token);
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST")
+        throw error;
+    }
+    try {
+      const observed = fs2.readFileSync(lockPath, "utf-8");
+      const isStale = (file) => Date.now() - fs2.statSync(file).mtimeMs > LOCK_STALE_MS;
+      if (isStale(lockPath)) {
+        removeLockIf(lockPath, (file) => fs2.readFileSync(file, "utf-8") === observed && isStale(file));
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    if (Date.now() >= deadline)
+      return null;
+    await host.sleep(100);
+  }
+}
+async function startOrReplaceRelay(host) {
+  if (await host.version() === RELAY_PROTOCOL_VERSION)
+    return true;
+  const release = await acquireRelayLock(host);
+  if (!release) {
+    logger.warn(`Another session is still starting the relay on port ${host.port}; not touching it.`);
+    return host.isListening();
+  }
+  try {
+    const version = await host.version();
+    if (version === RELAY_PROTOCOL_VERSION)
+      return true;
+    if (version !== null) {
+      if (!await stopOwnRelay(host)) {
+        logger.warn(`An older relay (protocol "${version}") is running on port ${host.port} and wasn't started by this plugin.`);
+        return true;
+      }
+      logger.info("Replaced an older relay started by this plugin");
+    }
+    if (!host.hasBun) {
+      logger.error("The relay needs Bun. Install it: curl -fsSL https://bun.sh/install | bash");
+      return false;
+    }
+    const logPath = path2.join(host.pluginData, "relay.log");
+    host.spawnRelay(relayPidFile(host.pluginData, host.port), logPath);
+    logger.info(`Starting relay; log: ${logPath}`);
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (await host.isListening())
+        return true;
+      await host.sleep(150);
+    }
+    logger.error(`The relay did not start; see ${logPath}`);
+    return false;
+  } finally {
+    release();
+  }
+}
+function defaultRelayHost(pluginRoot, pluginData, port) {
+  return {
+    pluginRoot,
+    pluginData,
+    port,
+    hasBun: Boolean(process.versions.bun),
+    version: () => relayVersion(port),
+    isListening: () => isRelayListening(port),
+    run: (file, args) => execFileSync(file, args, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }),
+    kill: (pid) => process.kill(pid, "SIGTERM"),
+    spawnRelay: (pidFile, logPath) => {
+      fs2.mkdirSync(pluginData, { recursive: true });
+      const log = fs2.openSync(logPath, "w");
+      const child = spawn(process.execPath, [path2.join(pluginRoot, "server", "relay.js")], {
+        detached: true,
+        stdio: ["ignore", log, log],
+        env: { ...process.env, L2F_RELAY_PORT: String(port), L2F_RELAY_PID_FILE: pidFile }
+      });
+      child.unref();
+      fs2.closeSync(log);
+    },
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms))
+  };
 }
 var relayStart = null;
 function ensureRelay(port) {
   if (!PLUGIN_ROOT || !PLUGIN_DATA)
     return isRelayListening(port);
   if (!relayStart) {
-    relayStart = (async () => {
-      const pidFile = path2.join(PLUGIN_DATA, "relay.pid");
-      const version = await relayVersion(port);
-      if (version === RELAY_PROTOCOL_VERSION)
-        return true;
-      if (version !== null) {
-        if (!await stopOwnRelay(pidFile, port)) {
-          logger.warn(`An older relay (protocol "${version}") is running on port ${port} and wasn't started by this plugin.`);
-          return true;
-        }
-        logger.info("Replaced an older relay started by this plugin");
-      }
-      if (!process.versions.bun) {
-        logger.error("The relay needs Bun. Install it: curl -fsSL https://bun.sh/install | bash");
-        return false;
-      }
-      const relayScript = path2.join(PLUGIN_ROOT, "server", "relay.js");
-      const logPath = path2.join(PLUGIN_DATA, "relay.log");
-      fs2.mkdirSync(PLUGIN_DATA, { recursive: true });
-      const log = fs2.openSync(logPath, "w");
-      const child = spawn(process.execPath, [relayScript], {
-        detached: true,
-        stdio: ["ignore", log, log],
-        env: { ...process.env, L2F_RELAY_PID_FILE: pidFile }
-      });
-      child.unref();
-      fs2.closeSync(log);
-      logger.info(`Starting relay; log: ${logPath}`);
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        if (await isRelayListening(port))
-          return true;
-        await new Promise((r) => setTimeout(r, 150));
-      }
-      logger.error(`The relay did not start; see ${logPath}`);
-      return false;
-    })().finally(() => {
+    relayStart = startOrReplaceRelay(defaultRelayHost(PLUGIN_ROOT, PLUGIN_DATA, port)).finally(() => {
       relayStart = null;
     });
   }
@@ -17314,18 +17448,48 @@ var serverArg = args.find((arg) => arg.startsWith("--server="));
 var serverUrl = serverArg ? serverArg.split("=")[1] : "localhost";
 var isLocalRelay = serverUrl === "localhost";
 var WS_URL = isLocalRelay ? "ws://127.0.0.1" : `wss://${serverUrl}`;
-function connectToFigma(port = RELAY_PORT) {
+var HANDSHAKE_TIMEOUT_MS = 1e4;
+function abandonConnectingSocket(socket) {
+  if (ws === socket)
+    ws = null;
+  try {
+    socket.terminate();
+  } catch (error) {
+    logger.debug(`Terminating a stalled socket failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+var reconnectTimer = null;
+function scheduleReconnect(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOUT_MS) {
+  if (reconnectTimer)
+    return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectToFigma(port, handshakeTimeoutMs);
+  }, 2000);
+}
+function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOUT_MS) {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return;
   }
   const wsUrl = isLocalRelay ? `${WS_URL}:${port}` : WS_URL;
   logger.info(`Connecting to Figma socket server at ${wsUrl}...`);
-  ws = new WebSocket(wsUrl);
-  ws.on("open", () => {
+  const socket = new WebSocket(wsUrl, { handshakeTimeout: handshakeTimeoutMs });
+  ws = socket;
+  const handshakeTimer = setTimeout(() => {
+    if (socket.readyState !== WebSocket.CONNECTING)
+      return;
+    logger.warn(`The relay at ${wsUrl} did not complete the WebSocket handshake in ${handshakeTimeoutMs / 1000}s; retrying in 2 seconds`);
+    const current = ws === socket;
+    abandonConnectingSocket(socket);
+    if (current)
+      scheduleReconnect(port, handshakeTimeoutMs);
+  }, handshakeTimeoutMs);
+  socket.on("open", () => {
+    clearTimeout(handshakeTimer);
     logger.info("Connected to Figma socket server");
     currentChannel = null;
   });
-  ws.on("message", (data) => {
+  socket.on("message", (data) => {
     try {
       const json = JSON.parse(data);
       if (json.type === "system" && json.event === "peer_left") {
@@ -17388,10 +17552,13 @@ function connectToFigma(port = RELAY_PORT) {
       logger.error(`Error parsing message: ${error instanceof Error ? error.message : String(error)}`);
     }
   });
-  ws.on("error", (error) => {
+  socket.on("error", (error) => {
     logger.error(`Socket error: ${error}`);
   });
-  ws.on("close", () => {
+  socket.on("close", () => {
+    clearTimeout(handshakeTimer);
+    if (ws !== socket)
+      return;
     logger.info("Disconnected from Figma socket server");
     ws = null;
     onDisconnect();
@@ -17401,7 +17568,7 @@ function connectToFigma(port = RELAY_PORT) {
       pendingRequests.delete(id);
     }
     logger.info("Attempting to reconnect in 2 seconds...");
-    setTimeout(() => connectToFigma(port), 2000);
+    scheduleReconnect(port, handshakeTimeoutMs);
   });
 }
 async function joinChannel(channelName) {
@@ -17427,6 +17594,10 @@ async function ensureConnected(timeoutMs = 5000) {
       return;
     connectToFigma();
     await new Promise((r) => setTimeout(r, 100));
+  }
+  if (ws && ws.readyState === WebSocket.CONNECTING) {
+    abandonConnectingSocket(ws);
+    scheduleReconnect();
   }
   throw new Error(`Couldn't connect to the relay on port ${RELAY_PORT}.`);
 }
@@ -18773,6 +18944,10 @@ function registerTools11(server, sendCommandToFigma2) {
 // src/llm2figma_mcp/tools/images.ts
 import { readFile } from "fs/promises";
 import { lookup } from "dns/promises";
+import http from "http";
+import https from "https";
+import zlib from "zlib";
+import { pipeline as pipeline2 } from "stream";
 import { isIP } from "net";
 var MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 var SCALE_MODES = ["FILL", "FIT", "CROP", "TILE"];
@@ -18793,29 +18968,172 @@ var ALLOWED_IMAGE_TYPES = new Set([
   "image/tiff"
 ]);
 var MAX_REDIRECTS = 5;
-function isPrivateAddress(address) {
-  let ip = address.toLowerCase().replace(/^\[|\]$/g, "");
-  const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped)
-    ip = mapped[1];
-  if (isIP(ip) === 4) {
-    const [a, b] = ip.split(".").map(Number);
-    return a === 0 || a === 10 || a === 127 || a === 100 && b >= 64 && b <= 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168;
-  }
-  if (isIP(ip) === 6) {
-    return ip === "::" || ip === "::1" || /^f[cd]/.test(ip) || /^fe[89ab]/.test(ip);
-  }
-  return false;
+var PRIVATE_NETWORK_ERROR = "URLs pointing to private/internal networks are not allowed";
+function isPrivateIPv4(bytes) {
+  const [a, b] = [bytes[0], bytes[1]];
+  return a === 0 || a === 10 || a === 127 || a === 100 && b >= 64 && b <= 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168;
 }
-async function assertPublicHost(url) {
-  const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (host.toLowerCase() === "localhost" || host.toLowerCase().endsWith(".localhost")) {
-    throw new Error("URLs pointing to private/internal networks are not allowed");
+function parseIPv4(text) {
+  if (isIP(text) !== 4)
+    return null;
+  return text.split(".").map(Number);
+}
+function parseIPv6(text) {
+  const ip = text.replace(/%.*$/, "");
+  if (isIP(ip) !== 6)
+    return null;
+  let head = ip;
+  let tail = [];
+  const dotted = ip.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) {
+    const v42 = parseIPv4(dotted[2]);
+    if (!v42)
+      return null;
+    head = dotted[1].endsWith("::") ? dotted[1] : dotted[1].slice(0, -1);
+    tail = [v42[0] << 8 | v42[1], v42[2] << 8 | v42[3]];
   }
-  const addresses = isIP(host) ? [host] : (await lookup(host, { all: true })).map((a) => a.address);
-  if (addresses.length === 0 || addresses.some(isPrivateAddress)) {
-    throw new Error("URLs pointing to private/internal networks are not allowed");
+  const halves = head.split("::");
+  if (halves.length > 2)
+    return null;
+  const toGroups = (part) => part === "" ? [] : part.split(":").map((g) => parseInt(g, 16));
+  const left = toGroups(halves[0]);
+  const right = halves.length === 2 ? toGroups(halves[1]) : [];
+  const fill = 8 - left.length - right.length - tail.length;
+  if (fill < 0 || halves.length === 1 && fill !== 0)
+    return null;
+  const groups = [...left, ...new Array(halves.length === 2 ? fill : 0).fill(0), ...right, ...tail];
+  if (groups.length !== 8 || groups.some((g) => !(g >= 0 && g <= 65535)))
+    return null;
+  const bytes = new Uint8Array(16);
+  groups.forEach((g, i) => {
+    bytes[i * 2] = g >> 8;
+    bytes[i * 2 + 1] = g & 255;
+  });
+  return bytes;
+}
+var zeros = (bytes, from, to) => bytes.slice(from, to).every((b) => b === 0);
+function isPrivateIPv6(bytes) {
+  const last4 = bytes.slice(12, 16);
+  if (zeros(bytes, 0, 10) && bytes[10] === 255 && bytes[11] === 255)
+    return isPrivateIPv4(last4);
+  if (zeros(bytes, 0, 8) && bytes[8] === 255 && bytes[9] === 255 && bytes[10] === 0 && bytes[11] === 0)
+    return isPrivateIPv4(last4);
+  if (zeros(bytes, 0, 12))
+    return isPrivateIPv4(last4);
+  if (bytes[0] === 0 && bytes[1] === 100 && bytes[2] === 255 && bytes[3] === 155 && zeros(bytes, 4, 12)) {
+    return isPrivateIPv4(last4);
   }
+  if (bytes[0] === 0 && bytes[1] === 100 && bytes[2] === 255 && bytes[3] === 155 && bytes[4] === 0 && bytes[5] === 1)
+    return true;
+  return (bytes[0] & 254) === 252 || bytes[0] === 254 && (bytes[1] & 128) === 128 || bytes[0] === 255;
+}
+function isPrivateAddress(address) {
+  const ip = address.toLowerCase().replace(/^\[|\]$/g, "");
+  const v42 = parseIPv4(ip);
+  if (v42)
+    return isPrivateIPv4(v42);
+  const v6 = parseIPv6(ip);
+  if (v6)
+    return isPrivateIPv6(v6);
+  return true;
+}
+function assertPublicLiteralHost(url) {
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost"))
+    throw new Error(PRIVATE_NETWORK_ERROR);
+  if (isIP(host.replace(/%.*$/, "")) && isPrivateAddress(host))
+    throw new Error(PRIVATE_NETWORK_ERROR);
+}
+var NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+var CONTENT_DECODERS = {
+  gzip: () => zlib.createGunzip(),
+  "x-gzip": () => zlib.createGunzip(),
+  deflate: () => zlib.createInflate(),
+  br: () => zlib.createBrotliDecompress()
+};
+var MAX_CONTENT_CODINGS = 3;
+function createPinnedTransport(options = {}) {
+  const resolveHost = options.resolve ?? ((hostname) => lookup(hostname, { all: true, verbatim: true }));
+  const isAllowed = options.isAllowedAddress ?? ((address) => !isPrivateAddress(address));
+  const pinnedLookup = (hostname, lookupOptions, callback) => {
+    if (typeof lookupOptions === "function") {
+      callback = lookupOptions;
+      lookupOptions = {};
+    }
+    resolveHost(hostname).then((addresses) => {
+      if (addresses.length === 0 || addresses.some((a) => !isAllowed(a.address))) {
+        callback(Object.assign(new Error(PRIVATE_NETWORK_ERROR), { code: "EPRIVATEADDRESS" }));
+        return;
+      }
+      const family = Number(lookupOptions?.family) || 0;
+      const usable = family ? addresses.filter((a) => a.family === family) : addresses;
+      if (usable.length === 0) {
+        callback(Object.assign(new Error(`No IPv${family} address for ${hostname}`), { code: "ENOTFOUND" }));
+        return;
+      }
+      if (lookupOptions?.all)
+        callback(null, usable);
+      else
+        callback(null, usable[0].address, usable[0].family);
+    }, (error) => callback(error));
+  };
+  return (url, { signal }) => new Promise((resolve, reject) => {
+    const client = url.protocol === "https:" ? https : http;
+    const request = client.request(url, { method: "GET", signal, lookup: pinnedLookup, headers: { "accept-encoding": "identity" } }, (res) => {
+      const status = res.statusCode ?? 0;
+      if (status < 200 || status > 599) {
+        res.destroy();
+        reject(new Error(`Failed to fetch image: unexpected status ${status} (${url.href})`));
+        return;
+      }
+      const headers = new Headers;
+      for (const [name, value] of Object.entries(res.headers)) {
+        if (Array.isArray(value))
+          value.forEach((v) => headers.append(name, v));
+        else if (value !== undefined)
+          headers.set(name, String(value));
+      }
+      let body = null;
+      if (NULL_BODY_STATUSES.has(status)) {
+        res.resume();
+      } else {
+        const codings = (headers.get("content-encoding") ?? "").split(",").map((coding) => coding.trim().toLowerCase()).filter((coding) => coding && coding !== "identity");
+        const unsupported = codings.length > MAX_CONTENT_CODINGS ? codings.join(", ") : codings.find((coding) => !CONTENT_DECODERS[coding]);
+        if (unsupported) {
+          res.destroy();
+          reject(new Error(`Failed to fetch image: unsupported Content-Encoding "${unsupported}" (${url.href})`));
+          return;
+        }
+        let source = res;
+        for (const coding of codings.reverse()) {
+          source = pipeline2(source, CONTENT_DECODERS[coding](), () => {});
+        }
+        if (codings.length > 0) {
+          headers.delete("content-encoding");
+          headers.delete("content-length");
+        }
+        const chunks = source[Symbol.asyncIterator]();
+        body = new ReadableStream({
+          async pull(controller) {
+            const { done, value } = await chunks.next();
+            if (done)
+              controller.close();
+            else
+              controller.enqueue(new Uint8Array(value));
+          },
+          cancel() {
+            source.destroy();
+            res.destroy();
+          }
+        });
+      }
+      resolve(new Response(body, { status, statusText: res.statusMessage, headers }));
+    });
+    request.on("error", (error) => {
+      reject(error?.code === "EPRIVATEADDRESS" ? new Error(PRIVATE_NETWORK_ERROR) : error);
+    });
+    request.end();
+  });
 }
 async function resolveImageToBase64(source, options = {}) {
   if (source.base64) {
@@ -18838,8 +19156,8 @@ async function resolveImageToBase64(source, options = {}) {
         response = await fetch(url, { signal });
         break;
       }
-      await assertPublicHost(url);
-      response = await fetch(url, { signal, redirect: "manual" });
+      assertPublicLiteralHost(url);
+      response = await (options.transport ?? defaultPinnedTransport)(url, { signal });
       const location = response.headers.get("location");
       if (response.status < 300 || response.status >= 400 || !location)
         break;
@@ -18887,6 +19205,7 @@ async function resolveImageToBase64(source, options = {}) {
   }
   return bytes.toString("base64");
 }
+var defaultPinnedTransport = createPinnedTransport();
 function registerTools12(server, sendCommandToFigma2) {
   server.tool("set_image_fill", "Fill a node with an image from a URL, local file path, or base64 data. The server fetches the bytes and the plugin creates a real Figma image fill. Figma rejects images larger than 4096px per side. scaleMode maps from CSS: FILL = background-size:cover (default), FIT = contain, TILE = repeat.", {
     nodeId: z2.string().describe("The ID of the node to fill"),
@@ -18904,6 +19223,70 @@ function registerTools12(server, sendCommandToFigma2) {
       return { content: [{ type: "text", text: `Error setting image fill: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
+}
+
+// src/llm2figma_mcp/keychain.ts
+var KEYCHAIN_SERVICE = "llm2figma";
+var KEYCHAIN_ACCOUNT = "figma-api-token";
+var KEYCHAIN_TIMEOUT_MS = 1e4;
+
+class FigmaTokenError extends Error {
+}
+var TOKEN_SETUP_HELP = "Store a Figma personal access token (Figma \u2192 Settings \u2192 Security \u2192 Personal access tokens; scopes " + "'File content: read', 'Library content: read', 'file_comments:read', 'file_comments:write') in the " + "macOS Keychain with `bun run token` in the llm2figma repo, or: " + `security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w (it prompts for the token).`;
+var defaultSpawn = (cmd) => Bun.spawn(cmd, { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+async function runSecurity(args2, opts) {
+  const proc = (opts.spawn ?? defaultSpawn)(["security", ...args2]);
+  const output = new Response(proc.stdout).text();
+  output.catch(() => {});
+  let timer;
+  const timedOut = new Promise((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), opts.timeoutMs ?? KEYCHAIN_TIMEOUT_MS);
+  });
+  try {
+    const code = await Promise.race([proc.exited, timedOut]);
+    if (code === "timeout") {
+      proc.kill();
+      return { code, stdout: "" };
+    }
+    return { code, stdout: await output };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function lookupArgs() {
+  return ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT];
+}
+async function getFigmaToken(opts = {}) {
+  const platform = opts.platform ?? process.platform;
+  if (platform !== "darwin") {
+    throw new FigmaTokenError(`The Figma API token is read from the macOS Keychain, which isn't available on ${platform}. ` + "Tools that call the Figma REST API are unavailable here.");
+  }
+  let result;
+  try {
+    result = await runSecurity([...lookupArgs(), "-w"], opts);
+  } catch {
+    throw new FigmaTokenError(`Could not run the macOS security tool to read the Figma API token. ${TOKEN_SETUP_HELP}`);
+  }
+  if (result.code === "timeout") {
+    throw new FigmaTokenError("Timed out reading the Figma API token from the Keychain. If macOS asked for Keychain access, " + "unlock it and click Allow (or Always Allow), then retry.");
+  }
+  const token = result.stdout.replace(/\r?\n$/, "");
+  if (result.code === 44 || result.code === 0 && !token) {
+    throw new FigmaTokenError(`No Figma API token in the Keychain. ${TOKEN_SETUP_HELP}`);
+  }
+  if (result.code !== 0) {
+    throw new FigmaTokenError(`Could not read the Figma API token from the Keychain (security exited with code ${result.code}; ` + `the Keychain may be locked or access was denied). ${TOKEN_SETUP_HELP}`);
+  }
+  return token;
+}
+async function hasFigmaTokenItem(opts = {}) {
+  if ((opts.platform ?? process.platform) !== "darwin")
+    return false;
+  try {
+    return (await runSecurity(lookupArgs(), opts)).code === 0;
+  } catch {
+    return false;
+  }
 }
 
 // src/llm2figma_mcp/tools/library.ts
@@ -19038,13 +19421,10 @@ var FIGMA_API_BASE = "https://api.figma.com";
 
 class LibraryConfigError extends Error {
 }
-var CONFIG_HELP = `Library tools need two environment variables:
-` + "  FIGMA_API_TOKEN \u2014 a Figma personal access token (Figma \u2192 Settings \u2192 Security \u2192 " + `Personal access tokens) with scopes 'File content: read' and 'Library content: read'.
-` + "  FIGMA_LIBRARY_FILE_KEYS \u2014 comma-separated file keys of the libraries to index, " + `from each library file's URL: figma.com/design/<FILE_KEY>/...
-` + "Set them in your shell (e.g. ~/.zshrc) and reference them from .mcp.json as " + '"${FIGMA_API_TOKEN}", then restart the MCP server.';
+var CONFIG_HELP = "Library tools need FIGMA_LIBRARY_FILE_KEYS: comma-separated file keys of the libraries to index, " + "from each library file's URL: figma.com/design/<FILE_KEY>/... Set it in the LLM2Figma env block " + `of .mcp.json, then restart the MCP server.
+` + TOKEN_SETUP_HELP;
 function getLibraryConfig(env = process.env) {
   return {
-    token: env.FIGMA_API_TOKEN || undefined,
     fileKeys: (env.FIGMA_LIBRARY_FILE_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean)
   };
 }
@@ -19054,7 +19434,7 @@ async function figmaGet(path3, token) {
     signal: AbortSignal.timeout(15000)
   });
   if (!response.ok) {
-    const hint = response.status === 401 || response.status === 403 ? "check FIGMA_API_TOKEN and its scopes ('File content: read' + 'Library content: read')" : response.status === 404 ? "check the file key in FIGMA_LIBRARY_FILE_KEYS (from the library file's URL)" : response.status === 429 ? `rate limited \u2014 retry after ${response.headers.get("retry-after") || "a moment"}` : "unexpected Figma API error";
+    const hint = response.status === 401 || response.status === 403 ? "check the Keychain token (re-store it with `bun run token`) and its scopes ('File content: read' + 'Library content: read')" : response.status === 404 ? "check the file key in FIGMA_LIBRARY_FILE_KEYS (from the library file's URL)" : response.status === 429 ? `rate limited \u2014 retry after ${response.headers.get("retry-after") || "a moment"}` : "unexpected Figma API error";
     throw new Error(`Figma API ${response.status} on ${path3}: ${hint}`);
   }
   return response.json();
@@ -19075,13 +19455,23 @@ async function fetchLibraryFile(fileKey, token) {
   return buildLibraryIndex(fileKey, libraryName, compRes?.meta?.components || [], setRes?.meta?.component_sets || []);
 }
 async function loadLibraryIndex(opts = {}) {
-  const { token, fileKeys } = getLibraryConfig();
-  if (!token || fileKeys.length === 0) {
+  const { fileKeys } = getLibraryConfig();
+  if (fileKeys.length === 0) {
     throw new LibraryConfigError(CONFIG_HELP);
   }
+  let token;
   const index = [];
   for (const fileKey of fileKeys) {
     if (opts.refresh || !indexCache.has(fileKey)) {
+      if (token === undefined) {
+        try {
+          token = await (opts.readToken ?? getFigmaToken)();
+        } catch (error) {
+          if (error instanceof FigmaTokenError)
+            throw new LibraryConfigError(error.message);
+          throw error;
+        }
+      }
       const sets = await fetchLibraryFile(fileKey, token);
       indexCache.set(fileKey, sets);
       logger.info(`Indexed library ${fileKey}: ${sets.length} component sets`);
@@ -19121,11 +19511,11 @@ function formatSearchResults(results) {
 }
 function asToolError(error) {
   const message = error instanceof LibraryConfigError ? `Library tools are not configured.
-${CONFIG_HELP}` : `Library error: ${error instanceof Error ? error.message : String(error)}`;
+${error.message}` : `Library error: ${error instanceof Error ? error.message : String(error)}`;
   return { content: [{ type: "text", text: message }] };
 }
 function registerTools13(server, _sendCommandToFigma) {
-  server.tool("get_library_components", "List every published component set available from the configured Figma team libraries (the Assets panel equivalent). Compact by default; verbose:true adds per-variant names, keys, and property values. Requires FIGMA_API_TOKEN + FIGMA_LIBRARY_FILE_KEYS.", {
+  server.tool("get_library_components", "List every published component set available from the configured Figma team libraries (the Assets panel equivalent). Compact by default; verbose:true adds per-variant names, keys, and property values. Requires a Figma token in the macOS Keychain + FIGMA_LIBRARY_FILE_KEYS.", {
     verbose: z2.boolean().optional().describe("Include per-variant names, keys, and property values"),
     refresh: z2.boolean().optional().describe("Refetch from the Figma API instead of the session cache")
   }, async ({ verbose, refresh }) => {
@@ -23422,6 +23812,7 @@ function registerSetupTools(server) {
       relayRunning: relay,
       connectedFigmaFiles: files.map((f) => f.name),
       figmaPluginManifest: manifest ?? "src/llm2figma_plugin/manifest.json in the llm2figma repo",
+      figmaTokenInKeychain: await hasFigmaTokenItem(),
       next
     };
     return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };

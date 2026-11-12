@@ -133,7 +133,7 @@ function updateSettings(settings: any) {
 
 // Handle commands from UI
 async function handleCommand(command: string, params: any) {
-  assertEditorAllowed(command, figma.editorType);
+  assertEditorAllowed(command, figma.editorType, params);
   switch (command) {
     case "get_document_info":
       return await getDocumentInfo();
