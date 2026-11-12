@@ -1,6 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
+import { isEnabled } from "../../shared/flags.js";
+import { getChannelFileKey } from "../connection.js";
+import { mergeFileKey } from "../file-key.js";
 const InspectionSchema = {
   fields: z.array(z.string()).max(30).optional().describe("Only return these fields, recursively. Include children to inspect descendants; omit for all supported fields."),
   maxNodes: z.number().int().min(1).max(1000).optional().describe("Total node budget, including roots (default 100). Truncation is reported."),
@@ -8,7 +11,15 @@ const InspectionSchema = {
   maxTextLength: z.number().int().min(1).max(10000).optional().describe("Maximum characters per text node (default 2000)."),
 };
 
-export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
+export function registerTools(
+  server: McpServer,
+  sendCommandToFigma: SendCommandFn,
+  env: Record<string, string | undefined> = process.env,
+  userFileKey: () => string | undefined = getChannelFileKey,
+) {
+  // Read from the server environment only; no tool parameter can turn it on.
+  const fileKeyEnabled = isEnabled("FILE_KEY", env);
+
   // Document Info Tool
   server.tool(
     "get_document_info",
@@ -16,7 +27,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     {},
     async () => {
       try {
-        const result = await sendCommandToFigma("get_document_info");
+        const result = mergeFileKey(await sendCommandToFigma("get_document_info"), userFileKey(), fileKeyEnabled);
         return {
           content: [{ type: "text", text: JSON.stringify(result) }]
         };

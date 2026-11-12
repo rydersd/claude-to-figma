@@ -21,6 +21,18 @@ const pendingRequests = new Map<string, {
 // Track which channel each client is in
 let currentChannel: string | null = null;
 
+// File keys the user gave through join_channel, per channel (L2F_FILE_KEY).
+const channelFileKeys = new Map<string, string>();
+
+export function setChannelFileKey(channel: string, fileKey: string): void {
+  channelFileKeys.set(channel, fileKey);
+}
+
+// Defaults to the channel this server is joined to.
+export function getChannelFileKey(channel: string | null = currentChannel): string | undefined {
+  return channel ? channelFileKeys.get(channel) : undefined;
+}
+
 // Add command line argument parsing
 const args = process.argv.slice(2);
 const serverArg = args.find(arg => arg.startsWith('--server='));
@@ -101,6 +113,8 @@ export function connectToFigma(port: number = RELAY_PORT, handshakeTimeoutMs: nu
       // The Figma plugin in our channel closed: forget the channel so the next
       // command auto-joins whichever file is connected now.
       if (json.type === "system" && json.event === "peer_left") {
+        // A channel name can be reused by another file; don't carry the key over.
+        if (json.role === "plugin") channelFileKeys.delete(json.channel);
         if (json.role === "plugin" && json.channel === currentChannel) {
           logger.info(`Figma plugin left channel ${currentChannel}; will auto-join on next command`);
           currentChannel = null;

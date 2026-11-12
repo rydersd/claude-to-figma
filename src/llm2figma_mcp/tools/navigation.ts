@@ -1,9 +1,19 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
-import { joinChannel, autoJoinChannel } from "../connection.js";
+import { joinChannel, autoJoinChannel, setChannelFileKey } from "../connection.js";
+import { isEnabled } from "../../shared/flags.js";
+import { parseFileKey } from "../file-key.js";
 
-export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
+export function registerTools(
+  server: McpServer,
+  sendCommandToFigma: SendCommandFn,
+  env: Record<string, string | undefined> = process.env,
+  channels: { joinChannel: (name: string) => Promise<void>; autoJoinChannel: () => Promise<string> } = { joinChannel, autoJoinChannel },
+) {
+  // Read from the server environment only; no tool parameter can turn it on.
+  const fileKeyEnabled = isEnabled("FILE_KEY", env);
+
   server.tool("set_focus", "Set focus on a specific node in Figma by selecting it and scrolling viewport to it", {
     nodeId: z.string().describe("The ID of the node to focus on"),
   }, async ({ nodeId }: any) => {
@@ -42,9 +52,14 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
 
   server.tool("join_channel", "Connect to a Figma file through its plugin channel. Leave channel empty to join the only connected file automatically. Other tools also auto-join, so this is only needed when several files are connected.", {
     channel: z.string().describe("Channel name shown in the Figma plugin. Empty = auto-join the only connected file").default(""),
-  }, async ({ channel }: any) => {
+    ...(fileKeyEnabled ? {
+      fileKey: z.string().optional().describe("The file's key or its figma.com URL. Used as the file key when the plugin cannot report one (a development plugin does not)."),
+    } : {}),
+  }, async ({ channel, fileKey }: any) => {
     try {
-      const joined = channel ? (await joinChannel(channel), channel) : await autoJoinChannel();
+      const userKey = fileKeyEnabled && fileKey !== undefined ? parseFileKey(fileKey) : undefined;
+      const joined = channel ? (await channels.joinChannel(channel), channel) : await channels.autoJoinChannel();
+      if (userKey) setChannelFileKey(joined, userKey);
       return { content: [{ type: "text", text: `Successfully joined channel: ${joined}` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Error joining channel: ${error instanceof Error ? error.message : String(error)}` }] };
