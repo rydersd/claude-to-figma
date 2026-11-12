@@ -32,6 +32,8 @@ import { registerTools as registerImageTools } from "./tools/images.js";
 import { registerTools as registerLibraryTools } from "./tools/library.js";
 import { registerTools as registerEventTools } from "./tools/events.js";
 import { registerPrompts } from "./tools/prompts.js";
+import { installFigmaPluginFiles, isPluginInstall } from "./plugin-runtime.js";
+import { registerSetupTools } from "./tools/setup.js";
 
 import { registerTools as registerReferenceCacheTools } from "./tools/reference-cache.js";
 
@@ -68,12 +70,15 @@ registerImageTools(server, sendCommandToFigma);
 registerLibraryTools(server, sendCommandToFigma);
 registerEventTools(server, sendCommandToFigma);
 registerReferenceCacheTools(server);
+registerSetupTools(server);
 
 // Register prompts
 registerPrompts(server);
 
 // Start the server
 async function main() {
+  installFigmaPluginFiles();
+
   try {
     // Try to connect to Figma socket server
     connectToFigma();
@@ -86,6 +91,10 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   logger.info('llm2figma server running on stdio');
+
+  // As a plugin, Claude Code always talks to us over a stdin pipe: exit when
+  // it closes, or the relay reconnect timer keeps an orphaned server alive.
+  if (isPluginInstall) process.stdin.on("end", () => process.exit(0));
 }
 
 // Run the server

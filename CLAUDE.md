@@ -109,6 +109,11 @@ claude mcp add LLM2Figma -- bun /path-to-repo/src/llm2figma_mcp/server.ts
 - `FIGMA_LIBRARY_FILE_KEYS` — comma-separated file keys (from each library file's URL: `figma.com/design/<FILE_KEY>/...`) of the libraries to index
 
 Export both in your shell (e.g. `~/.zshrc`) and reference them from `.mcp.json` as `"${FIGMA_API_TOKEN}"` / `"${FIGMA_LIBRARY_FILE_KEYS}"` in the `LLM2Figma` server's `env` block, then restart the MCP server. Without them, the two library tools soft-fail with setup instructions instead of erroring.
+
+## Claude Code plugin (`plugin/`)
+
+`plugin/` is a self-contained Claude Code plugin, `llm2figma`, listed by `.claude-plugin/marketplace.json`. The installed copy has no `node_modules`, so `plugin/server/server.js` and `plugin/server/relay.js` are `bun build` bundles of `src/`, and `plugin/figma-plugin/` copies the Figma plugin files. **After changing `src/`, run `bun run build` (or `bun run build:claude-plugin`) and commit `plugin/`.** When installed as a plugin, the server starts the relay itself if port 3055 is free (`src/llm2figma_mcp/plugin-runtime.ts`) and copies the Figma plugin to `${CLAUDE_PLUGIN_DATA}/figma-plugin/` so the import path survives updates. Skills: `plugin/skills/draw-in-figma` (how to work in Figma well) and `plugin/skills/setup` (`/llm2figma:setup`).
+
 ## Machine Portability
 
 `.mcp.json` is **gitignored** because it contains absolute paths to `bun` and the repo that differ per machine. The committed templates and scripts handle this:
