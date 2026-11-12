@@ -154,10 +154,15 @@ export type FigmaCommand =
   | "remove_reactions"
   | "get_interactions"
   | "batch_set_reactions"
+  | "get_flows"
+  | "set_flows"
   | "undo"
   | "subscribe_events"
   | "unsubscribe_events"
-  | "place_image";
+  | "place_image"
+  | "assert_contained"
+  | "snapshot_positions"
+  | "diff_positions";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -435,6 +440,14 @@ export type CommandParams = {
       }>;
     }>;
   };
+  get_flows: { pageId: string; sectionId?: string };
+  set_flows: {
+    pageId: string;
+    flows: Array<{ name: string; nodeId: string }>;
+    background?: string | null;
+    backgroundPaints?: Array<Record<string, unknown>> | null;
+    dropMissing?: boolean;
+  };
   get_local_variables: Record<string, never>;
   get_library_variables: Record<string, never>;
   rename_node: {
@@ -498,6 +511,20 @@ export type CommandParams = {
   };
   batch_mutate: {
     operations: Array<{ op: string; nodeId: string; [key: string]: any }>;
+  };
+  assert_contained: {
+    parentId: string;
+    expected?: string | Record<string, { x: number; y: number }>;
+    tolerance?: number;
+  };
+  snapshot_positions: {
+    nodeId: string;
+    maxNodes?: number;
+    maxDepth?: number;
+  };
+  diff_positions: {
+    snapshotId: string;
+    tolerance?: number;
   };
   scan_node_styles: {
     nodeId: string;

@@ -25,12 +25,13 @@ import { registerTools as registerIntrospectTools } from "./tools/introspect.js"
 import { registerTools as registerVisualTools } from "./tools/visual.js";
 import { registerTools as registerEvalTools } from "./tools/eval.js";
 import { registerTools as registerMigrationTools } from "./tools/migration.js";
-import { registerTools as registerPrototypingTools } from "./tools/prototyping.js";
+import { registerTools as registerPrototypingTools, registerFlowTools } from "./tools/prototyping.js";
 import { registerTools as registerWireframeParserTools } from "./tools/wireframe-parser.js";
 import { registerTools as registerPageCompilerTools } from "./tools/page-compiler.js";
 import { registerTools as registerImageTools } from "./tools/images.js";
 import { registerTools as registerLibraryTools } from "./tools/library.js";
 import { registerTools as registerEventTools } from "./tools/events.js";
+import { registerTools as registerVerifyTools } from "./tools/verify.js";
 import { registerReadTools as registerCommentReadTools, registerWriteTools as registerCommentWriteTools } from "./tools/comments.js";
 import { registerWhenEnabled, type Feature } from "../shared/flags.js";
 import { registerPrompts } from "./tools/prompts.js";
@@ -77,10 +78,12 @@ registerPageCompilerTools(server, sendCommandToFigma);
 registerImageTools(server, sendCommandToFigma);
 registerLibraryTools(server, sendCommandToFigma);
 registerEventTools(server, sendCommandToFigma);
+registerFeature("VERIFY", registerVerifyTools);
 registerFeature("COMMENTS", registerCommentReadTools);
 registerFeature("COMMENTS_WRITE", registerCommentWriteTools);
 registerReferenceCacheTools(server);
 registerSetupTools(server);
+registerFeature("FLOWS", registerFlowTools);
 registerFeature("CODE_MAP", (s) => registerCodeMapTools(s));
 
 // Register prompts

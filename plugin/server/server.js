@@ -18153,8 +18153,55 @@ function registerTools3(server, sendCommandToFigma2) {
   });
 }
 
-// src/llm2figma_mcp/tools/layout.ts
+// src/llm2figma_mcp/tools/verify.ts
+var size = (s) => `${s.width}x${s.height}`;
+function describeReadBack(r) {
+  if (!r.requested || !r.applied || typeof r.partial !== "boolean")
+    return null;
+  return r.partial ? `requested ${size(r.requested)}, Figma applied ${size(r.applied)} (partial: ${r.cause})` : `applied ${size(r.applied)} as requested`;
+}
+var Offset = z2.object({ x: z2.number(), y: z2.number() });
 function registerTools4(server, sendCommandToFigma2) {
+  server.tool("assert_contained", "Check that every direct child of a node sits inside the parent, comparing each child's absoluteBoundingBox to the parent's (0.5px tolerance by default; shadows and other render bounds are ignored). A child with no box is reported unmeasurable, never passed. A bare containment pass does NOT prove placement: a section auto-grows around children that were placed at the wrong offset (for example sec.x + 160 instead of 160, since section children are positioned relative to the section). Pass `expected` to check positions too: a snapshotId from snapshot_positions (taken on the parent or an ancestor; also reports parentGrewSinceSnapshot and snapshotTruncated) or a map of child id to {x, y} offset of the child's absoluteBoundingBox from the parent's. Offsets are always box minus box, never node x/y (a GROUP's children have x/y relative to the group's parent). placementOk is true only when every expected child was measured and matched and, for a snapshot, no child is missing from it; it is null when nothing could be decided (no parent box, a snapshot that did not read all of this parent's children, or rotated nodes, which are listed in rotated / placementUnchecked and not compared). A rotated parent makes contained null unless a child is clearly outside. Lists are capped at 100; counts are full.", {
+    parentId: z2.string().describe("The node whose direct children are checked"),
+    expected: z2.union([z2.string(), z2.record(Offset)]).optional().describe("A snapshotId, or {childId: {x, y}} offsets from the parent's top-left"),
+    tolerance: z2.number().min(0).max(10).optional().describe("Allowed overshoot in px (default 0.5)")
+  }, async ({ parentId, expected, tolerance }) => {
+    try {
+      const result = await sendCommandToFigma2("assert_contained", { parentId, expected, tolerance });
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: `Error checking containment: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+  server.tool("snapshot_positions", "Record the id, name, parentId and absoluteBoundingBox of a node and its descendants in a plugin-side store, and return its snapshotId. Use before a reparent, auto-layout change or bulk edit, then call diff_positions with that id. Bounded walk (default 2000 nodes, depth 30) with an explicit truncated flag. Snapshots expire after 30 minutes, at most 64 are kept, and all are lost when the plugin reloads.", {
+    nodeId: z2.string().describe("Root of the subtree to record"),
+    maxNodes: z2.number().int().min(1).max(1e4).optional().describe("Node budget including the root (default 2000)"),
+    maxDepth: z2.number().int().min(0).max(100).optional().describe("Maximum depth below the root (default 30)")
+  }, async ({ nodeId, maxNodes, maxDepth }) => {
+    try {
+      const result = await sendCommandToFigma2("snapshot_positions", { nodeId, maxNodes, maxDepth }, 60000);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: `Error taking snapshot: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+  server.tool("diff_positions", "Compare a snapshot from snapshot_positions with the document now. Returns missing ids (no longer exist: deleted, or absorbed into a wrapper by suggest-auto-layout), added ids (new in the subtree, such as auto-generated wrapper frames), and moved nodes (absoluteBoundingBox changed beyond the tolerance, or reparented; a reparent with boxChanged false is a zero-drift move). After a truncated snapshot, nodes under a parent whose children the snapshot did not finish reading are listed as unsnapshotted, not added. Snapshot nodes the re-walk does not reach are looked up by id, so missing always means gone. Every list is capped at 100 (listsTruncated); counts are full. Pass the explicit snapshotId; an unknown or expired id is an error, never an empty diff.", {
+    snapshotId: z2.string().describe("The id snapshot_positions returned"),
+    tolerance: z2.number().min(0).max(10).optional().describe("Box change ignored below this many px (default 0.5)")
+  }, async ({ snapshotId, tolerance }) => {
+    try {
+      const result = await sendCommandToFigma2("diff_positions", { snapshotId, tolerance }, 60000);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: `Error diffing positions: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+}
+
+// src/llm2figma_mcp/tools/layout.ts
+function registerTools5(server, sendCommandToFigma2, env = process.env) {
+  const verifyEnabled = isEnabled("VERIFY", env);
   server.tool("set_layout_mode", "Set the layout mode and wrap behavior of a frame in Figma", {
     nodeId: z2.string().describe("The ID of the frame to modify"),
     layoutMode: z2.enum(["NONE", "HORIZONTAL", "VERTICAL"]).describe("Layout mode for the frame"),
@@ -18228,6 +18275,9 @@ function registerTools4(server, sendCommandToFigma2) {
     try {
       const result = await sendCommandToFigma2("resize_node", { nodeId, width, height });
       const typedResult = result;
+      const readBack = verifyEnabled ? describeReadBack(result) : null;
+      if (readBack)
+        return { content: [{ type: "text", text: `Resized node "${typedResult.name}": ${readBack}` }] };
       return { content: [{ type: "text", text: `Resized node "${typedResult.name}" to width ${width} and height ${height}` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Error resizing node: ${error instanceof Error ? error.message : String(error)}` }] };
@@ -18307,7 +18357,7 @@ function registerTools4(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/text.ts
-function registerTools5(server, sendCommandToFigma2) {
+function registerTools6(server, sendCommandToFigma2) {
   server.tool("set_text_content", "Set the text content of an existing text node in Figma", {
     nodeId: z2.string().describe("The ID of the text node to modify"),
     text: z2.string().describe("New text content")
@@ -18495,7 +18545,7 @@ ${failed.map((r) => `- range ${r.index} [${r.start}-${r.end}]: ${r.error}`).join
 }
 
 // src/llm2figma_mcp/tools/components.ts
-function registerTools6(server, sendCommandToFigma2) {
+function registerTools7(server, sendCommandToFigma2) {
   server.tool("get_styles", "Get all styles from the current Figma document", {}, async () => {
     try {
       const result = await sendCommandToFigma2("get_styles");
@@ -18622,7 +18672,7 @@ function registerTools6(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/vectors.ts
-function registerTools7(server, sendCommandToFigma2) {
+function registerTools8(server, sendCommandToFigma2) {
   server.tool("create_vector", "Create a vector node from SVG path data in Figma. Supports inline strokeColor/strokeWeight/strokeCap to avoid a separate set_stroke_color call.", {
     pathData: z2.string().describe("SVG path data string (the 'd' attribute value)"),
     x: z2.number().describe("X position"),
@@ -18708,7 +18758,7 @@ function registerTools7(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/batch.ts
-function registerTools8(server, sendCommandToFigma2) {
+function registerTools9(server, sendCommandToFigma2) {
   server.tool("rename_node", "Rename a node's layer name in Figma", {
     nodeId: z2.string().describe("The ID of the node to rename"),
     name: z2.string().describe("The new name for the node")
@@ -18827,7 +18877,7 @@ ${cloneList}` }] };
 }
 
 // src/llm2figma_mcp/tools/annotations.ts
-function registerTools9(server, sendCommandToFigma2) {
+function registerTools10(server, sendCommandToFigma2) {
   server.tool("get_annotations", "Get all annotations in the current document or specific node", {
     nodeId: z2.string().describe("node ID to get annotations for specific node"),
     includeCategories: z2.boolean().optional().default(true).describe("Whether to include category information")
@@ -18914,7 +18964,7 @@ ${failedResults.map((item) => `- ${item.nodeId}: ${item.error || "Unknown error"
 }
 
 // src/llm2figma_mcp/tools/connections.ts
-function registerTools10(server, sendCommandToFigma2) {
+function registerTools11(server, sendCommandToFigma2) {
   server.tool("get_reactions", "Get Figma Prototyping Reactions from multiple nodes. CRITICAL: The output MUST be processed using the 'reaction_to_connector_strategy' prompt IMMEDIATELY to generate parameters for connector lines via the 'create_connections' tool.", {
     nodeIds: z2.array(z2.string()).describe("Array of node IDs to get reactions from")
   }, async ({ nodeIds }) => {
@@ -18961,7 +19011,7 @@ function registerTools10(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/navigation.ts
-function registerTools11(server, sendCommandToFigma2, env = process.env, channels = { joinChannel, autoJoinChannel }) {
+function registerTools12(server, sendCommandToFigma2, env = process.env, channels = { joinChannel, autoJoinChannel }) {
   const fileKeyEnabled = isEnabled("FILE_KEY", env);
   server.tool("set_focus", "Set focus on a specific node in Figma by selecting it and scrolling viewport to it", {
     nodeId: z2.string().describe("The ID of the node to focus on")
@@ -19251,14 +19301,14 @@ async function resolveImageToBase64(source, options = {}) {
     if (!reader)
       throw new Error("Image response had no body");
     const chunks = [];
-    let size = 0;
+    let size2 = 0;
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done)
           break;
-        size += value.byteLength;
-        if (size > MAX_IMAGE_BYTES) {
+        size2 += value.byteLength;
+        if (size2 > MAX_IMAGE_BYTES) {
           await reader.cancel();
           throw new Error("Image exceeds the 6MB limit. Resize it first.");
         }
@@ -19279,7 +19329,7 @@ async function resolveImageToBase64(source, options = {}) {
   return bytes.toString("base64");
 }
 var defaultPinnedTransport = createPinnedTransport();
-function registerTools12(server, sendCommandToFigma2) {
+function registerTools13(server, sendCommandToFigma2) {
   server.tool("set_image_fill", "Fill a node with an image from a URL, local file path, or base64 data. The server fetches the bytes and the plugin creates a real Figma image fill. Figma rejects images larger than 4096px per side. scaleMode maps from CSS: FILL = background-size:cover (default), FIT = contain, TILE = repeat.", {
     nodeId: z2.string().describe("The ID of the node to fill"),
     ...ImageSourceSchema
@@ -19635,7 +19685,7 @@ function asToolError(error) {
 ${error.message}` : `Library error: ${error instanceof Error ? error.message : String(error)}`;
   return { content: [{ type: "text", text: message }] };
 }
-function registerTools13(server, _sendCommandToFigma) {
+function registerTools14(server, _sendCommandToFigma) {
   server.tool("get_library_components", "List every published component set available from the configured Figma team libraries (the Assets panel equivalent). Compact by default; verbose:true adds per-variant names, keys, and property values. Requires a Figma token in the macOS Keychain + FIGMA_LIBRARY_FILE_KEYS.", {
     verbose: z2.boolean().optional().describe("Include per-variant names, keys, and property values"),
     refresh: z2.boolean().optional().describe("Refetch from the Figma API instead of the session cache")
@@ -19945,7 +19995,7 @@ function summarizeTreeResult(result, verbose) {
   const { nodes, ...rest } = result;
   return { ...rest, rootId: rest.rootId || nodes[0]?.id, nodeCount: nodes.length };
 }
-function registerTools14(server, sendCommandToFigma2) {
+function registerTools15(server, sendCommandToFigma2) {
   server.tool("create_node_tree", "Create (or sync) an entire node hierarchy in one call from a nested JSON tree of frames, text, rectangles, vectors, and library component instances. Supports $repeat, $var: variable binding, $lib: library component refs, hex/gradient/image fills, effects, per-corner radii, and absolute positioning. Pass rootId (instead of parentId) to reconcile an existing tree in place. Returns a compact summary; pass verbose:true for the full node map. For the full spec format, call the 'node_tree_guide' prompt.", {
     tree: NodeTreeSchema.describe("The root node of the tree to create or sync"),
     parentId: z2.string().optional().describe("Parent node ID for create mode"),
@@ -20037,7 +20087,7 @@ function registerTools14(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/screenshot.ts
-function registerTools15(server, sendCommandToFigma2) {
+function registerTools16(server, sendCommandToFigma2) {
   server.tool("screenshot_region", "Capture a screenshot of a canvas region by coordinates. Useful for visually verifying sections of large designs (e.g., sitemap swimlanes) without needing a wrapping frame. Returns a PNG image.", {
     x: z2.number().describe("X coordinate of the top-left corner of the region"),
     y: z2.number().describe("Y coordinate of the top-left corner of the region"),
@@ -20201,7 +20251,8 @@ var OperationSchema = z2.discriminatedUnion("op", [
     decoration: z2.enum(["NONE", "UNDERLINE", "STRIKETHROUGH"]).describe("Text decoration")
   })
 ]);
-function registerTools16(server, sendCommandToFigma2) {
+function registerTools17(server, sendCommandToFigma2, env = process.env) {
+  const verifyEnabled = isEnabled("VERIFY", env);
   server.tool("batch_mutate", "Execute multiple mixed operations in a single round-trip \u2014 the primary tool for tweaking existing nodes. Supports: rename, set_fill, set_stroke, move, resize, delete, set_text, set_visible, set_font, set_text_align, set_vector_path, set_opacity, set_rotation, set_blend_mode, set_corner_radius, set_effects, set_padding, set_item_spacing, set_text_decoration. Operations run sequentially \u2014 later operations can depend on earlier ones. Dramatically reduces MCP call count for bulk updates.", {
     operations: z2.array(OperationSchema).min(1).max(100).describe("Array of operations to execute. Each must have an 'op' field plus operation-specific params.")
   }, async ({ operations }) => {
@@ -20217,6 +20268,21 @@ Failed:
 ${failedResults.map((r) => `- ${r.op} ${r.nodeId}: ${r.error}`).join(`
 `)}`;
       }
+      if (verifyEnabled) {
+        const resizes = typedResult.results.filter((r) => r.success && r.op === "resize" && describeReadBack(r) !== null);
+        if (resizes.length > 0) {
+          const partial = resizes.filter((r) => r.partial);
+          responseText += `
+
+Resize read-back: ${resizes.length - partial.length}/${resizes.length} applied as requested`;
+          if (partial.length > 0) {
+            responseText += `
+Partial:
+${partial.map((r) => `- ${r.nodeId} "${r.name}": ${describeReadBack(r)}`).join(`
+`)}`;
+          }
+        }
+      }
       return {
         content: [{ type: "text", text: responseText }]
       };
@@ -20229,7 +20295,7 @@ ${failedResults.map((r) => `- ${r.op} ${r.nodeId}: ${r.error}`).join(`
 }
 
 // src/llm2figma_mcp/tools/lint.ts
-function registerTools17(server, sendCommandToFigma2) {
+function registerTools18(server, sendCommandToFigma2) {
   server.tool("scan_node_styles", "Walk a frame tree and return style data (fills, strokes, fonts, layout, corner radius, component info) for every descendant in a single round-trip. Use this for design linting \u2014 the result includes a boundVariable flag on each fill/stroke so you can detect hardcoded colors vs token-bound ones. Returns bounded nodes and coverage metadata, or summary:true for compact validation counts and up to ten unbound-color node IDs. A truncated scan covers only part of the composition.", {
     nodeId: z2.string().describe("Root node ID to scan"),
     maxDepth: z2.number().int().min(1).max(50).optional().describe("Maximum tree depth to walk (default 10)"),
@@ -20251,7 +20317,7 @@ function registerTools17(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/introspect.ts
-function registerTools18(server, sendCommandToFigma2) {
+function registerTools19(server, sendCommandToFigma2) {
   server.tool("introspect", "Discover the full manipulation surface of a component or frame in one call. Returns a flat property map with semantic keys (e.g. 'badge.text', 'header.fill') where each entry describes a text, color, instance, boolean, or component_property that can be changed. Also reports wrapper frames, name collisions, and nesting depth \u2014 use this output to feed set_properties or optimize_structure.", {
     nodeId: z2.string().describe("Root node ID to introspect"),
     maxDepth: z2.number().int().min(1).max(50).optional().describe("Maximum tree depth to walk (default 20)")
@@ -20351,7 +20417,7 @@ ${JSON.stringify(typedResult.results)}`;
 }
 
 // src/llm2figma_mcp/tools/visual.ts
-function registerTools19(server, sendCommandToFigma2) {
+function registerTools20(server, sendCommandToFigma2) {
   server.tool("set_layout_positioning", "Set a child node to absolute or auto positioning within an auto-layout frame. ABSOLUTE is the 'Ignore auto layout' toggle \u2014 the node floats above siblings without affecting flow. Use with set_constraints to pin position.", {
     nodeId: z2.string().describe("The ID of the child node"),
     positioning: z2.enum(["ABSOLUTE", "AUTO"]).describe("ABSOLUTE = ignore auto-layout (float), AUTO = participate in auto-layout flow"),
@@ -20500,7 +20566,7 @@ function registerTools19(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/eval.ts
-function registerTools20(server, sendCommandToFigma2) {
+function registerTools21(server, sendCommandToFigma2) {
   server.tool("figma_eval", "WARNING: Executes arbitrary JavaScript in the Figma plugin sandbox. Can read, modify, or delete any nodes in the document. Use with caution. Code is the body of an async function receiving: figma, hexToFigmaColor, appendOrInsertChild, loadAllFonts, getVariableByName, bindVariableToColor, resolveColorValue, sendProgressUpdate, introspectNode, setProperties. Use `return` to send results. Figma nodes auto-serialize to {id, name, type}.", {
     code: z2.string().describe("JavaScript code body. Use `return` for results. `figma` and helpers available as locals.")
   }, async ({ code }) => {
@@ -20519,7 +20585,7 @@ function registerTools20(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/migration.ts
-function registerTools21(server, sendCommandToFigma2) {
+function registerTools22(server, sendCommandToFigma2) {
   server.tool("diff_components", "Compare two components (old vs new) and produce a semantic property mapping + structural diff. Uses introspect on both components, then runs a 4-pass matching algorithm (exact key, suffix, type+name similarity, positional fallback) to map properties between versions. Use this before migrate_instance to understand what changed and review/adjust the mapping.", {
     sourceId: z2.string().describe("Node ID of the old/source component"),
     targetId: z2.string().describe("Node ID of the new/target component"),
@@ -20677,7 +20743,7 @@ var ReactionSchema = z2.object({
   trigger: TriggerSchema,
   actions: z2.array(ActionSchema).min(1).describe("Actions to execute when triggered")
 });
-function registerTools22(server, sendCommandToFigma2) {
+function registerTools23(server, sendCommandToFigma2) {
   server.tool("set_reactions", "Set prototype interactions on a Figma node. Replaces the entire reactions array. Use this to wire click-to-navigate, hover overlays, scroll-to, or any prototype interaction. Each reaction has a trigger (ON_CLICK, ON_HOVER, etc.) and one or more actions (NAVIGATE, OVERLAY, BACK, URL, etc.). For NODE actions, destinationId must reference an existing frame ID.", {
     nodeId: z2.string().describe("The node to set reactions on"),
     reactions: z2.array(ReactionSchema).describe("Array of reactions to set")
@@ -20745,6 +20811,74 @@ function registerTools22(server, sendCommandToFigma2) {
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     } catch (error) {
       return { content: [{ type: "text", text: `Error batch setting reactions: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+}
+var BackgroundSchema = z2.string().regex(/^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/, "Use one solid colour as #RRGGBB or #RRGGBBAA").describe("Prototype background: one solid colour as #RRGGBB or #RRGGBBAA");
+var unit = z2.number().min(0).max(1);
+var BackgroundPaintsSchema = z2.array(z2.object({
+  type: z2.literal("SOLID"),
+  color: z2.object({ r: unit, g: unit, b: unit, a: unit.optional() }),
+  visible: z2.boolean().optional(),
+  opacity: unit.optional(),
+  blendMode: z2.string().min(1).optional()
+})).max(1).describe("Prototype background as raw paints, exactly as get_flows returns them: [] or one SOLID paint. An alternative to background");
+var NO_FILE_KEY = "No file key is known for this file, so no prototype link can be built. A development plugin does not report one: call join_channel again with fileKey set to the file's figma.com URL or key. join_channel takes fileKey only when the server runs with L2F_FILE_KEY=1.";
+function buildPrototypeLink(fileKey, fileName, nodeId) {
+  const id = encodeURIComponent(nodeId.replace(/:/g, "-"));
+  return `https://www.figma.com/proto/${encodeURIComponent(fileKey)}/${encodeURIComponent(fileName || "Untitled")}?node-id=${id}&starting-point-node-id=${id}`;
+}
+var text = (value) => ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }] });
+var message = (error) => error instanceof Error ? error.message : String(error);
+function linkFileKey(info, deps) {
+  if (deps.fileKeyEnabled) {
+    const merged = mergeFileKey(info, deps.userFileKey(), true);
+    return { fileKey: merged?.fileKey || null, fileKeySource: merged?.fileKeySource ?? null };
+  }
+  const pluginKey = info && typeof info === "object" ? info.fileKey : undefined;
+  return typeof pluginKey === "string" && pluginKey ? { fileKey: pluginKey, fileKeySource: "plugin" } : { fileKey: null, fileKeySource: null };
+}
+function registerFlowTools(server, sendCommandToFigma2, deps = {}) {
+  const resolved = {
+    fileKeyEnabled: deps.fileKeyEnabled ?? isEnabled("FILE_KEY"),
+    userFileKey: deps.userFileKey ?? getChannelFileKey
+  };
+  server.tool("get_flows", "Read the prototype flows on a page: each flow's name, starting frame id and name, and the top-level section it sits in, plus the page's prototype background as hex (background) and as raw paints (backgroundPaints; null when it is a gradient, image or several paints). A flow whose starting frame no longer exists is listed with missing: true. The output can be passed to set_flows unchanged.", { pageId: z2.string().min(1).describe("The page to read flows from") }, async ({ pageId }) => {
+    try {
+      return text(await sendCommandToFigma2("get_flows", { pageId }));
+    } catch (error) {
+      return text(`Error getting flows: ${message(error)}`);
+    }
+  });
+  server.tool("set_flows", "Replace all prototype flows on a page. The list is assigned whole, so running the same call twice gives the same page, and an empty list clears them. Every node must be a top-level frame on that page (directly on the page or inside sections only) and every flow name unique; otherwise nothing is written and the bad ones are listed. A flow whose starting frame does not exist is refused, unless dropMissing is true: then it is left out and listed in dropped. The background is optional: one solid colour (background), or the exact paints from get_flows (backgroundPaints); null or omitted leaves it alone. The prototype device cannot be set from the plugin API.", {
+    pageId: z2.string().min(1).describe("The page whose flows are replaced"),
+    flows: z2.array(z2.object({
+      name: z2.string().trim().min(1).describe("Flow name shown in Figma"),
+      nodeId: z2.string().min(1).describe("Top-level frame the flow starts at")
+    })).max(500).describe("The complete list of flows for the page, in order"),
+    background: BackgroundSchema.nullable().optional().describe("One solid colour as #RRGGBB or #RRGGBBAA; null or omitted leaves the background alone"),
+    backgroundPaints: BackgroundPaintsSchema.nullable().optional(),
+    dropMissing: z2.boolean().optional().describe("Leave out flows whose starting frame does not exist instead of refusing (default false)")
+  }, async ({ pageId, flows, background, backgroundPaints, dropMissing }) => {
+    try {
+      return text(await sendCommandToFigma2("set_flows", { pageId, flows, background, backgroundPaints, dropMissing }));
+    } catch (error) {
+      return text(`Error setting flows: ${message(error)}`);
+    }
+  });
+  server.tool("get_prototype_links", "Build a prototype link for each flow on a page, optionally only the flows in one top-level section. Needs the file key: reported by the plugin, or given to join_channel as fileKey (only with L2F_FILE_KEY=1). The link format (https://www.figma.com/proto/<key>/<name>?node-id=...&starting-point-node-id=...) is UNCONFIRMED: compare it with a link copied from Figma before relying on it. A flow whose starting frame is missing gets link: null.", {
+    pageId: z2.string().min(1).describe("The page whose flows to link"),
+    sectionId: z2.string().min(1).optional().describe("Only flows whose starting frame is in this top-level section of the page")
+  }, async ({ pageId, sectionId }) => {
+    try {
+      const { fileKey, fileKeySource } = linkFileKey(await sendCommandToFigma2("get_document_info"), resolved);
+      if (!fileKey)
+        return text(NO_FILE_KEY);
+      const page = await sendCommandToFigma2("get_flows", sectionId === undefined ? { pageId } : { pageId, sectionId });
+      const links = page.flows.filter((flow) => sectionId === undefined || flow.section?.id === sectionId).map((flow) => ({ ...flow, link: flow.missing ? null : buildPrototypeLink(fileKey, page.fileName, flow.nodeId) }));
+      return text({ fileKeySource, links });
+    } catch (error) {
+      return text(`Error getting prototype links: ${message(error)}`);
     }
   });
 }
@@ -20841,9 +20975,9 @@ function extractAllText(html, tag) {
   const regex = new RegExp(`<${tag}[^>]*>([^<]+)</${tag}>`, "gi");
   let match;
   while ((match = regex.exec(html)) !== null) {
-    const text = match[1].trim();
-    if (text.length > 0) {
-      results.push(text);
+    const text2 = match[1].trim();
+    if (text2.length > 0) {
+      results.push(text2);
     }
   }
   return results;
@@ -20853,9 +20987,9 @@ function extractLinks(html) {
   const regex = /<a[^>]+href="([^"]*)"[^>]*>([^<]+)<\/a>/gi;
   let match;
   while ((match = regex.exec(html)) !== null) {
-    const text = match[2].trim().replace(/&#\d+;/g, "").replace(/&amp;/g, "&").trim();
-    if (text.length > 0) {
-      results.push({ text, href: match[1] });
+    const text2 = match[2].trim().replace(/&#\d+;/g, "").replace(/&amp;/g, "&").trim();
+    if (text2.length > 0) {
+      results.push({ text: text2, href: match[1] });
     }
   }
   return results;
@@ -21092,9 +21226,9 @@ function extractProps(html, template, comment) {
       while ((alertMatch = alertRegex.exec(html)) !== null) {
         const variant = alertMatch[1];
         const innerHtml = alertMatch[2];
-        const text = innerHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().substring(0, 200);
-        if (text.length > 5) {
-          alerts.push({ variant, text });
+        const text2 = innerHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().substring(0, 200);
+        if (text2.length > 5) {
+          alerts.push({ variant, text: text2 });
         }
       }
       if (alerts.length > 0) {
@@ -21231,7 +21365,7 @@ function parseWireframe(filePath) {
     estimatedTokenSavings: `~${savings}% (${inputTokens} input tokens -> ${outputTokens} output tokens)`
   };
 }
-function registerTools23(server, _sendCommandToFigma) {
+function registerTools24(server, _sendCommandToFigma) {
   server.tool("parse_wireframe", "Parse an HTML wireframe file and emit compact section specs for build_page_section. Reads the HTML, identifies sections by CSS classes and HTML comments, maps each to a template + props, and returns the complete page manifest. Eliminates the need to read/parse HTML manually \u2014 ~10x token savings vs reading raw HTML.", {
     filePath: z2.string().describe("Absolute path to the HTML wireframe file")
   }, async ({ filePath }) => {
@@ -22835,7 +22969,7 @@ var SECTION_TEMPLATES = {
       const properties = props.properties || [];
       const useCases = props.useCases || [];
       const composition = props.composition || [];
-      const sectionTitle = (text) => textNode({ text, fontSize: 20, fontWeight: 700, fontColor: "#1a1a1a", name: "Section Title" });
+      const sectionTitle = (text2) => textNode({ text: text2, fontSize: 20, fontWeight: 700, fontColor: "#1a1a1a", name: "Section Title" });
       const placeholderArea = (name, height) => ({
         type: "frame",
         name,
@@ -23066,7 +23200,7 @@ function getTemplateSummaries() {
 }
 
 // src/llm2figma_mcp/tools/page-compiler.ts
-function registerTools24(server, sendCommandToFigma2) {
+function registerTools25(server, sendCommandToFigma2) {
   server.tool("build_page_section", "Build a single page section in Figma using a compact semantic spec. Accepts a template name and props \u2014 the server handles zone-aware token selection, node tree generation, and dispatches via create_node_tree internally. ~10x fewer tokens than manual create_node_tree calls. Use get_section_templates to see available templates and their required props.", {
     template: z2.string().describe("Template name (e.g., 'hero_takeover', 'slds_data_table')"),
     parentId: z2.string().describe("Parent frame ID to add the section into"),
@@ -23106,13 +23240,13 @@ function registerTools24(server, sendCommandToFigma2) {
         }]
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.error(`build_page_section error: ${message}`);
+      const message2 = error instanceof Error ? error.message : String(error);
+      logger.error(`build_page_section error: ${message2}`);
       return {
         content: [{
           type: "text",
           text: JSON.stringify({
-            error: `Failed to build section "${template}": ${message}`
+            error: `Failed to build section "${template}": ${message2}`
           })
         }]
       };
@@ -23141,7 +23275,7 @@ function registerTools24(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/tools/events.ts
-function registerTools25(server, sendCommandToFigma2) {
+function registerTools26(server, sendCommandToFigma2) {
   server.tool("figma_events_subscribe", "Start or stop receiving Figma design events (selection changes, node mutations, page switches). Events accumulate in a buffer and are read with figma_events_poll.", {
     enabled: z2.boolean().describe("true to start streaming, false to stop")
   }, async ({ enabled }) => {
@@ -23354,8 +23488,8 @@ async function replyToComment(args2, send, deps = {}) {
 }
 function toolError(prefix, error) {
   const known = error instanceof CommentsInputError || error instanceof FigmaApiError || error instanceof FigmaTokenError;
-  const message = known ? error.message : "unexpected error";
-  return { content: [{ type: "text", text: `${prefix}: ${message}` }] };
+  const message2 = known ? error.message : "unexpected error";
+  return { content: [{ type: "text", text: `${prefix}: ${message2}` }] };
 }
 var FILE_KEY_ARG = z2.string().max(512).optional().describe("File key or figma.com file URL. Omit to use the connected file (needs L2F_FILE_KEY).");
 function registerReadTools(server, send, deps = {}) {
@@ -24173,7 +24307,7 @@ class ReferenceCache {
     return { scope, cleared };
   }
 }
-function registerTools26(server) {
+function registerTools27(server) {
   const cache = new ReferenceCache;
   server.tool("reference_cache", "Reuse palettes, font choices, component/root IDs, layout helper snippets, and already-read skill guidance within this MCP session. Scope every entry to a file/page or task ID. Entries expire after 30 minutes by default; refresh after library updates, deletions, or reference changes. List returns keys only. Max 64 entries, 64KB each; oldest entries are evicted.", {
     action: z2.enum(["get", "set", "list", "clear"]),
@@ -24214,7 +24348,7 @@ var SCAN_LIMITS = {
   props: 100,
   unfollowed: 20
 };
-var clip = (text, max = SCAN_LIMITS.text) => text.length > max ? text.slice(0, max) : text;
+var clip = (text2, max = SCAN_LIMITS.text) => text2.length > max ? text2.slice(0, max) : text2;
 var yieldToEventLoop = () => new Promise((done) => setImmediate(done));
 function readRegularFile(real, maxBytes, label) {
   if (!statSync(real).isFile())
@@ -24282,11 +24416,11 @@ function readJsonInside(file, container) {
   const real = realpathOrNull(file);
   if (!real || !isInside(real, container))
     throw new CodeRepoError(`${basename(file)} resolves outside the CodeRepo`);
-  const text = readRegularFile(real, SCAN_LIMITS.fileBytes, basename(file));
-  if (text === null)
+  const text2 = readRegularFile(real, SCAN_LIMITS.fileBytes, basename(file));
+  if (text2 === null)
     throw new CodeRepoError(`${basename(file)} is too large`);
   try {
-    return JSON.parse(text);
+    return JSON.parse(text2);
   } catch {
     throw new CodeRepoError(`${clip(relative(container, real) || basename(real))} is not valid JSON`);
   }
@@ -24491,31 +24625,31 @@ function installedPackageVersion(root, manifestDir, name) {
 function typesPackageName(name) {
   return `@types/${name.startsWith("@") ? name.slice(1).replace("/", "__") : name}`;
 }
-function stripComments(text) {
+function stripComments(text2) {
   let out = "";
   let i = 0;
-  while (i < text.length) {
-    const c = text[i], n = text[i + 1];
+  while (i < text2.length) {
+    const c = text2[i], n = text2[i + 1];
     if (c === "/" && n === "/") {
-      while (i < text.length && text[i] !== `
+      while (i < text2.length && text2[i] !== `
 `)
         i++;
       continue;
     }
     if (c === "/" && n === "*") {
-      const end = text.indexOf("*/", i + 2);
-      i = end < 0 ? text.length : end + 2;
+      const end = text2.indexOf("*/", i + 2);
+      i = end < 0 ? text2.length : end + 2;
       out += " ";
       continue;
     }
     if (c === "'" || c === '"' || c === "`") {
       const start = i++;
-      while (i < text.length && text[i] !== c) {
-        if (text[i] === "\\")
+      while (i < text2.length && text2[i] !== c) {
+        if (text2[i] === "\\")
           i++;
         i++;
       }
-      out += text.slice(start, ++i);
+      out += text2.slice(start, ++i);
       continue;
     }
     out += c;
@@ -24523,17 +24657,17 @@ function stripComments(text) {
   }
   return out;
 }
-function braceDepths(text) {
-  const depth = new Int32Array(text.length + 1);
+function braceDepths(text2) {
+  const depth = new Int32Array(text2.length + 1);
   let d = 0;
-  for (let i = 0;i < text.length; i++) {
-    const c = text[i];
+  for (let i = 0;i < text2.length; i++) {
+    const c = text2[i];
     if (c === "'" || c === '"' || c === "`") {
       depth[i] = d;
       const q = c;
       i++;
-      while (i < text.length && text[i] !== q) {
-        if (text[i] === "\\") {
+      while (i < text2.length && text2[i] !== q) {
+        if (text2[i] === "\\") {
           depth[i] = d;
           i++;
         }
@@ -24549,28 +24683,28 @@ function braceDepths(text) {
     else if (c === "}")
       d = Math.max(0, d - 1);
   }
-  depth[text.length] = d;
+  depth[text2.length] = d;
   return depth;
 }
 var OPEN = { "{": "}", "(": ")", "[": "]", "<": ">" };
-function matchBracket(text, start, budget) {
-  const end = Math.min(text.length, start + SCAN_LIMITS.bracketScan);
+function matchBracket(text2, start, budget) {
+  const end = Math.min(text2.length, start + SCAN_LIMITS.bracketScan);
   const stack = [];
   let result = end;
   let i = start;
   for (;i < end; i++) {
-    const c = text[i];
+    const c = text2[i];
     if (c === "'" || c === '"' || c === "`") {
       const q = c;
       i++;
-      while (i < end && text[i] !== q) {
-        if (text[i] === "\\")
+      while (i < end && text2[i] !== q) {
+        if (text2[i] === "\\")
           i++;
         i++;
       }
       continue;
     }
-    if (c === "=" && text[i + 1] === ">") {
+    if (c === "=" && text2[i + 1] === ">") {
       i++;
       continue;
     }
@@ -24589,26 +24723,26 @@ function matchBracket(text, start, budget) {
   return result;
 }
 var NEW_DECLARATION = /^\s{0,40}(export|declare|import|interface|type)\b/;
-function readUntilSemicolon(text, start, budget) {
-  const end = Math.min(text.length, start + SCAN_LIMITS.bracketScan);
+function readUntilSemicolon(text2, start, budget) {
+  const end = Math.min(text2.length, start + SCAN_LIMITS.bracketScan);
   let i = start;
   while (i < end) {
-    const c = text[i];
+    const c = text2[i];
     if (c === ";")
       break;
-    if (c === "=" && text[i + 1] === ">") {
+    if (c === "=" && text2[i + 1] === ">") {
       i += 2;
       continue;
     }
     if (OPEN[c]) {
-      i = matchBracket(text, i, budget);
+      i = matchBracket(text2, i, budget);
       continue;
     }
     if (c === "'" || c === '"' || c === "`") {
       const q = c;
       i++;
-      while (i < end && text[i] !== q) {
-        if (text[i] === "\\")
+      while (i < end && text2[i] !== q) {
+        if (text2[i] === "\\")
           i++;
         i++;
       }
@@ -24616,63 +24750,63 @@ function readUntilSemicolon(text, start, budget) {
       continue;
     }
     if (c === `
-` && NEW_DECLARATION.test(text.slice(i + 1, i + 40)))
+` && NEW_DECLARATION.test(text2.slice(i + 1, i + 40)))
       break;
     i++;
   }
   budget.left -= Math.min(i, end) - start + 1;
-  return text.slice(start, Math.min(i, text.length)).trim();
+  return text2.slice(start, Math.min(i, text2.length)).trim();
 }
-function indexWithin(text, ch, from, budget) {
-  const end = Math.min(text.length, from + SCAN_LIMITS.bracketScan);
+function indexWithin(text2, ch, from, budget) {
+  const end = Math.min(text2.length, from + SCAN_LIMITS.bracketScan);
   let i = from;
-  while (i < end && text[i] !== ch)
+  while (i < end && text2[i] !== ch)
     i++;
   budget.left -= i - from + 1;
   return i < end ? i : -1;
 }
-function nextOf(text, chars) {
+function nextOf(text2, chars) {
   let from = -1, found = -1;
   return (pos) => {
     if (from >= 0 && pos >= from && (found < 0 || found >= pos))
       return found;
     let i = pos;
-    while (i < text.length && !chars.includes(text[i]))
+    while (i < text2.length && !chars.includes(text2[i]))
       i++;
     from = pos;
-    found = i < text.length ? i : -1;
+    found = i < text2.length ? i : -1;
     return found;
   };
 }
-function splitTop(text, separator) {
+function splitTop(text2, separator) {
   const parts = [];
   let last = 0;
-  for (let i = 0;i < text.length; i++) {
-    const c = text[i];
-    if (c === "=" && text[i + 1] === ">") {
+  for (let i = 0;i < text2.length; i++) {
+    const c = text2[i];
+    if (c === "=" && text2[i + 1] === ">") {
       i++;
       continue;
     }
     if (OPEN[c]) {
-      i = matchBracket(text, i) - 1;
+      i = matchBracket(text2, i) - 1;
       continue;
     }
     if (c === "'" || c === '"' || c === "`") {
       const q = c;
       i++;
-      while (i < text.length && text[i] !== q) {
-        if (text[i] === "\\")
+      while (i < text2.length && text2[i] !== q) {
+        if (text2[i] === "\\")
           i++;
         i++;
       }
       continue;
     }
     if (c === separator) {
-      parts.push(text.slice(last, i));
+      parts.push(text2.slice(last, i));
       last = i + 1;
     }
   }
-  parts.push(text.slice(last));
+  parts.push(text2.slice(last));
   return parts.map((p) => p.trim()).filter((p) => p.length > 0);
 }
 var WS = "\\s{1,256}";
@@ -24687,16 +24821,16 @@ var DEFAULT_DECLARATION = new RegExp(`\\bexport${WS}default${WS}(?:declare${WS})
 var DEFAULT_IDENT = new RegExp(`\\bexport${WS}default${WS}(${IDENT})`);
 var BRACE_LIST_MAX = 4096;
 function parseDeclarations(source) {
-  const text = stripComments(source);
-  const depth = braceDepths(text);
+  const text2 = stripComments(source);
+  const depth = braceDepths(text2);
   const top = (index) => depth[index] === 0;
   const budget = { left: SCAN_LIMITS.parseSteps };
   const parsed = { stars: [], reexports: [], locals: [], exported: new Set, values: new Map, types: new Map, imports: new Map, truncated: false };
-  for (const m of text.matchAll(STAR_EXPORT))
+  for (const m of text2.matchAll(STAR_EXPORT))
     if (top(m.index))
       parsed.stars.push(m[2]);
-  const nextClose = nextOf(text, "}");
-  for (const m of text.matchAll(BRACE_EXPORT)) {
+  const nextClose = nextOf(text2, "}");
+  for (const m of text2.matchAll(BRACE_EXPORT)) {
     const open = m.index + m[0].length;
     const close = nextClose(open);
     if (close < 0 || close - open > BRACE_LIST_MAX)
@@ -24704,8 +24838,8 @@ function parseDeclarations(source) {
     if (!top(m.index) || m[1])
       continue;
     BRACE_FROM.lastIndex = close + 1;
-    const from = BRACE_FROM.exec(text);
-    for (const raw of text.slice(open, close).split(",")) {
+    const from = BRACE_FROM.exec(text2);
+    for (const raw of text2.slice(open, close).split(",")) {
       const item = raw.trim();
       if (!item || /^type\s/.test(item))
         continue;
@@ -24716,35 +24850,35 @@ function parseDeclarations(source) {
         parsed.locals.push({ name, local: imported });
     }
   }
-  const nextStop = nextOf(text, `'";`);
-  const nextQuoteOrLine = nextOf(text, `'"
+  const nextStop = nextOf(text2, `'";`);
+  const nextQuoteOrLine = nextOf(text2, `'"
 `);
   let lastStop = -1, lastFrom = -1;
   IMPORT_KEYWORD.lastIndex = 0;
-  for (let m = IMPORT_KEYWORD.exec(text);m; m = IMPORT_KEYWORD.exec(text)) {
+  for (let m = IMPORT_KEYWORD.exec(text2);m; m = IMPORT_KEYWORD.exec(text2)) {
     const clauseStart = m.index + m[0].length;
     const q = nextStop(clauseStart);
     if (q < 0)
       break;
-    if (q - clauseStart > SPEC_MAX || text[q] === ";")
+    if (q - clauseStart > SPEC_MAX || text2[q] === ";")
       continue;
     if (q !== lastStop) {
       lastStop = q;
       let j = q - 1;
-      while (j > clauseStart && q - j < 256 && /\s/.test(text[j]))
+      while (j > clauseStart && q - j < 256 && /\s/.test(text2[j]))
         j--;
-      const isFrom = text.slice(j - 3, j + 1) === "from" && !/[\w$]/.test(text[j - 4] ?? "");
+      const isFrom = text2.slice(j - 3, j + 1) === "from" && !/[\w$]/.test(text2[j - 4] ?? "");
       lastFrom = isFrom ? j - 3 : -1;
     }
     if (lastFrom < clauseStart)
       continue;
     const end = nextQuoteOrLine(q + 1);
-    if (end < 0 || text[end] !== text[q] || end === q + 1 || end - q - 1 > SPEC_MAX)
+    if (end < 0 || text2[end] !== text2[q] || end === q + 1 || end - q - 1 > SPEC_MAX)
       continue;
     IMPORT_KEYWORD.lastIndex = end + 1;
     if (!top(m.index))
       continue;
-    const clause = text.slice(clauseStart, lastFrom).trim().replace(/^type\s{1,256}/, ""), spec = text.slice(q + 1, end);
+    const clause = text2.slice(clauseStart, lastFrom).trim().replace(/^type\s{1,256}/, ""), spec = text2.slice(q + 1, end);
     const brace = clause.match(/\{([^{}]{0,1000})\}/);
     const head = clause.replace(/\{[^{}]{0,1000}\}/, "").replace(/,/g, " ").trim();
     if (head && !head.startsWith("*"))
@@ -24758,7 +24892,7 @@ function parseDeclarations(source) {
         parsed.imports.set(local, { spec, imported });
       }
   }
-  for (const m of text.matchAll(DECLARATION)) {
+  for (const m of text2.matchAll(DECLARATION)) {
     if (budget.left <= 0) {
       parsed.truncated = true;
       break;
@@ -24769,18 +24903,18 @@ function parseDeclarations(source) {
     let after = m.index + m[0].length;
     if (kind === "interface") {
       let typeParams = false;
-      if (text[after] === "<") {
+      if (text2[after] === "<") {
         typeParams = true;
-        after = matchBracket(text, after, budget);
+        after = matchBracket(text2, after, budget);
       }
-      const open = indexWithin(text, "{", after, budget);
+      const open = indexWithin(text2, "{", after, budget);
       if (open < 0)
         continue;
-      const between = text.slice(after, open).trim();
+      const between = text2.slice(after, open).trim();
       const extendsText = between.startsWith("extends") ? between.slice(7).trim() : undefined;
-      const close = matchBracket(text, open, budget);
+      const close = matchBracket(text2, open, budget);
       const previous = parsed.types.get(name);
-      const body = text.slice(open, close);
+      const body = text2.slice(open, close);
       if (!previous)
         parsed.types.set(name, { kind: "interface", typeParams, extendsText, body });
       else if (previous.body.length + body.length > SCAN_LIMITS.bracketScan)
@@ -24790,30 +24924,30 @@ function parseDeclarations(source) {
     } else if (kind === "type") {
       let typeParams = false;
       let i = after;
-      while (text[i] === " " && i - after < 256)
+      while (text2[i] === " " && i - after < 256)
         i++;
-      if (text[i] === "<") {
+      if (text2[i] === "<") {
         typeParams = true;
-        i = matchBracket(text, i, budget);
+        i = matchBracket(text2, i, budget);
       }
-      const eq = indexWithin(text, "=", i, budget);
-      if (eq < 0 || text.slice(i, eq).trim() !== "")
+      const eq = indexWithin(text2, "=", i, budget);
+      if (eq < 0 || text2.slice(i, eq).trim() !== "")
         continue;
       if (!parsed.types.has(name))
-        parsed.types.set(name, { kind: "type", typeParams, body: readUntilSemicolon(text, eq + 1, budget) });
+        parsed.types.set(name, { kind: "type", typeParams, body: readUntilSemicolon(text2, eq + 1, budget) });
     } else {
       const valueKind = kind === "function" ? "function" : kind === "class" ? "class" : kind === "enum" ? "enum" : "const";
       const previous = parsed.values.get(name);
       if (!previous)
-        parsed.values.set(name, { kind: valueKind, text: readUntilSemicolon(text, after, budget) });
+        parsed.values.set(name, { kind: valueKind, text: readUntilSemicolon(text2, after, budget) });
       else if (previous.kind === "function" && valueKind === "function")
         previous.overloaded = true;
     }
     if (m[1])
       parsed.exported.add(name);
   }
-  const defaultDecl = text.match(DEFAULT_DECLARATION);
-  const defaultIdent = text.match(DEFAULT_IDENT);
+  const defaultDecl = text2.match(DEFAULT_DECLARATION);
+  const defaultIdent = text2.match(DEFAULT_IDENT);
   if (defaultDecl && top(defaultDecl.index))
     parsed.defaultLocal = defaultDecl[1] ?? "default";
   else if (defaultIdent && top(defaultIdent.index) && !["function", "class", "abstract", "declare", "interface"].includes(defaultIdent[1]))
@@ -24860,14 +24994,14 @@ class Scanner {
     await yieldToEventLoop();
     if (this.files.has(file))
       return this.files.get(file);
-    const text = readRegularFile(real, SCAN_LIMITS.fileBytes, "A declaration file");
-    if (text === null) {
+    const text2 = readRegularFile(real, SCAN_LIMITS.fileBytes, "A declaration file");
+    if (text2 === null) {
       this.truncated = true;
       this.files.set(file, null);
       return null;
     }
     this.bytes += stat.size;
-    const parsed = parseDeclarations(text);
+    const parsed = parseDeclarations(text2);
     if (parsed.truncated)
       this.truncated = true;
     this.files.set(file, parsed);
@@ -24970,22 +25104,22 @@ class Scanner {
       return this.findType(origin.file, origin.local, depth + 1);
     return null;
   }
-  async evalType(text, file, depth = 0) {
-    const key = `${depth}\x00${file}\x00${text}`;
+  async evalType(text2, file, depth = 0) {
+    const key = `${depth}\x00${file}\x00${text2}`;
     const memo = this.evalMemo.get(key);
     if (memo)
       return memo;
-    this.evalBudget -= Math.max(text.length, 64);
+    this.evalBudget -= Math.max(text2.length, 64);
     let result = UNKNOWN;
     if (this.evalBudget < 0)
       this.truncated = true;
     else
-      result = await this.evalTypeOnce(text, file, depth);
+      result = await this.evalTypeOnce(text2, file, depth);
     this.evalMemo.set(key, result);
     return result;
   }
-  async evalTypeOnce(text, file, depth) {
-    let t = text.trim();
+  async evalTypeOnce(text2, file, depth) {
+    let t = text2.trim();
     if (depth > 8 || !t || t.length > SCAN_LIMITS.bracketScan)
       return UNKNOWN;
     for (let n = 0;n < 8 && t.startsWith("(") && matchBracket(t, 0) === t.length; n++)
@@ -25069,26 +25203,26 @@ class Scanner {
     return value.overloaded && props.propsState === "complete" ? { ...props, propsState: "partial" } : props;
   }
   async signatureType(value, file) {
-    let text = value.text;
+    let text2 = value.text;
     if (value.kind === "const") {
-      if (!text.startsWith(":"))
+      if (!text2.startsWith(":"))
         return UNKNOWN_PROPS;
-      text = text.slice(1).trim();
-      const wrapper = text.match(/^(?:React\.)?(?:FC|FunctionComponent|ForwardRefExoticComponent)\s{0,256}</);
+      text2 = text2.slice(1).trim();
+      const wrapper = text2.match(/^(?:React\.)?(?:FC|FunctionComponent|ForwardRefExoticComponent)\s{0,256}</);
       if (wrapper) {
         const open = wrapper[0].length - 1;
-        const close = matchBracket(text, open);
-        const r2 = await this.evalType(text.slice(open + 1, close - 1), file);
+        const close = matchBracket(text2, open);
+        const r2 = await this.evalType(text2.slice(open + 1, close - 1), file);
         return { props: r2.names, propsState: r2.state };
       }
     } else if (value.kind !== "function") {
       return UNKNOWN_PROPS;
     }
-    if (text.startsWith("<"))
-      text = text.slice(matchBracket(text, 0)).trim();
-    if (!text.startsWith("("))
+    if (text2.startsWith("<"))
+      text2 = text2.slice(matchBracket(text2, 0)).trim();
+    if (!text2.startsWith("("))
       return UNKNOWN_PROPS;
-    const params = splitTop(text.slice(1, matchBracket(text, 0) - 1), ",");
+    const params = splitTop(text2.slice(1, matchBracket(text2, 0) - 1), ",");
     if (params.length === 0)
       return { props: [], propsState: "complete" };
     const colon = splitTop(params[0], ":");
@@ -25238,10 +25372,10 @@ var CODE_MAP_DIR = ".l2f";
 var CODE_MAP_FILE = "code-map.json";
 var emptyCodeMap = () => ({ l2fCodeMap: 1, packages: {}, components: {}, tokens: {} });
 var isRecord = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-function parseCodeMap(text) {
+function parseCodeMap(text2) {
   let json;
   try {
-    json = JSON.parse(text);
+    json = JSON.parse(text2);
   } catch {
     return null;
   }
@@ -25503,7 +25637,7 @@ function enqueue(path4, task) {
   });
   return run;
 }
-var hashOf = (text) => text === null ? "absent" : createHash("sha256").update(text).digest("hex");
+var hashOf = (text2) => text2 === null ? "absent" : createHash("sha256").update(text2).digest("hex");
 async function readIfPresent(file) {
   let handle;
   try {
@@ -25614,10 +25748,10 @@ function updateCodeMap(root, update, hooks = {}) {
 }
 
 // src/llm2figma_mcp/tools/code-map.ts
-var text = (value) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
+var text2 = (value) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
 function asToolError2(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return { content: [{ type: "text", text: `Code map error: ${message}` }], isError: true };
+  const message2 = error instanceof Error ? error.message : String(error);
+  return { content: [{ type: "text", text: `Code map error: ${message2}` }], isError: true };
 }
 var cap = (list) => list.slice(0, SCAN_LIMITS.rows);
 var COMPONENT_BYTES = 48 * 1024;
@@ -25704,14 +25838,14 @@ async function setCodeMapEntries(args2, hooks) {
 }
 var codeRepoParam = z2.string().describe("Absolute path to the code repository (the CodeRepo). Required on every call; never remembered.");
 var manifestParam = z2.string().optional().describe("package.json listing the design-system dependencies, relative to codeRepo (default: package.json). Use it for a workspace package, e.g. apps/web/package.json.");
-function registerTools27(server) {
+function registerTools28(server) {
   server.tool("scan_code_components", "List the components a design-system package in a code repository exports. Without `package`, returns the Manifest's dependency names only, so the caller can pick. " + "With `package` (a dependency name, or name/subpath), returns {package, packageVersion, noDeclarations, components: [{name, from, props, propsState}], truncated}. " + "Only PascalCase value exports are components. propsState is complete, partial (extends, intersections, generics, Omit/Pick) or unknown. " + LIMITS, {
     codeRepo: codeRepoParam,
     manifest: manifestParam,
     package: z2.string().optional().describe("A dependency from the Manifest, optionally with a subpath (pkg/Button)")
   }, async (args2) => {
     try {
-      return text(await scanCodeComponents(args2));
+      return text2(await scanCodeComponents(args2));
     } catch (error) {
       return asToolError2(error);
     }
@@ -25723,7 +25857,7 @@ function registerTools27(server) {
     tokens: z2.record(z2.union([z2.string(), z2.null()])).optional().describe("Collection/Name \u2192 code token name, or null to remove")
   }, async (args2) => {
     try {
-      return text(await setCodeMapEntries(args2));
+      return text2(await setCodeMapEntries(args2));
     } catch (error) {
       return asToolError2(error);
     }
@@ -25739,7 +25873,6 @@ var registerFeature = (feature, register) => registerWhenEnabled(feature, regist
 registerTools(server, sendCommandToFigma);
 registerTools2(server, sendCommandToFigma);
 registerTools3(server, sendCommandToFigma);
-registerTools4(server, sendCommandToFigma);
 registerTools5(server, sendCommandToFigma);
 registerTools6(server, sendCommandToFigma);
 registerTools7(server, sendCommandToFigma);
@@ -25747,7 +25880,7 @@ registerTools8(server, sendCommandToFigma);
 registerTools9(server, sendCommandToFigma);
 registerTools10(server, sendCommandToFigma);
 registerTools11(server, sendCommandToFigma);
-registerTools14(server, sendCommandToFigma);
+registerTools12(server, sendCommandToFigma);
 registerTools15(server, sendCommandToFigma);
 registerTools16(server, sendCommandToFigma);
 registerTools17(server, sendCommandToFigma);
@@ -25758,14 +25891,17 @@ registerTools21(server, sendCommandToFigma);
 registerTools22(server, sendCommandToFigma);
 registerTools23(server, sendCommandToFigma);
 registerTools24(server, sendCommandToFigma);
-registerTools12(server, sendCommandToFigma);
-registerTools13(server, sendCommandToFigma);
 registerTools25(server, sendCommandToFigma);
+registerTools13(server, sendCommandToFigma);
+registerTools14(server, sendCommandToFigma);
+registerTools26(server, sendCommandToFigma);
+registerFeature("VERIFY", registerTools4);
 registerFeature("COMMENTS", registerReadTools);
 registerFeature("COMMENTS_WRITE", registerWriteTools);
-registerTools26(server);
+registerTools27(server);
 registerSetupTools(server);
-registerFeature("CODE_MAP", (s) => registerTools27(s));
+registerFeature("FLOWS", registerFlowTools);
+registerFeature("CODE_MAP", (s) => registerTools28(s));
 registerPrompts(server);
 async function main() {
   installFigmaPluginFiles();
