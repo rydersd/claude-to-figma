@@ -1,4 +1,4 @@
-import { appendOrInsertChild, resolveColorValue, bindVariableToColor, applyColorPaint } from './utils';
+import { appendOrInsertChild, resolveColorValue, bindVariableToColor, applyColorPaint, buildFigmaEffects, applyLayoutPositioning, applyLayoutSizing } from './utils';
 
 export function normalizeSvgPath(pathData: any) {
   // First, insert spaces between command letters and numbers where missing
@@ -129,9 +129,9 @@ export async function createVector(params: any) {
     data: pathData,
   }];
 
-  // Resize to desired dimensions
-  if (width && height) {
-    vector.resize(width, height);
+  // Resize to desired dimensions (a missing one keeps the path's own)
+  if (width || height) {
+    vector.resize(width || vector.width, height || vector.height);
   }
 
   vector.x = x;
@@ -169,9 +169,19 @@ export async function createVector(params: any) {
   if (params.opacity !== undefined) {
     vector.opacity = params.opacity;
   }
+  if (params.strokeAlign !== undefined) {
+    vector.strokeAlign = params.strokeAlign;
+  }
+  if (params.effects && Array.isArray(params.effects)) {
+    vector.effects = buildFigmaEffects(params.effects);
+  }
 
   // Append to parent or current page
   await appendOrInsertChild(vector, parentId, params.insertAt);
+
+  // Positioning and sizing need the parent
+  applyLayoutPositioning(vector, params);
+  applyLayoutSizing(vector, params);
 
   return {
     id: vector.id,

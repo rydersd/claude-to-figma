@@ -23338,7 +23338,7 @@ function registerTools26(server, sendCommandToFigma2) {
 var SPEC_VERSION = 1;
 var SPEC_LOCK_VERSION = 1;
 var NO_PAINT = "#00000000";
-var COMMON = ["name", "x", "y", "opacity", "layoutPositioning"];
+var COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning"];
 var SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
 var PAINTED = ["fillColor", "strokeColor", "strokeWeight", "strokeAlign", "effects"];
 var AUTO_LAYOUT = [
@@ -23370,17 +23370,19 @@ var SPEC_VOCABULARY = {
     "textAlignHorizontal",
     "textAutoResize",
     "width",
+    "height",
     "effects",
     ...SIZING
   ],
-  instance: [...COMMON, "componentKey", "componentId", "properties", ...SIZING]
+  instance: [...COMMON, "componentKey", "componentId", "componentSetKey", "componentSetId", "properties", "width", "height", ...SIZING]
 };
-var BASE_DEFAULTS = { x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED" };
+var BASE_DEFAULTS = { visible: true, x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED" };
 var PAINT_DEFAULTS = { fillColor: NO_PAINT, strokeColor: NO_PAINT, strokeWeight: 1, effects: [] };
 var SPEC_DEFAULTS = {
   frame: {
     ...BASE_DEFAULTS,
     ...PAINT_DEFAULTS,
+    fillColor: "#FFFFFF",
     width: 100,
     height: 100,
     strokeAlign: "INSIDE",
@@ -23398,13 +23400,10 @@ var SPEC_DEFAULTS = {
     counterAxisSpacing: 0,
     itemReverseZIndex: true
   },
-  rectangle: { ...BASE_DEFAULTS, ...PAINT_DEFAULTS, width: 100, height: 100, strokeAlign: "INSIDE", cornerRadius: 0 },
+  rectangle: { ...BASE_DEFAULTS, ...PAINT_DEFAULTS, fillColor: "#D9D9D9", width: 100, height: 100, strokeAlign: "INSIDE", cornerRadius: 0 },
   vector: { ...BASE_DEFAULTS, ...PAINT_DEFAULTS, strokeAlign: "CENTER", strokeCap: "NONE" },
   text: {
-    x: 0,
-    y: 0,
-    opacity: 1,
-    layoutPositioning: "AUTO",
+    ...BASE_DEFAULTS,
     effects: [],
     fontFamily: "Inter",
     fontStyle: "Regular",
@@ -23416,9 +23415,29 @@ var SPEC_DEFAULTS = {
   },
   instance: { ...BASE_DEFAULTS, properties: {} }
 };
-var ALWAYS_EMITTED = new Set(["name", "text", "textAutoResize", "pathData", "componentKey", "componentId"]);
+var NEVER_DROPPED = new Set([
+  "name",
+  "text",
+  "textAutoResize",
+  "pathData",
+  "componentKey",
+  "componentId",
+  "componentSetKey",
+  "componentSetId",
+  "x",
+  "y",
+  "width",
+  "height",
+  "paddingTop",
+  "paddingRight",
+  "paddingBottom",
+  "paddingLeft",
+  "itemSpacing",
+  "counterAxisSpacing",
+  "itemReverseZIndex"
+]);
 var COLOR_KEYS = new Set(["fillColor", "strokeColor", "fontColor"]);
-var BOOLEAN_KEYS = new Set(["clipsContent", "itemReverseZIndex"]);
+var BOOLEAN_KEYS = new Set(["visible", "clipsContent", "itemReverseZIndex"]);
 var NUMBER_KEYS = new Set([
   "x",
   "y",
@@ -23442,9 +23461,13 @@ var KEY_ORDER = [
   "name",
   "nodeType",
   "truncated",
+  "reason",
   "componentKey",
   "componentId",
+  "componentSetKey",
+  "componentSetId",
   "text",
+  "visible",
   "x",
   "y",
   "width",
@@ -23472,11 +23495,22 @@ var KEY_ORDER = [
   "textAlignHorizontal",
   "textAutoResize",
   "pathData",
+  "pathHash",
   "properties"
 ];
 function round2(n) {
   const r = Math.round(n * 100) / 100;
   return Object.is(r, -0) ? 0 : r;
+}
+function orderKeys(props) {
+  const out = {};
+  for (const key of KEY_ORDER)
+    if (props[key] !== undefined)
+      out[key] = props[key];
+  for (const key of Object.keys(props).sort())
+    if (!(key in out) && props[key] !== undefined)
+      out[key] = props[key];
+  return out;
 }
 function stableStringify(value) {
   if (typeof value === "number")
@@ -23505,6 +23539,12 @@ function hashString(text2) {
 function hashProps(props) {
   return hashString(stableStringify(props));
 }
+function lockProps(props) {
+  if (typeof props.pathData !== "string")
+    return props;
+  const { pathData, ...rest } = props;
+  return orderKeys({ ...rest, pathHash: hashString(pathData) });
+}
 function lockNodesFromTree(tree, rootParentId) {
   const nodes = {};
   const visit = (node, parentId) => {
@@ -23514,7 +23554,8 @@ function lockNodesFromTree(tree, rootParentId) {
     if (nodes[id])
       throw new Error(`Duplicate node id in Spec: ${id}`);
     const kids = Array.isArray(children) ? children : [];
-    nodes[id] = { props, propsHash: hashProps(props), parentId, children: kids.map((child) => child.id) };
+    const stored = lockProps(props);
+    nodes[id] = { props: stored, propsHash: hashProps(stored), parentId, children: kids.map((child) => child.id) };
     for (const child of kids)
       visit(child, id);
   };
@@ -23654,12 +23695,34 @@ function refusal(spec, lock, specPath) {
 function fileStamp(date2) {
   return date2.toISOString().replace(/[:.]/g, "-");
 }
+var pathLocks = new Map;
+async function withPathLock(key, run) {
+  const previous = pathLocks.get(key) ?? Promise.resolve();
+  let release;
+  const held = new Promise((resolve3) => {
+    release = resolve3;
+  });
+  const tail = previous.then(() => held);
+  pathLocks.set(key, tail);
+  await previous;
+  try {
+    return await run();
+  } finally {
+    release();
+    if (pathLocks.get(key) === tail)
+      pathLocks.delete(key);
+  }
+}
 async function pullSpec(args2, send, options = {}) {
   const env = options.env ?? process.env;
-  const { nodeId, path: path4, maxNodes, maxDepth, replaceEdited = false } = args2;
+  const { nodeId, path: path4 } = args2;
   if (nodeId.includes(";"))
     throw new Error(`Cannot pull ${nodeId}: it is inside an instance. Instances are exported as leaves; pull a node outside the instance.`);
   const paths = await resolveSpecPaths(path4, specBaseDir(env, options.cwd));
+  return withPathLock(paths.specPath, () => pullLocked(args2, paths, send, options));
+}
+async function pullLocked(args2, paths, send, options) {
+  const { nodeId, maxNodes, maxDepth, replaceEdited = false } = args2;
   const existing = await readExistingPair(paths);
   if (!replaceEdited) {
     const reason = refusal(existing.spec, existing.lock, paths.specPath);
@@ -23667,7 +23730,8 @@ async function pullSpec(args2, send, options = {}) {
       throw new Error(reason);
   }
   const previous = existing.spec && existing.spec.rootId === nodeId ? existing.spec : null;
-  const expect = previous ? { fileKey: previous.fileKey, fileName: previous.fileName, pageId: previous.pageId } : {};
+  const keyOnly = !!(previous && replaceEdited && previous.fileKey);
+  const expect = !previous ? {} : keyOnly ? { fileKey: previous.fileKey } : { fileKey: previous.fileKey, fileName: previous.fileName, pageId: previous.pageId };
   const exported = await send("export_spec", { nodeId, expect, maxNodes, maxDepth }, EXPORT_TIMEOUT_MS);
   if (!exported || typeof exported !== "object" || !exported.tree || typeof exported.rootId !== "string" || typeof exported.pageId !== "string") {
     throw new Error("The Figma plugin returned no Spec tree. Rebuild and re-run the plugin (bun run build) so it knows export_spec.");
@@ -23676,6 +23740,9 @@ async function pullSpec(args2, send, options = {}) {
   const fileKey = exported.fileKey ?? userKey ?? null;
   if (previous && previous.fileKey && fileKey && previous.fileKey !== fileKey) {
     throw new Error(`Wrong file: ${paths.specPath} is for file key ${previous.fileKey}, but the connected file's key is ${fileKey}.`);
+  }
+  if (keyOnly && !fileKey) {
+    throw new Error(`Cannot confirm the connected file is the one ${paths.specPath} was pulled from (file key ${previous.fileKey}): it has no file key. Rejoin the channel with the file key, or pull to a new path.`);
   }
   const spec = {
     l2fSpec: SPEC_VERSION,
@@ -23720,12 +23787,12 @@ async function pullSpec(args2, send, options = {}) {
   if (backups.length)
     result.backups = backups;
   if (result.truncated) {
-    result.note = "The node budget cut some subtrees off. Each is an OpaqueNode with truncated: true and nothing inside it can be edited; pull again with a larger maxNodes or maxDepth to edit them.";
+    result.note = "A budget (maxNodes, maxDepth or the 8 MB Spec size) stopped the read. Each node not read is an OpaqueNode with truncated: true and a reason, in its parent's children; it cannot be edited. Pull a smaller subtree, or again with a larger maxNodes or maxDepth, to edit them.";
   }
   return result;
 }
 function registerTools27(server, sendCommandToFigma2, options = {}) {
-  server.tool("pull_spec", "Write a Figma subtree to a Spec file on disk (JSON, name ending .l2f.json) so a design can be edited in place by editing the file, plus a SpecLock beside it (<name>.l2f.lock.json, never edit it) recording what Figma held at the pull. The Spec uses create_node_tree's node format (text content is `text`, colours are hex or $var:Collection/Name) and every node carries its Figma `id`; a node without an id is one to create. Values equal to create_node_tree's defaults, and values Figma derives from layout (x/y inside auto-layout, width/height on HUG or FILL axes, text height), are left out. Nodes the format cannot express (groups, ellipses, lines, boolean operations, sections, components, rotated nodes, grid frames) are OpaqueNodes {type: \"$opaque\", id, name, nodeType} with no children; an instance is a leaf with componentKey (or componentId for a local component) and flattened properties. A subtree the node budget cut off is an OpaqueNode with truncated: true. Returns only paths and counts, never the tree: read the file. Refuses to overwrite a Spec with unapplied edits, a pair whose apply did not finish, or a file that is not a Spec; replaceEdited: true renames the old pair to .bak first. Re-pulling the same root checks it is the same file (by file key when known, else by file name: a copy renamed to the original's name is not detected) and page. Paths: relative to L2F_SPEC_DIR (or the server's working directory); absolute paths must be inside it; symlinked Spec files are refused.", {
+  server.tool("pull_spec", 'Write a Figma subtree to a Spec file on disk (JSON, name ending .l2f.json) so a design can be edited in place by editing the file, plus a SpecLock beside it (<name>.l2f.lock.json, never edit it) recording what Figma held at the pull. The Spec uses create_node_tree\'s node format (text content is `text`, colours are hex or $var:Collection/Name) and every node carries its Figma `id`; a node without an id is one to create. An absent key means its default (what create_node_tree leaves); values Figma derives from layout (x/y inside auto-layout, width/height on HUG or FILL axes, text height unless the box is fixed) are left out, while x/y outside auto-layout, FIXED width/height and auto-layout padding/spacing are always written. Nodes the format cannot express (groups, ellipses, lines, boolean operations, sections, components, rotated nodes, grid frames, text with mixed styles) are OpaqueNodes {type: "$opaque", id, name, nodeType, reason} with no children; an instance is a leaf with componentSetKey/componentSetId for a variant (properties pick the variant), else componentKey/componentId, and flattened properties. The walk is breadth-first; nodes a budget (maxNodes, maxDepth, 8 MB) left unread are OpaqueNodes with truncated: true in their parent\'s children. Returns only paths and counts, never the tree: read the file. Refuses to overwrite a Spec with unapplied edits, a pair whose apply did not finish, or a file that is not a Spec; replaceEdited: true renames the old pair to .bak first. Re-pulling the same root checks it is the same file (by file key when known, else by file name: a copy renamed to the original\'s name is not detected) and page; with replaceEdited and a known file key only the key is checked. Paths: relative to L2F_SPEC_DIR (or the server\'s working directory); absolute paths must be inside it; symlinked Spec files are refused.', {
     nodeId: z2.string().min(1).describe("Root of the subtree: a frame, text, rectangle, vector or instance"),
     path: z2.string().min(1).describe("Spec file path ending in .l2f.json; relative to L2F_SPEC_DIR or the server's working directory. The directory must exist"),
     maxNodes: z2.number().int().min(1).max(1e4).optional().describe("Node budget including the root (default 2000)"),

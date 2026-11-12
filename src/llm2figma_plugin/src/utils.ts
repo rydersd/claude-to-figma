@@ -782,6 +782,20 @@ export function applyLayoutPositioning(node: any, spec: any) {
   }
 }
 
+// Set layoutSizingHorizontal/Vertical from a spec on a node already parented
+// (FILL needs an auto-layout parent, HUG an auto-layout frame or text). A setter
+// that throws leaves that axis as it was.
+export function applyLayoutSizing(node: any, spec: any) {
+  for (const key of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
+    if (spec[key] === undefined || !(key in node) || node[key] === spec[key]) continue;
+    try {
+      node[key] = spec[key];
+    } catch (e) {
+      console.error("Error setting " + key + ":", e);
+    }
+  }
+}
+
 // Helper: load all fonts used in a text node (handles mixed fonts)
 export async function loadAllFonts(textNode: any) {
   if (textNode.fontName === figma.mixed) {

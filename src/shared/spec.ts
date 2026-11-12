@@ -17,15 +17,17 @@ export const SPEC_LOCK_VERSION = 1;
 export type SpecType = "frame" | "text" | "rectangle" | "vector" | "instance";
 export const SPEC_TYPES: readonly SpecType[] = ["frame", "text", "rectangle", "vector", "instance"];
 
-// A node the format cannot express: {type: "$opaque", id, name, nodeType}, plus
-// truncated: true when the node budget cut its children off. Never edited or
-// recreated; its subtree is absent from the Spec.
+// A node the format cannot express: {type: "$opaque", id, name, nodeType, reason}.
+// Never edited or recreated; its subtree is absent from the Spec. A node the
+// export did not read (node, depth or byte budget) is an OpaqueNode with
+// truncated: true in its parent's children, so the parent's child list is
+// always complete and nothing reads as removed.
 export const OPAQUE_TYPE = "$opaque";
 
 // A colour with no paint: applyColorPaint writes alpha 0 as an empty paint list.
 export const NO_PAINT = "#00000000";
 
-const COMMON = ["name", "x", "y", "opacity", "layoutPositioning"];
+const COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning"];
 const SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
 const PAINTED = ["fillColor", "strokeColor", "strokeWeight", "strokeAlign", "effects"];
 // Frame properties that only mean something while the frame has auto-layout.
@@ -34,46 +36,58 @@ const AUTO_LAYOUT = [
   "primaryAxisAlignItems", "counterAxisAlignItems", "itemSpacing", "counterAxisSpacing", "itemReverseZIndex",
 ];
 
-// The properties each editable type carries in a Spec: what updateNodeProperties
-// can write for that type. Anything else is dropped by normalizeNode.
+// The writable vocabulary: per node type, the keys the export may emit. Every
+// key here is written by both createNode and updateNodeProperties for that
+// type (tests/spec-sync.test.ts, "writable vocabulary parity"); FILL sizing on
+// a frame is written by applyDeferredFill(node, spec, only, {checkParent: true}).
+// Anything else is dropped by normalizeNode.
 export const SPEC_VOCABULARY: Record<SpecType, readonly string[]> = {
   frame: [...COMMON, "width", "height", ...PAINTED, "cornerRadius", "clipsContent", "layoutMode", ...AUTO_LAYOUT, ...SIZING],
   rectangle: [...COMMON, "width", "height", ...PAINTED, "cornerRadius", ...SIZING],
   vector: [...COMMON, "width", "height", ...PAINTED, "strokeCap", "pathData", ...SIZING],
   text: [...COMMON, "text", "fontFamily", "fontStyle", "fontSize", "fontColor", "lineHeight", "letterSpacing",
-    "textCase", "textAlignHorizontal", "textAutoResize", "width", "effects", ...SIZING],
-  instance: [...COMMON, "componentKey", "componentId", "properties", ...SIZING],
+    "textCase", "textAlignHorizontal", "textAutoResize", "width", "height", "effects", ...SIZING],
+  instance: [...COMMON, "componentKey", "componentId", "componentSetKey", "componentSetId", "properties", "width", "height", ...SIZING],
 };
 
-const BASE_DEFAULTS = { x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED" };
+const BASE_DEFAULTS = { visible: true, x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED" };
 const PAINT_DEFAULTS = { fillColor: NO_PAINT, strokeColor: NO_PAINT, strokeWeight: 1, effects: [] };
 
-// What create_node_tree applies when a property is absent (creation.ts,
-// vectors.ts, components.ts; padding 10 and itemReverseZIndex true come from
+// What a property is when it is absent from a Spec: what create_node_tree ends
+// up with when the property is not passed (creation.ts, vectors.ts,
+// components.ts, plus Figma's own creation paints: a new frame is white, a new
+// rectangle #D9D9D9; padding 10 and itemReverseZIndex true come from
 // createFrame for auto-layout frames). A value equal to its default is left out
-// of a Spec. Paints default to "no paint": create leaves Figma's own creation
-// paint in place, which differs by node type, so a create from a Spec should
-// pass these defaults explicitly rather than rely on Figma's.
+// of a Spec, except the keys in NEVER_DROPPED.
 export const SPEC_DEFAULTS: Record<SpecType, Readonly<Record<string, unknown>>> = {
   frame: {
-    ...BASE_DEFAULTS, ...PAINT_DEFAULTS, width: 100, height: 100, strokeAlign: "INSIDE", cornerRadius: 0, clipsContent: true,
-    layoutMode: "NONE", layoutWrap: "NO_WRAP", paddingTop: 10, paddingRight: 10, paddingBottom: 10, paddingLeft: 10,
+    ...BASE_DEFAULTS, ...PAINT_DEFAULTS, fillColor: "#FFFFFF", width: 100, height: 100, strokeAlign: "INSIDE", cornerRadius: 0,
+    clipsContent: true, layoutMode: "NONE", layoutWrap: "NO_WRAP", paddingTop: 10, paddingRight: 10, paddingBottom: 10, paddingLeft: 10,
     primaryAxisAlignItems: "MIN", counterAxisAlignItems: "MIN", itemSpacing: 0, counterAxisSpacing: 0, itemReverseZIndex: true,
   },
-  rectangle: { ...BASE_DEFAULTS, ...PAINT_DEFAULTS, width: 100, height: 100, strokeAlign: "INSIDE", cornerRadius: 0 },
+  rectangle: { ...BASE_DEFAULTS, ...PAINT_DEFAULTS, fillColor: "#D9D9D9", width: 100, height: 100, strokeAlign: "INSIDE", cornerRadius: 0 },
   vector: { ...BASE_DEFAULTS, ...PAINT_DEFAULTS, strokeAlign: "CENTER", strokeCap: "NONE" },
   text: {
-    x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", effects: [], fontFamily: "Inter", fontStyle: "Regular", fontSize: 14,
+    ...BASE_DEFAULTS, effects: [], fontFamily: "Inter", fontStyle: "Regular", fontSize: 14,
     fontColor: "#000000", letterSpacing: 0, textCase: "ORIGINAL", textAlignHorizontal: "LEFT",
   },
   instance: { ...BASE_DEFAULTS, properties: {} },
 };
 
-// Kept even when equal to a default: they identify the node or decide others.
-const ALWAYS_EMITTED = new Set(["name", "text", "textAutoResize", "pathData", "componentKey", "componentId"]);
+// Emitted whenever present, even when equal to a default. Identity keys, and
+// the values Figma derives differently from create (rule D in docs/Spec-Sync.md):
+// x/y wherever the node is not placed by an auto-layout parent, width/height on
+// a FIXED axis, and padding, spacing and itemReverseZIndex under auto-layout
+// (turning auto-layout on in Figma keeps padding 0, create makes it 10). What
+// stays absent after the derived values are removed is then always the default.
+const NEVER_DROPPED = new Set([
+  "name", "text", "textAutoResize", "pathData", "componentKey", "componentId", "componentSetKey", "componentSetId",
+  "x", "y", "width", "height", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "itemSpacing", "counterAxisSpacing",
+  "itemReverseZIndex",
+]);
 const DEFAULT_NAMES: Partial<Record<SpecType, string>> = { frame: "Frame", rectangle: "Rectangle", vector: "Vector" };
 const COLOR_KEYS = new Set(["fillColor", "strokeColor", "fontColor"]);
-const BOOLEAN_KEYS = new Set(["clipsContent", "itemReverseZIndex"]);
+const BOOLEAN_KEYS = new Set(["visible", "clipsContent", "itemReverseZIndex"]);
 const NUMBER_KEYS = new Set([
   "x", "y", "width", "height", "opacity", "strokeWeight", "cornerRadius", "paddingTop", "paddingRight", "paddingBottom",
   "paddingLeft", "itemSpacing", "counterAxisSpacing", "fontSize", "lineHeight", "letterSpacing",
@@ -81,10 +95,11 @@ const NUMBER_KEYS = new Set([
 
 // Order of keys in a written Spec node, so diffs of the file stay readable.
 const KEY_ORDER = [
-  "type", "name", "nodeType", "truncated", "componentKey", "componentId", "text", "x", "y", "width", "height",
+  "type", "name", "nodeType", "truncated", "reason", "componentKey", "componentId", "componentSetKey", "componentSetId", "text",
+  "visible", "x", "y", "width", "height",
   "layoutPositioning", ...SIZING, "layoutMode", ...AUTO_LAYOUT, "clipsContent", "fillColor", "strokeColor", "strokeWeight",
   "strokeAlign", "strokeCap", "cornerRadius", "opacity", "effects", "fontFamily", "fontStyle", "fontSize", "fontColor",
-  "lineHeight", "letterSpacing", "textCase", "textAlignHorizontal", "textAutoResize", "pathData", "properties",
+  "lineHeight", "letterSpacing", "textCase", "textAlignHorizontal", "textAutoResize", "pathData", "pathHash", "properties",
 ];
 
 // Shared with the plugin's create path (utils.ts re-exports it), so a Spec's
@@ -122,10 +137,26 @@ export function colorToHex(color: { r: number; g: number; b: number; a?: number 
   return hexFromBytes(byte(color.r), byte(color.g), byte(color.b), byte(opacity));
 }
 
+// A variable-bound paint below full opacity: {"$var": "Collection/Name", opacity}.
+// At opacity 1 the plain "$var:Collection/Name" string is the canonical form.
+export interface VarPaint { $var: string; opacity: number }
+
+export function isVarPaint(value: unknown): value is VarPaint {
+  return !!value && typeof value === "object" && typeof (value as any).$var === "string";
+}
+
 // Any colour form create_node_tree accepts, as canonical hex (#RRGGBB, or
 // #RRGGBBAA below full alpha, or NO_PAINT at alpha 0). `$var:` references stay
-// references. Strings that are not hex (a gradient) are returned unchanged.
-export function canonicalColor(value: unknown): string | undefined {
+// references; {"$var", opacity} stays an object below opacity 1 and becomes
+// "$var:Name" at 1. Strings that are not hex (a gradient) are returned unchanged.
+export function canonicalColor(value: unknown): string | VarPaint | undefined {
+  if (isVarPaint(value)) {
+    const name = value.$var.startsWith("$var:") ? value.$var.slice(5) : value.$var;
+    const raw = value.opacity === undefined ? 1 : Number(value.opacity);
+    if (!name || !isFinite(raw)) return undefined;
+    const opacity = round2(Math.min(1, Math.max(0, raw)));
+    return opacity >= 1 ? `$var:${name}` : { $var: name, opacity };
+  }
   if (typeof value === "string") {
     const s = value.trim();
     const m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s);
@@ -164,7 +195,8 @@ function canonicalEffects(list: unknown): unknown[] | undefined {
   return out;
 }
 
-function canonicalValue(key: string, value: unknown): unknown {
+// One property's value in canonical form (undefined when it cannot be written).
+export function canonicalValue(key: string, value: unknown): unknown {
   if (COLOR_KEYS.has(key)) return canonicalColor(value);
   if (key === "effects") return canonicalEffects(value);
   if (NUMBER_KEYS.has(key)) {
@@ -193,7 +225,10 @@ function orderKeys(props: Record<string, unknown>): Record<string, unknown> {
 // parent's layout, which decides whether x and y are derived.
 export function normalizeNode(node: Record<string, any>, parent: ParentLayout = {}): Record<string, unknown> {
   if (node.type === OPAQUE_TYPE) {
-    return orderKeys({ type: OPAQUE_TYPE, name: node.name, nodeType: node.nodeType, truncated: node.truncated === true ? true : undefined });
+    return orderKeys({
+      type: OPAQUE_TYPE, name: node.name, nodeType: node.nodeType, truncated: node.truncated === true ? true : undefined,
+      reason: typeof node.reason === "string" ? node.reason : undefined,
+    });
   }
   const type = node.type as SpecType;
   if (!SPEC_TYPES.includes(type)) throw new Error(`Unknown Spec node type: ${JSON.stringify(node.type)}`);
@@ -204,7 +239,9 @@ export function normalizeNode(node: Record<string, any>, parent: ParentLayout = 
     if (src.fontStyle === undefined && src.fontWeight !== undefined) src.fontStyle = fontWeightToStyle(Number(src.fontWeight));
     if (src.text === undefined) src.text = "Text";
     if (src.textAutoResize === undefined) src.textAutoResize = src.width !== undefined ? "HEIGHT" : "WIDTH_AND_HEIGHT";
-    if (src.name === undefined || src.name === "") src.name = src.text;
+    // No name default: a text node with autoRename is exported without one (it
+    // follows its characters), so an absent name means "named by its text".
+    if (src.name === "") delete src.name;
   } else if (src.name === undefined && DEFAULT_NAMES[type]) {
     src.name = DEFAULT_NAMES[type];
   }
@@ -219,7 +256,10 @@ export function normalizeNode(node: Record<string, any>, parent: ParentLayout = 
   // Values Figma derives from layout: comparing them would report untouched nodes.
   if (isAutoLayout(parent.layoutMode) && out.layoutPositioning !== "ABSOLUTE") { delete out.x; delete out.y; }
   if (type === "text") {
-    if (out.textAutoResize !== "HEIGHT") delete out.width;
+    // The box: width is set by HEIGHT, NONE and TRUNCATE; height only by NONE and TRUNCATE.
+    const fixedBox = out.textAutoResize === "NONE" || out.textAutoResize === "TRUNCATE";
+    if (out.textAutoResize !== "HEIGHT" && !fixedBox) delete out.width;
+    if (!fixedBox) delete out.height;
     // HUG and FIXED on text follow from textAutoResize; only FILL is its own choice.
     for (const key of SIZING) if (out[key] !== "FILL") delete out[key];
   }
@@ -234,7 +274,7 @@ export function normalizeNode(node: Record<string, any>, parent: ParentLayout = 
 
   const defaults = SPEC_DEFAULTS[type];
   for (const key of Object.keys(out)) {
-    if (key === "type" || ALWAYS_EMITTED.has(key) || !(key in defaults)) continue;
+    if (key === "type" || NEVER_DROPPED.has(key) || !(key in defaults)) continue;
     if (stableStringify(out[key]) === stableStringify(defaults[key])) delete out[key];
   }
   return orderKeys(out);
@@ -283,9 +323,20 @@ export function hashProps(props: Record<string, unknown>): string {
   return hashString(stableStringify(props));
 }
 
+// The form a node's canonical properties take in a SpecLock: the same, except a
+// vector's pathData is replaced by pathHash (hashString of the canonical
+// pathData), so a lock stays small. propsHash is hashProps(lockProps(props));
+// compare a live or Spec node against a lock entry through lockProps too.
+export function lockProps(props: Record<string, unknown>): Record<string, unknown> {
+  if (typeof props.pathData !== "string") return props;
+  const { pathData, ...rest } = props;
+  return orderKeys({ ...rest, pathHash: hashString(pathData) });
+}
+
 // One SpecLock entry: the node's canonical properties as Figma held them at the
-// last pull (the base of the three-way comparison), its hash, and its place.
-// Child order lives in `children`, never in propsHash, so a reorder is a move.
+// last pull (the base of the three-way comparison, in lockProps form), its
+// hash, and its place. Child order lives in `children`, never in propsHash, so
+// a reorder is a move.
 export interface SpecLockNode {
   props: Record<string, unknown>;
   propsHash: string;
@@ -303,7 +354,8 @@ export function lockNodesFromTree(tree: Record<string, any>, rootParentId: strin
     if (typeof id !== "string" || !id) throw new Error("Every node in a pulled Spec needs an id");
     if (nodes[id]) throw new Error(`Duplicate node id in Spec: ${id}`);
     const kids: Record<string, any>[] = Array.isArray(children) ? children : [];
-    nodes[id] = { props, propsHash: hashProps(props), parentId, children: kids.map(child => child.id) };
+    const stored = lockProps(props);
+    nodes[id] = { props: stored, propsHash: hashProps(stored), parentId, children: kids.map(child => child.id) };
     for (const child of kids) visit(child, id);
   };
   visit(tree, rootParentId);

@@ -10,9 +10,11 @@ Why the Spec and SpecLock look the way they do, and the traps found while buildi
 
 The SpecLock entry's `props` are byte-for-byte the Spec node minus `id` and `children` (`lockNodesFromTree`). That invariant is what makes a three-way diff possible: base, desired and live are all in the same form.
 
-## "No paint" is a default, Figma's creation paint is not
+## Absent means default, and the default is what create really leaves
 
-`create_node_tree` does not write a fill when `fillColor` is absent, so Figma's own creation paint stays (white on frames in the real editor, and it differs by node type; nothing in the test mocks). A Spec cannot depend on that, so `SPEC_DEFAULTS` says an absent paint means no paint (`#00000000`, which `applyColorPaint` writes as `[]`). Consequence for 11d: when it creates a node from a Spec it must pass `SPEC_DEFAULTS` for every absent property explicitly. Otherwise a new frame comes back white, the re-lock records `#FFFFFF`, and the next plan reads the Spec's missing `fillColor` as a deletion. `itemReverseZIndex` has the same issue, because `createFrame`'s default comes from the plugin's `firstOnTop` setting.
+`create_node_tree` does not write a fill when `fillColor` is absent, so Figma's own creation paint stays: white on a frame, `#D9D9D9` on a rectangle. `SPEC_DEFAULTS` records those, so a frame created from a Spec without `fillColor` exports without one. The test mocks start new nodes with those creation paints; a mock that starts every node with no paint hides the mismatch.
+
+Values Figma derives differently from create are never dropped as defaults (`NEVER_DROPPED` in `src/shared/spec.ts`): `x`/`y` outside auto-layout, `width`/`height` on FIXED axes, and padding, spacing and `itemReverseZIndex` under auto-layout (turning auto-layout on in Figma keeps padding 0 and `itemReverseZIndex` false; create makes them 10 and true). So a key absent from a pulled Spec always means its default, and a key the model deletes can be written back to that default.
 
 ## A variable reference must resolve back to the same variable
 
@@ -20,7 +22,11 @@ A bound paint is exported as `$var:Collection/Name` only when `getVariableByName
 
 ## Truncation must not look like deletion
 
-`walkTree` reports `truncatedParents`. A frame whose children were cut off becomes an OpaqueNode with `truncated: true`, and any of its children that were visited before the budget ran out are dropped. Its SpecLock entry has `children: []`, and nothing under it has a lock entry, so 11c cannot read the missing children as removals. A root whose own children are cut off is an error, not a one-node Spec.
+The export walks breadth-first. A node it does not read, because the node budget, the depth limit or the 8 MB byte budget ran out, becomes `{type: "$opaque", truncated: true, reason}` in its parent's `children`, in its place. Every child list is then complete, so 11c can never read an unread node as removed, and a budget never fails a pull. An earlier depth-first version turned the whole cut-off parent opaque and failed the pull when the cut fell under any root child but the last. The byte budget reserves room for the placeholders of children not read yet, so the tree, placeholders included, stays within 8 MB.
+
+## Concurrent pulls to one path
+
+Two pulls to one path could interleave between "read the existing pair" and "write the SpecLock", leaving a Spec from one pull and a SpecLock from the other. `pullSpec` holds a per-path in-process mutex for the whole pull.
 
 ## Test trap: the variable index is shared module state, and Bun reorders files
 

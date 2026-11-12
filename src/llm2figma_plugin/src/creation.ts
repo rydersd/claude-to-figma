@@ -1,7 +1,7 @@
 // Node creation functions for the Figma plugin.
 // Extracted from code.js — pure structural refactor.
 
-import { loadFontCached, appendOrInsertChild, hexToFigmaColor, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyImageFill } from './utils';
+import { loadFontCached, appendOrInsertChild, hexToFigmaColor, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyLayoutSizing, applyImageFill } from './utils';
 import { setCharacters } from './text';
 
 // --- place_image: New rectangle with an image fill, sized to the image by default ---
@@ -106,6 +106,7 @@ export async function createRectangle(params: any) {
 
   // ABSOLUTE positioning requires the node to be parented first
   applyLayoutPositioning(rect, params);
+  applyLayoutSizing(rect, params);
 
   return {
     id: rect.id,
@@ -339,10 +340,24 @@ export async function createText(params: any) {
     textNode.textAutoResize = "HEIGHT";
   }
 
+  // An explicit textAutoResize; NONE and TRUNCATE are a fixed box of width x height
+  const autoResize = params.textAutoResize;
+  if (autoResize === "NONE" || autoResize === "TRUNCATE") {
+    textNode.resize(width || textNode.width, params.height || textNode.height);
+    textNode.textAutoResize = autoResize;
+  } else if (autoResize !== undefined && textNode.textAutoResize !== autoResize) {
+    textNode.textAutoResize = autoResize;
+  }
+
+  if (params.effects && Array.isArray(params.effects)) {
+    textNode.effects = buildFigmaEffects(params.effects);
+  }
+
   await appendOrInsertChild(textNode, parentId, params.insertAt);
 
   // ABSOLUTE positioning requires the node to be parented first
   applyLayoutPositioning(textNode, params);
+  applyLayoutSizing(textNode, params);
 
   return {
     id: textNode.id,

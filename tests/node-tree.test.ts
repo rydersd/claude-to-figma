@@ -310,7 +310,9 @@ const branches: Record<string, { make: () => any; spec: any; expected: Record<st
   vector: {
     make: () => makeNode("VECTOR", { vectorNetwork: { vertices: [{ x: 0, y: 0 }], segments: [] } }),
     spec: { ...common, ...paints, width: 50, height: 60, pathData: "M0 0L1 1", strokeCap: "ROUND" },
-    expected: { width: ["resize"], height: ["resize"], ...paintWrites, pathData: ["vectorPaths"], strokeCap: ["vectorNetwork"] },
+    // With `only` (the spec path) the network is written through setVectorNetworkAsync:
+    // the vectorNetwork setter is not available with dynamic-page access.
+    expected: { width: ["resize"], height: ["resize"], ...paintWrites, pathData: ["vectorPaths"], strokeCap: ["setVectorNetworkAsync"] },
   },
   instance: {
     make: () => {
