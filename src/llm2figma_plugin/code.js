@@ -7820,7 +7820,6 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     "get_local_variables",
     "get_library_variables",
     "get_vector_network",
-    "screenshot_region",
     "scan_node_styles",
     "introspect_node",
     "design_query",
@@ -7829,14 +7828,16 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     "subscribe_events",
     "unsubscribe_events",
     "set_focus",
-    "set_selections",
-    "figma_eval"
+    "set_selections"
   ]);
   var COMMAND_EDITORS = {};
   function allowedEditors(command) {
     return COMMAND_EDITORS[command] || (READ_ONLY.has(command) ? ALL_EDITORS : EDIT_EDITORS);
   }
-  function assertEditorAllowed(command, editorType) {
+  function assertEditorAllowed(command, editorType, params) {
+    if (command === "design_query" && editorType === "dev" && params && params.update != null) {
+      throw new Error("design_query with update is not available in the dev editor");
+    }
     if (!allowedEditors(command).includes(editorType)) {
       throw new Error(`${command} is not available in the ${editorType} editor`);
     }
@@ -8076,7 +8077,7 @@ ${detail}`);
     });
   }
   async function handleCommand(command, params) {
-    assertEditorAllowed(command, figma.editorType);
+    assertEditorAllowed(command, figma.editorType, params);
     switch (command) {
       case "get_document_info":
         return await getDocumentInfo();

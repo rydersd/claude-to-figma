@@ -67,6 +67,14 @@ describe("editor-type gate", () => {
   });
   test("a read-only command is allowed in dev", () => {
     expect(() => assertEditorAllowed("get_node_info", "dev")).not.toThrow();
+  });
+
+  test("commands that can write are refused in Dev Mode even when they look like reads", () => {
+    expect(() => assertEditorAllowed("figma_eval", "dev", { code: "1" })).toThrow("not available in the dev editor");
+    expect(() => assertEditorAllowed("screenshot_region", "dev", {})).toThrow("not available in the dev editor");
+    expect(() => assertEditorAllowed("design_query", "dev", { select: { name: "T" }, update: { "T.fill": "#00ff00" } })).toThrow("not available in the dev editor");
+    expect(() => assertEditorAllowed("design_query", "dev", { select: { name: "T" } })).not.toThrow();
+    expect(() => assertEditorAllowed("design_query", "figma", { select: { name: "T" }, update: {} })).not.toThrow();
     expect(allowedEditors("get_document_info")).toContain("dev");
   });
   test("every read-only command named in the gate exists in the dispatcher", () => {
