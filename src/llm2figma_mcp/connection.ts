@@ -30,8 +30,36 @@ const serverUrl = serverArg ? serverArg.split('=')[1] : 'localhost';
 const isLocalRelay = serverUrl === 'localhost';
 const WS_URL = isLocalRelay ? 'ws://127.0.0.1' : `wss://${serverUrl}`;
 
-// Update the connectToFigma function
-export function connectToFigma(port: number = RELAY_PORT) {
+// How long a WebSocket upgrade may take before the attempt is abandoned. A
+// relay that accepts TCP but never answers the upgrade would otherwise leave
+// the socket CONNECTING forever, and every later connect would wait on it.
+export const HANDSHAKE_TIMEOUT_MS = 10000;
+
+// Abandon a socket that hasn't opened, so the next connect makes a new one.
+// Bun's built-in "ws" ignores handshakeTimeout and may not emit close for a
+// terminated CONNECTING socket, so `ws` is released here rather than in the
+// close handler.
+function abandonConnectingSocket(socket: WebSocket) {
+  if (ws === socket) ws = null;
+  try {
+    socket.terminate();
+  } catch (error) {
+    logger.debug(`Terminating a stalled socket failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// One pending reconnect at most, however many paths ask for it.
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleReconnect(port: number = RELAY_PORT, handshakeTimeoutMs: number = HANDSHAKE_TIMEOUT_MS) {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectToFigma(port, handshakeTimeoutMs);
+  }, 2000);
+}
+
+export function connectToFigma(port: number = RELAY_PORT, handshakeTimeoutMs: number = HANDSHAKE_TIMEOUT_MS) {
   // If already connected or connecting, do nothing: a second socket would
   // replace `ws` and the first one's close handler would then null it out.
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -40,15 +68,25 @@ export function connectToFigma(port: number = RELAY_PORT) {
 
   const wsUrl = isLocalRelay ? `${WS_URL}:${port}` : WS_URL;
   logger.info(`Connecting to Figma socket server at ${wsUrl}...`);
-  ws = new WebSocket(wsUrl);
+  const socket = new WebSocket(wsUrl, { handshakeTimeout: handshakeTimeoutMs });
+  ws = socket;
 
-  ws.on('open', () => {
+  const handshakeTimer = setTimeout(() => {
+    if (socket.readyState !== WebSocket.CONNECTING) return;
+    logger.warn(`The relay at ${wsUrl} did not complete the WebSocket handshake in ${handshakeTimeoutMs / 1000}s; retrying in 2 seconds`);
+    const current = ws === socket;
+    abandonConnectingSocket(socket);
+    if (current) scheduleReconnect(port, handshakeTimeoutMs);
+  }, handshakeTimeoutMs);
+
+  socket.on('open', () => {
+    clearTimeout(handshakeTimer);
     logger.info('Connected to Figma socket server');
     // Reset channel on new connection
     currentChannel = null;
   });
 
-  ws.on("message", (data: any) => {
+  socket.on("message", (data: any) => {
     try {
       // Define a more specific type with an index signature to allow any property access
       interface ProgressMessage {
@@ -155,11 +193,14 @@ export function connectToFigma(port: number = RELAY_PORT) {
     }
   });
 
-  ws.on('error', (error) => {
+  socket.on('error', (error) => {
     logger.error(`Socket error: ${error}`);
   });
 
-  ws.on('close', () => {
+  socket.on('close', () => {
+    clearTimeout(handshakeTimer);
+    // An abandoned socket closing late must not tear down its replacement.
+    if (ws !== socket) return;
     logger.info('Disconnected from Figma socket server');
     ws = null;
 
@@ -175,7 +216,7 @@ export function connectToFigma(port: number = RELAY_PORT) {
 
     // Attempt to reconnect
     logger.info('Attempting to reconnect in 2 seconds...');
-    setTimeout(() => connectToFigma(port), 2000);
+    scheduleReconnect(port, handshakeTimeoutMs);
   });
 }
 
@@ -208,6 +249,13 @@ async function ensureConnected(timeoutMs: number = 5000): Promise<void> {
     if (ws && ws.readyState === WebSocket.OPEN) return;
     connectToFigma();
     await new Promise((r) => setTimeout(r, 100));
+  }
+  // Don't leave a stuck CONNECTING socket behind: the next attempt would
+  // wait on it instead of dialling again. Abandoning it releases `ws`, so its
+  // close handler and handshake timer no longer retry; schedule that here.
+  if (ws && ws.readyState === WebSocket.CONNECTING) {
+    abandonConnectingSocket(ws);
+    scheduleReconnect();
   }
   throw new Error(`Couldn't connect to the relay on port ${RELAY_PORT}.`);
 }

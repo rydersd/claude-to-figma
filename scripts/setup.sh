@@ -71,10 +71,22 @@ if [ "$REGISTER_USER" -eq 1 ]; then
     echo "  Install Claude Code, then re-run: bun setup --user" >&2
     exit 1
   fi
-  # Replace any earlier user-scope entry so a moved repo or upgraded bun is picked up.
-  claude mcp remove --scope user LLM2Figma >/dev/null 2>&1 || true
-  if ! claude mcp add --scope user LLM2Figma -- "$BUN_PATH" "$SERVER_TS"; then
-    echo "✗ claude mcp add failed, so llm2figma is not registered for your user." >&2
+  # Build the new entry from any existing user-scope LLM2Figma or legacy
+  # ClaudeToFigma entry, keeping its env (library credentials) and connection
+  # flags such as --server=…; only the bun and server paths are replaced.
+  CLAUDE_JSON="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+  NEW_ENTRY="$("$BUN_PATH" "$SCRIPT_DIR/write-mcp-config.ts" --user-entry "$CLAUDE_JSON" "$BUN_PATH" "$SERVER_TS")"
+  PREVIOUS_ENTRY="$("$BUN_PATH" "$SCRIPT_DIR/write-mcp-config.ts" --user-get "$CLAUDE_JSON" LLM2Figma)"
+  if [ -n "$PREVIOUS_ENTRY" ]; then
+    claude mcp remove --scope user LLM2Figma >/dev/null 2>&1 || true
+  fi
+  if ! claude mcp add-json --scope user LLM2Figma "$NEW_ENTRY" ||
+     [ -z "$("$BUN_PATH" "$SCRIPT_DIR/write-mcp-config.ts" --user-get "$CLAUDE_JSON" LLM2Figma)" ]; then
+    if [ -n "$PREVIOUS_ENTRY" ]; then
+      claude mcp add-json --scope user LLM2Figma "$PREVIOUS_ENTRY" >/dev/null 2>&1 ||
+        echo "  Could not restore the previous LLM2Figma entry: $PREVIOUS_ENTRY" >&2
+    fi
+    echo "✗ claude mcp add-json failed, so llm2figma is not registered for your user." >&2
     echo "  Fix the error above, then re-run: bun setup --user" >&2
     exit 1
   fi
