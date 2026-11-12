@@ -870,7 +870,7 @@ describe("spec sync plan (PR 11c)", () => {
         return tools;
       };
       expect(names({})).toEqual([]);
-      expect(names({ L2F_SPEC_SYNC: "1" })).toEqual(["pull_spec", "plan_spec"]);
+      expect(names({ L2F_SPEC_SYNC: "1" })).toEqual(["pull_spec", "plan_spec", "apply_spec"]);
     });
   });
 

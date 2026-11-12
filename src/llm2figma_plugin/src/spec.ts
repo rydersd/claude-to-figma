@@ -11,7 +11,7 @@
 // `figma` is a global provided by the Figma plugin runtime.
 
 import { WALK_LIMITS } from "../../shared/walk";
-import { NO_PAINT, OPAQUE_TYPE, UNREAD_KEY, colorToHex, lockNodesFromTree, normalizeNode, round2, type ParentLayout, type SpecType } from "../../shared/spec";
+import { NO_PAINT, OPAQUE_TYPE, UNREAD_KEY, colorToHex, hashProps, lockNodesFromTree, lockProps, normalizeNode, round2, type ParentLayout, type SpecLockNode, type SpecType } from "../../shared/spec";
 import { getVariableByName, sendProgressUpdate } from "./utils";
 
 const SPEC_TYPE_OF: Record<string, SpecType> = {
@@ -473,5 +473,45 @@ export async function readSpecNodes(params: any) {
   return {
     fileKey: read.fileKey, fileName: read.fileName, pageId: read.pageId, rootId: read.rootId, rootParentId: read.rootParentId,
     rootParentLayoutMode: read.rootParentLayoutMode, truncated: read.truncated, nodeCount: Object.keys(nodes).length, nodes,
+  };
+}
+
+// The ids a SpecLock recorded as cut off by a budget, with their reason, as
+// sent by the server ({id: reason}).
+export function forcedReasons(truncated: unknown): Map<string, string> {
+  const forced = new Map<string, string>();
+  if (truncated && typeof truncated === "object") {
+    for (const [id, reason] of Object.entries(truncated)) if (typeof reason === "string") forced.set(id, reason);
+  }
+  return forced;
+}
+
+// One live node's SpecLock entry, read the way readSubtree reads it (same
+// parent layout, same placeholder for a node the SpecLock recorded as cut off),
+// so it hashes like the node's entry in read_spec_nodes. For apply_spec_ops'
+// staleness check: one node, not the whole subtree.
+export async function readLockEntry(node: any, cache: SpecReadCache, forced: ReadonlyMap<string, string>): Promise<SpecLockNode> {
+  const parent = node.parent;
+  const layout: ParentLayout = { layoutMode: parent && parent.type !== "PAGE" ? parent.layoutMode : undefined };
+  const recorded = forced.get(node.id);
+  let raw: Record<string, unknown>;
+  if (recorded !== undefined) raw = opaqueNode(node, recorded, true);
+  else {
+    const result = await readSpecNode(node, cache);
+    raw = "props" in result ? result.props : opaqueNode(node, result.opaque);
+  }
+  const props = lockProps(normalizeNode(raw, layout));
+  const children = props.type === "frame" && Array.isArray(node.children) ? node.children.map((child: any) => child.id as string) : [];
+  return { props, propsHash: hashProps(props), parentId: parent ? parent.id : null, children };
+}
+
+// The whole subtree as SpecLock entries (every node with its props), read by
+// the same walk as read_spec_nodes: apply_spec_ops' read-back.
+export async function readLiveLock(params: any, commandType: string) {
+  const { rootId, expect, truncated, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+  const read = await readSubtree({ nodeId: rootId, expect, maxNodes, maxDepth, maxBytes, commandId }, { commandType, forced: forcedReasons(truncated) });
+  return {
+    rootId: read.rootId, rootParentId: read.rootParentId, rootParentLayoutMode: read.rootParentLayoutMode,
+    truncated: read.truncated, nodes: lockNodesFromTree(read.tree, read.rootParentId),
   };
 }

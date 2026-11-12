@@ -2,7 +2,7 @@
 
 **Tags:** `reference` · `spec-sync` · `editing` · `flagged`
 
-Spec sync lets you edit an existing design in place instead of redrawing it. `pull_spec` writes a Figma subtree to a JSON file on disk, the **Spec**. You edit that file with ordinary file edits. Nodes keep their Figma ids, so hand tweaks and anything the file cannot express survive. `plan_spec` then shows, property by property, what applying the edits would change. Applying them back to Figma comes in a later release (see [What comes next](#what-comes-next)).
+Spec sync lets you edit an existing design in place instead of redrawing it. `pull_spec` writes a Figma subtree to a JSON file on disk, the **Spec**. You edit that file with ordinary file edits. Nodes keep their Figma ids, so hand tweaks and anything the file cannot express survive. `plan_spec` then shows, property by property, what applying the edits would change, and `apply_spec` carries that Plan out in Figma (see [`apply_spec`](#apply_spec)).
 
 Off unless the server is started with `L2F_SPEC_SYNC=1` (or `L2F_ALL=1`). Set the flag in the shell that starts Claude Code; both the `.mcp.json` install and the Claude Code plugin install pass it through.
 
@@ -195,17 +195,59 @@ The full Plan stays on the server: up to 8 Plans, each for 30 minutes and at mos
 
 To take drift into the Spec, pull again (`replaceEdited: true` if the Spec has unapplied edits; it backs them up as `.bak` files).
 
-## What comes next
+## `apply_spec`
 
-### `apply_spec` (PR 11d)
+`apply_spec {planId, allowRemovals?, onConflict?}`
 
-Not available yet. It will carry out a plan by node id, read the result back, and update the Spec and SpecLock.
+Carries out one Plan by node id, reads the whole subtree back, and updates the Spec and SpecLock. The loop is: `pull_spec`, edit the Spec, `plan_spec`, `apply_spec`.
 
-Rules for its caller, from the plan's contract:
+- `planId`: from `plan_spec`. There is no "latest plan".
+- `allowRemovals` (default false): without it, removals are listed under `skipped` and nothing moves.
+- `onConflict` (default `"skip"`): conflicts are left as Figma has them and listed under `skipped`. `"spec"` writes the Spec's value for **property** conflicts (structure conflicts are always skipped). A key in a node's `$unread` is never written either way.
 
-- An update that sets `layoutSizingHorizontal` or `layoutSizingVertical` to FILL on a frame must also call `applyDeferredFill(node, spec, only, {checkParent: true})`: `updateNodeProperties` defers FILL on frames, and only that call writes it (the vocabulary parity test relies on it).
-- Before writing, recompute each touched node's `propsHash`, parent and children in the same plugin run and refuse on any difference from `expectedHashes`.
-- Normalise any Spec input with `normalizeNode(node, parent, {strict: true})` (or `normalizeSpecTree(tree, parent, {strict: true})`), never the default mode: the default mode silently drops keys and values it cannot write, which would read as "deleted" and reset them to their defaults. The default mode is for reads from Figma only.
-- Never write a key listed in a node's `$unread`; the Plan never lists one, and apply must not derive one either.
-- An update's `properties` is a subset: pass it to `setProperties` as is, never merged with the Spec's full `properties`.
-- Write the new SpecLock from the plugin's re-read after the run, never from the Spec. Values Figma derives differ from what the Spec said (a HUG width that becomes FIXED records the width Figma computed; a `$unread` set can change), and a SpecLock built from the Spec would report them as drift, or hide real drift, on the next plan.
+### Before anything is written
+
+The server refuses, writing nothing, when the Spec or the SpecLock changed since the plan (the Spec's hash and the SpecLock's hash are both recorded in the Plan), when the SpecLock already records an unfinished apply, or when the server is on a different relay channel than the plan was made on. It then writes `pendingApply: <planId>` to the SpecLock and sends `apply_spec_ops` to the plugin (120 s timeout, progress every 50 operations).
+
+The plugin checks the file and page (as for [Refusals](#refusals)), then, in the same run as the writes and before any of them, re-reads every node the Plan touches and compares its `propsHash`, parent and child order with what `plan_spec` saw. Any difference refuses the whole run with nothing written; the server then clears `pendingApply` and says to plan again.
+
+### What the plugin does
+
+`figma.commitUndo()` before the first write and after the last, so one undo in Figma reverts the apply (and anything done by hand in the file while it ran). The tool never calls `triggerUndo`.
+
+1. **Creates**, each a new subtree under an existing parent, through `createNode` with `onBindFailure: "keep"`: a node whose colour variable cannot be bound is kept, renamed `<name> (failed)`, and reported under `failed`. Every key absent from a created node is written as its `SPEC_DEFAULTS` value, so the new node is what "absent means default" says. A new text node without a `name` gets Figma's auto-rename, so it stays named by its text.
+2. **Updates**, through `resolveAndBind` and `updateNodeProperties` with `only` set to the listed keys, then `applyDeferredFill(node, spec, only, {checkParent: true})`. No other setter fires: a text edit leaves the font alone, a fill edit leaves a bound stroke alone.
+3. **Moves**, and the place of each created node, per parent in the Spec's child order: only the nodes that moved are inserted, each right after its previous Spec sibling (or before the first one, when it has none), so nodes added by hand keep their places. Each insert is read back. A reparent into a frame without auto-layout (or of an `ABSOLUTE` node) keeps the node's absolute position: its `relativeTransform` is set from its old `absoluteTransform` and the new parent's, then asserted. `x`/`y` the Spec sets on a reparented node are written after the move, relative to the new parent.
+4. **Removals**, last, and only with `allowRemovals: true`: the topmost node is moved into a page-level frame `l2f/superseded` at the same absolute position and renamed `<name> (superseded YYYY-MM-DD)`. Its descendants travel with it. The holder is created when missing (no auto-layout, no clipping, no fill, hidden, so superseded nodes leave the view; show it in the layers panel to see them) and its id is kept in the SpecLock as `supersededFrameId`. Nothing on this path calls `remove()`.
+
+One failed operation is recorded and the rest continue. Then the plugin re-reads the **whole** subtree, because a text edit reflows HUG ancestors and siblings.
+
+### After the run
+
+The server re-reads the Spec. If it was edited while the apply ran, it stops: Figma holds the applied Plan, the Spec and SpecLock are left alone, and `pendingApply` stays set. Otherwise it writes each created node's `id` into the Spec at its index path (the Spec is rewritten only when something was created), then rewrites the SpecLock from the read-back, never from the Spec, and clears `pendingApply`.
+
+Per node and property, the read-back becomes the new base where it agrees with the Spec. Where they disagree the old base is kept, so the next plan shows the same thing again: an edit that was skipped, partial or failed reappears, drift stays drift (it is never turned into an update that reverts it), and a conflict stays a conflict. A node the Spec dropped but that is still in Figma (a skipped removal) keeps its entry, so the removal is proposed again; a node added by hand stays out of the SpecLock, so it is still reported as added. A value Figma changed as a side effect of the apply (a child a resized frame's constraints moved) is reported as drift on the next plan.
+
+If the command times out or the plugin reloads, `pendingApply` stays set: `plan_spec` and `apply_spec` refuse, and `pull_spec` refuses unless `replaceEdited: true`, until a pull.
+
+### Result
+
+```jsonc
+// apply_spec {"planId": "plan-6f1c…"}
+{"planId": "plan-6f1c…", "path": "/work/specs/checkout.l2f.json",
+ "applied": {"created": [{"path": [2], "id": "12:90"}], "updated": [{"id": "12:35", "keys": ["text"]}],
+             "moved": ["12:36"], "removed": []},
+ "counts": {"created": 1, "updated": 1, "moved": 1, "removed": 0, "skipped": 0, "partial": 0, "failed": 0},
+ "skipped": [], "partial": [], "failed": [],
+ "undo": "One undo in Figma (Cmd/Ctrl+Z) reverts this apply, ...", "truncated": false}
+```
+
+- `skipped`: removals without `allowRemovals`, and conflicts (`{id, name, kind, keys?, reason}`).
+- `partial`: `{id, keys}`, touched properties whose read-back is not the value asked for (a resize Figma constrained, a font it substituted). Every property of a created node counts as touched.
+- `failed`: `{op, id or path, keys?, error}`; a failed create leaves its Spec node without an id, so the next plan creates it again.
+
+Each list holds at most 100 entries (`truncated` when one was cut); `counts` are complete.
+
+### Checking an apply
+
+With `L2F_VERIFY=1` as well, `snapshot_positions` on the root before `apply_spec` and `diff_positions` after show that node ids survived (nothing `missing`), which nodes moved, and the reflow the edits caused.

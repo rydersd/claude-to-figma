@@ -17,6 +17,7 @@ import { formatError } from './utils';
 import { assertEditorAllowed } from './editor-gate';
 import { assertContained, snapshotPositions, diffPositions } from './verify';
 import { exportSpec, readSpecNodes } from './spec';
+import { applySpecOps } from './spec-apply';
 import { startEventStreaming, stopEventStreaming, setPluginOperationGuard } from './events';
 
 // Plugin state
@@ -181,6 +182,8 @@ async function handleCommand(command: string, params: any) {
       return await exportSpec(params);
     case "read_spec_nodes":
       return await readSpecNodes(params);
+    case "apply_spec_ops":
+      return await applySpecOps(params);
     case "delete_node":
       return await deleteNode(params);
     case "delete_multiple_nodes":
