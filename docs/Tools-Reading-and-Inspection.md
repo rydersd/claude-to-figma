@@ -6,7 +6,7 @@ Tools for understanding what's on the canvas before changing it: document and se
 
 ## Document & selection
 
-- `get_document_info` — current page name, ID, and all top-level children (id, name, type)
+- `get_document_info` — current page name, ID, `editorType` (`figma`, `figjam`, `slides`, `buzz` or `dev`), and all top-level children (id, name, type)
 - `get_selection` — detailed node data for the current Figma selection
 - `read_my_design` — same as `get_selection` with no parameters; quick-read shorthand
 - `get_node_info` — full details (type, size, position, styles, children) for one node

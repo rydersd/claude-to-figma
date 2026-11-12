@@ -21,7 +21,7 @@ bun run start            # Run built MCP server
 bun setup                # Full setup (install + write .mcp.json)
 ```
 
-Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts tests/efficiency.test.ts tests/launcher.test.ts` runs unit and plugin-contract tests without Figma. `tests/library-live.test.ts` requires REST credentials and skips when unconfigured. `tests/sync-mode.test.ts` and `tests/prototyping.test.ts` require a live Figma plugin on a WebSocket channel (`CHANNEL=<channel> bun test tests/sync-mode.test.ts`) and time out otherwise. No linter is configured.
+Tests: `bun run test:unit` runs unit and plugin-contract tests without Figma. `tests/library-live.test.ts` requires REST credentials and skips when unconfigured. `tests/sync-mode.test.ts` and `tests/prototyping.test.ts` require a live Figma plugin on a WebSocket channel (`CHANNEL=<channel> bun test tests/sync-mode.test.ts`) and time out otherwise. No linter is configured.
 
 ## Architecture
 

@@ -10,7 +10,21 @@
   "mcpServers": {
     "LLM2Figma": {
       "command": "bash",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/run-server.sh"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/run-server.sh"],
+      "env": {
+        "L2F_ALL": "${L2F_ALL:-}",
+        "L2F_FILE_KEY": "${L2F_FILE_KEY:-}",
+        "L2F_COMMENTS": "${L2F_COMMENTS:-}",
+        "L2F_COMMENTS_WRITE": "${L2F_COMMENTS_WRITE:-}",
+        "L2F_FLOWS": "${L2F_FLOWS:-}",
+        "L2F_VARIABLES_WRITE": "${L2F_VARIABLES_WRITE:-}",
+        "L2F_COMPONENT_PROPERTIES": "${L2F_COMPONENT_PROPERTIES:-}",
+        "L2F_GRID_LAYOUT": "${L2F_GRID_LAYOUT:-}",
+        "L2F_VERIFY": "${L2F_VERIFY:-}",
+        "L2F_DEV_MODE": "${L2F_DEV_MODE:-}",
+        "L2F_SLIDES": "${L2F_SLIDES:-}",
+        "L2F_TEXT_PATH": "${L2F_TEXT_PATH:-}"
+      }
     }
   }
 }
