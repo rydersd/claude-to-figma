@@ -312,6 +312,24 @@ describe("loadLibraryIndex", () => {
     } finally { restore(); }
   });
 
+  test("each library error status carries the library's own hint", async () => {
+    process.env.FIGMA_LIBRARY_FILE_KEYS = "KEY1";
+    const cases: [number, RegExp][] = [
+      [403, /File content: read/],
+      [404, /FIGMA_LIBRARY_FILE_KEYS/],
+      [429, /rate limited/],
+    ];
+    for (const [status, expected] of cases) {
+      clearLibraryCache();
+      globalThis.fetch = (async () => new Response("{}", { status })) as any;
+      try {
+        const error = await loadLibraryIndex({ readToken: tokenReader("figd_SENTINEL") }).catch((e) => e);
+        expect(error.message).toMatch(expected);
+        expect(error.message).not.toContain("check fileKey");
+      } finally { restore(); }
+    }
+  });
+
   test("a thrown fetch error never carries the runtime's text, which can quote the header", async () => {
     process.env.FIGMA_LIBRARY_FILE_KEYS = "KEY1";
     clearLibraryCache();
