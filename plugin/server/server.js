@@ -17450,6 +17450,18 @@ function setChannelFileKey(channel, fileKey) {
 function getChannelFileKey(channel = currentChannel) {
   return channel ? channelFileKeys.get(channel) : undefined;
 }
+function clearChannelFileKeys() {
+  channelFileKeys.clear();
+}
+function handlePeerLeft(event) {
+  if (event.role !== "plugin" || !event.channel)
+    return;
+  channelFileKeys.delete(event.channel);
+  if (event.channel === currentChannel) {
+    logger.info(`Figma plugin left channel ${currentChannel}; will auto-join on next command`);
+    currentChannel = null;
+  }
+}
 var args = process.argv.slice(2);
 var serverArg = args.find((arg) => arg.startsWith("--server="));
 var serverUrl = serverArg ? serverArg.split("=")[1] : "localhost";
@@ -17495,17 +17507,13 @@ function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOU
     clearTimeout(handshakeTimer);
     logger.info("Connected to Figma socket server");
     currentChannel = null;
+    clearChannelFileKeys();
   });
   socket.on("message", (data) => {
     try {
       const json = JSON.parse(data);
       if (json.type === "system" && json.event === "peer_left") {
-        if (json.role === "plugin")
-          channelFileKeys.delete(json.channel);
-        if (json.role === "plugin" && json.channel === currentChannel) {
-          logger.info(`Figma plugin left channel ${currentChannel}; will auto-join on next command`);
-          currentChannel = null;
-        }
+        handlePeerLeft(json);
         return;
       }
       if (json.type === "progress_update") {
@@ -17746,7 +17754,8 @@ function isEnabled(feature, env = process.env) {
 }
 
 // src/llm2figma_mcp/file-key.ts
-var FILE_KEY = /^[A-Za-z0-9]{10,}$/;
+var FILE_KEY = /^[A-Za-z0-9]{10,128}$/;
+var FILE_PATH = /^(design|file|board|slides|proto|make|site|buzz|deck)$/;
 function parseFileKey(input) {
   const text = input.trim();
   let key = text;
@@ -17754,9 +17763,9 @@ function parseFileKey(input) {
     key = undefined;
     try {
       const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
-      if (/^(www\.)?figma\.com$/i.test(url.hostname)) {
-        const [, fileKey, branch, branchKey] = url.pathname.split("/").filter(Boolean);
-        key = branch === "branch" ? branchKey : fileKey;
+      const [kind, fileKey, branch, branchKey] = url.pathname.split("/").filter(Boolean);
+      if (/^https?:$/.test(url.protocol) && /^((www|embed)\.)?figma\.com$/i.test(url.hostname) && FILE_PATH.test(kind ?? "")) {
+        key = branch === "branch" && branchKey !== undefined ? branchKey : fileKey;
       }
     } catch {}
   }
@@ -17766,7 +17775,7 @@ function parseFileKey(input) {
   return key;
 }
 function mergeFileKey(result, userKey, enabled) {
-  if (!result || typeof result !== "object")
+  if (!result || typeof result !== "object" || Array.isArray(result))
     return result;
   const { fileKey: pluginKey, fileKeySource: _ignored, ...rest } = result;
   if (!enabled)
@@ -18984,11 +18993,11 @@ function registerTools11(server, sendCommandToFigma2, env = process.env, channel
   server.tool("join_channel", "Connect to a Figma file through its plugin channel. Leave channel empty to join the only connected file automatically. Other tools also auto-join, so this is only needed when several files are connected.", {
     channel: z2.string().describe("Channel name shown in the Figma plugin. Empty = auto-join the only connected file").default(""),
     ...fileKeyEnabled ? {
-      fileKey: z2.string().optional().describe("The file's key or its figma.com URL. Used as the file key when the plugin cannot report one (a development plugin does not).")
+      fileKey: z2.string().optional().describe("The file's key or its figma.com URL. Used as the file key when the plugin cannot report one (a development plugin does not). With channel empty it applies to the channel already joined, if there is one.")
     } : {}
   }, async ({ channel, fileKey }) => {
     try {
-      const userKey = fileKeyEnabled && fileKey !== undefined ? parseFileKey(fileKey) : undefined;
+      const userKey = fileKeyEnabled && fileKey ? parseFileKey(fileKey) : undefined;
       const joined = channel ? (await channels.joinChannel(channel), channel) : await channels.autoJoinChannel();
       if (userKey)
         setChannelFileKey(joined, userKey);

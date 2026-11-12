@@ -53,11 +53,11 @@ export function registerTools(
   server.tool("join_channel", "Connect to a Figma file through its plugin channel. Leave channel empty to join the only connected file automatically. Other tools also auto-join, so this is only needed when several files are connected.", {
     channel: z.string().describe("Channel name shown in the Figma plugin. Empty = auto-join the only connected file").default(""),
     ...(fileKeyEnabled ? {
-      fileKey: z.string().optional().describe("The file's key or its figma.com URL. Used as the file key when the plugin cannot report one (a development plugin does not)."),
+      fileKey: z.string().optional().describe("The file's key or its figma.com URL. Used as the file key when the plugin cannot report one (a development plugin does not). With channel empty it applies to the channel already joined, if there is one."),
     } : {}),
   }, async ({ channel, fileKey }: any) => {
     try {
-      const userKey = fileKeyEnabled && fileKey !== undefined ? parseFileKey(fileKey) : undefined;
+      const userKey = fileKeyEnabled && fileKey ? parseFileKey(fileKey) : undefined;
       const joined = channel ? (await channels.joinChannel(channel), channel) : await channels.autoJoinChannel();
       if (userKey) setChannelFileKey(joined, userKey);
       return { content: [{ type: "text", text: `Successfully joined channel: ${joined}` }] };

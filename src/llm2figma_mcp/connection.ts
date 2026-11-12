@@ -33,6 +33,22 @@ export function getChannelFileKey(channel: string | null = currentChannel): stri
   return channel ? channelFileKeys.get(channel) : undefined;
 }
 
+// A relay (re)connection means every channel may now hold a different file.
+export function clearChannelFileKeys(): void {
+  channelFileKeys.clear();
+}
+
+// The relay's peer_left event. A plugin leaving ends its channel's file key (the
+// name can be reused by another file) and, if it was ours, the joined channel.
+export function handlePeerLeft(event: { role?: string; channel?: string }): void {
+  if (event.role !== "plugin" || !event.channel) return;
+  channelFileKeys.delete(event.channel);
+  if (event.channel === currentChannel) {
+    logger.info(`Figma plugin left channel ${currentChannel}; will auto-join on next command`);
+    currentChannel = null;
+  }
+}
+
 // Add command line argument parsing
 const args = process.argv.slice(2);
 const serverArg = args.find(arg => arg.startsWith('--server='));
@@ -96,6 +112,7 @@ export function connectToFigma(port: number = RELAY_PORT, handshakeTimeoutMs: nu
     logger.info('Connected to Figma socket server');
     // Reset channel on new connection
     currentChannel = null;
+    clearChannelFileKeys();
   });
 
   socket.on("message", (data: any) => {
@@ -113,12 +130,7 @@ export function connectToFigma(port: number = RELAY_PORT, handshakeTimeoutMs: nu
       // The Figma plugin in our channel closed: forget the channel so the next
       // command auto-joins whichever file is connected now.
       if (json.type === "system" && json.event === "peer_left") {
-        // A channel name can be reused by another file; don't carry the key over.
-        if (json.role === "plugin") channelFileKeys.delete(json.channel);
-        if (json.role === "plugin" && json.channel === currentChannel) {
-          logger.info(`Figma plugin left channel ${currentChannel}; will auto-join on next command`);
-          currentChannel = null;
-        }
+        handlePeerLeft(json);
         return;
       }
 

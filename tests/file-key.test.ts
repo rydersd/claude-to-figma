@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { mergeFileKey, parseFileKey } from "../src/llm2figma_mcp/file-key";
-import { getChannelFileKey, setChannelFileKey } from "../src/llm2figma_mcp/connection";
+import { clearChannelFileKeys, getChannelFileKey, handlePeerLeft, setChannelFileKey } from "../src/llm2figma_mcp/connection";
 import { registerTools as registerDocumentTools } from "../src/llm2figma_mcp/tools/document";
 import { registerTools as registerNavigationTools } from "../src/llm2figma_mcp/tools/navigation";
 import { getDocumentInfo } from "../src/llm2figma_plugin/src/document";
@@ -36,6 +36,18 @@ describe("parseFileKey", () => {
   test("query strings and fragments are ignored", () => {
     expect(parseFileKey(`https://www.figma.com/design/${KEY}/My-File?node-id=1-2&t=abcDEF123-1`)).toBe(KEY);
     expect(parseFileKey(`https://www.figma.com/design/${KEY}?node-id=1-2#frag`)).toBe(KEY);
+  });
+  test("only file URLs over http(s) are accepted", () => {
+    const id = "1234567890123456789";
+    for (const bad of [
+      `https://www.figma.com/files/${id}/recents-and-sharing`, `https://www.figma.com/team/${id}`,
+      `https://www.figma.com/exit/${KEY}`, `https://www.figma.com/@someone/${KEY}`,
+      `ftp://figma.com/design/${KEY}`, `javascript://figma.com/design/${KEY}`, "a".repeat(500),
+    ]) expect(() => parseFileKey(bad)).toThrow("Invalid Figma file key");
+  });
+  test("embed URLs and a file named \"branch\" give the file key", () => {
+    expect(parseFileKey(`https://embed.figma.com/design/${KEY}/My-File`)).toBe(KEY);
+    expect(parseFileKey(`https://www.figma.com/design/${KEY}/branch?node-id=1-2`)).toBe(KEY);
   });
   test("a branch URL gives the branch key", () => {
     expect(parseFileKey(`https://www.figma.com/design/${KEY}/branch/${BRANCH}/My-File?node-id=1-2`)).toBe(BRANCH);
@@ -73,6 +85,7 @@ describe("mergeFileKey", () => {
   });
   test("a non-object result passes through", () => {
     expect(mergeFileKey(null, BRANCH, true)).toBe(null);
+    expect(mergeFileKey([1, 2], BRANCH, false)).toEqual([1, 2]);
   });
 });
 
@@ -83,6 +96,22 @@ describe("per-channel key map", () => {
     expect(getChannelFileKey("iso-a")).toBe(KEY);
     expect(getChannelFileKey("iso-b")).toBe(BRANCH);
     expect(getChannelFileKey("iso-c")).toBeUndefined();
+  });
+  test("a plugin leaving drops its channel's key; another peer leaving does not", () => {
+    setChannelFileKey("left-a", KEY);
+    handlePeerLeft({ role: "mcp", channel: "left-a" });
+    expect(getChannelFileKey("left-a")).toBe(KEY);
+    handlePeerLeft({ role: "plugin", channel: "left-b" });
+    expect(getChannelFileKey("left-a")).toBe(KEY);
+    handlePeerLeft({ role: "plugin", channel: "left-a" });
+    expect(getChannelFileKey("left-a")).toBeUndefined();
+  });
+  test("a relay reconnect drops every key", () => {
+    setChannelFileKey("re-a", KEY);
+    setChannelFileKey("re-b", BRANCH);
+    clearChannelFileKeys();
+    expect(getChannelFileKey("re-a")).toBeUndefined();
+    expect(getChannelFileKey("re-b")).toBeUndefined();
   });
   test("no channel joined means no key", () => {
     expect(getChannelFileKey(null)).toBeUndefined();
@@ -126,6 +155,11 @@ describe("join_channel", () => {
     expect(result.content[0].text).toContain("Invalid Figma file key");
     expect(joined).toEqual([]);
     expect(getChannelFileKey("join-bad")).toBeUndefined();
+  });
+  test("flag on: an empty fileKey is treated as absent and the channel is joined", async () => {
+    const result = await tools(ON).join_channel.run({ channel: "join-empty", fileKey: "" });
+    expect(result.content[0].text).toContain("Successfully joined channel: join-empty");
+    expect(getChannelFileKey("join-empty")).toBeUndefined();
   });
   test("flag off: a client-sent fileKey is ignored", async () => {
     const result = await tools({}).join_channel.run({ channel: "join-off", fileKey: KEY });
