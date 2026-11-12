@@ -31,6 +31,10 @@ Two power tools cut across every category:
 - `design_query` — query nodes by type, name, component, or property values and optionally bulk-update all matches in one call — replaces the scan → introspect → mutate loop
 - `figma_eval` — **executes arbitrary JavaScript in the Figma plugin sandbox.** Full read/write/delete access to the document. Code runs as the body of an async function with `figma`, `hexToFigmaColor`, `introspectNode`, and other helpers in scope; use `return` for results. The escape hatch when no dedicated tool fits.
 
+## Code map
+
+Behind `L2F_CODE_MAP=1`: `scan_code_components` and `set_code_map_entries` map Figma components to a code repository's components. Details in [Tools-Code-Map](Tools-Code-Map.md).
+
 ## Team library
 
 Two tools discover published components from configured Figma team libraries over the REST API (see [[Architecture#rest-discovery-team-libraries|REST discovery]]); details and example output in [[Tools-Components#team-library-components|Tools-Components]]:
