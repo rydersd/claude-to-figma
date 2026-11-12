@@ -1,0 +1,470 @@
+// Node creation functions for the Figma plugin.
+// Extracted from code.js — pure structural refactor.
+
+import { loadFontCached, appendOrInsertChild, hexToFigmaColor, fontWeightToStyle, applyColorPaint, buildFigmaEffects, applyCornerRadii, applyLayoutPositioning, applyImageFill } from './utils';
+import { setCharacters } from './text';
+
+// --- place_image: New rectangle with an image fill, sized to the image by default ---
+// Give width or height alone and the other follows the image's aspect ratio.
+// With neither, the natural size is used, scaled down to fit 4096px.
+export async function placeImage(params: any) {
+  const { image, x, y, width, height, name, parentId } = params || {};
+  if (!image || !image.base64) throw new Error("Missing image data");
+
+  const rect = figma.createRectangle();
+  let naturalWidth: number, naturalHeight: number;
+  try {
+    rect.name = name || "Reference Image";
+    const { imageHash } = applyImageFill(rect, image);
+    const size = await figma.getImageByHash(imageHash)!.getSizeAsync();
+    naturalWidth = size.width || 400;
+    naturalHeight = size.height || 400;
+
+    let w: number, h: number;
+    if (width && height) {
+      w = width; h = height;
+    } else if (width) {
+      w = width; h = Math.round((width / naturalWidth) * naturalHeight);
+    } else if (height) {
+      h = height; w = Math.round((height / naturalHeight) * naturalWidth);
+    } else {
+      const scale = Math.min(1, 4096 / Math.max(naturalWidth, naturalHeight));
+      w = Math.round(naturalWidth * scale); h = Math.round(naturalHeight * scale);
+    }
+    rect.resize(w, h);
+    if (x !== undefined) rect.x = x;
+    if (y !== undefined) rect.y = y;
+
+    await appendOrInsertChild(rect, parentId, params.insertAt);
+  } catch (error) {
+    rect.remove();
+    throw error;
+  }
+
+  return {
+    id: rect.id,
+    name: rect.name,
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    naturalWidth,
+    naturalHeight,
+  };
+}
+
+export async function createRectangle(params: any) {
+  const {
+    x = 0,
+    y = 0,
+    width = 100,
+    height = 100,
+    name = "Rectangle",
+    parentId,
+    fillColor,
+  } = params || {};
+
+  const rect = figma.createRectangle();
+  rect.x = x;
+  rect.y = y;
+  rect.resize(width, height);
+  rect.name = name;
+
+  // Set uniform and/or per-corner radii if provided
+  applyCornerRadii(rect, params);
+
+  // Set fill color if provided (fillImage wins over fillColor)
+  if (fillColor) {
+    applyColorPaint(rect, "fills", fillColor);
+  }
+  if (params.fillImage && params.fillImage.base64) {
+    applyImageFill(rect, params.fillImage);
+  }
+
+  // Set stroke color and weight if provided
+  if (params.strokeColor) {
+    applyColorPaint(rect, "strokes", params.strokeColor);
+  }
+  if (params.strokeWeight !== undefined) {
+    rect.strokeWeight = params.strokeWeight;
+  }
+  if (params.strokeAlign !== undefined) {
+    rect.strokeAlign = params.strokeAlign;
+  }
+
+  // Set effects (shadows, blurs) if provided
+  if (params.effects && Array.isArray(params.effects)) {
+    rect.effects = buildFigmaEffects(params.effects);
+  }
+
+  // Set opacity if provided
+  if (params.opacity !== undefined) {
+    rect.opacity = params.opacity;
+  }
+
+  await appendOrInsertChild(rect, parentId, params.insertAt);
+
+  // ABSOLUTE positioning requires the node to be parented first
+  applyLayoutPositioning(rect, params);
+
+  return {
+    id: rect.id,
+    name: rect.name,
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    parentId: rect.parent ? rect.parent.id : undefined,
+  };
+}
+
+export async function createFrame(params: any, firstOnTop: boolean = true) {
+  const {
+    x = 0,
+    y = 0,
+    width = 100,
+    height = 100,
+    name = "Frame",
+    parentId,
+    fillColor,
+    strokeColor,
+    strokeWeight,
+    layoutMode = "NONE",
+    layoutWrap = "NO_WRAP",
+    paddingTop = 10,
+    paddingRight = 10,
+    paddingBottom = 10,
+    paddingLeft = 10,
+    primaryAxisAlignItems = "MIN",
+    counterAxisAlignItems = "MIN",
+    layoutSizingHorizontal = "FIXED",
+    layoutSizingVertical = "FIXED",
+    itemSpacing = 0,
+  } = params || {};
+
+  const frame = figma.createFrame();
+  frame.x = x;
+  frame.y = y;
+  frame.resize(width, height);
+  frame.name = name;
+
+  // Set clipsContent if provided
+  if (params.clipsContent !== undefined) {
+    frame.clipsContent = !!params.clipsContent;
+  }
+
+  // Set uniform and/or per-corner radii if provided
+  applyCornerRadii(frame, params);
+
+  // Set opacity if provided
+  if (params.opacity !== undefined) {
+    frame.opacity = params.opacity;
+  }
+
+  // Set layout mode if provided
+  if (layoutMode !== "NONE") {
+    frame.layoutMode = layoutMode;
+    frame.layoutWrap = layoutWrap;
+
+    // Apply first-on-top stacking default (can be overridden per-call)
+    if (params.itemReverseZIndex !== undefined) {
+      frame.itemReverseZIndex = !!params.itemReverseZIndex;
+    } else if (firstOnTop) {
+      frame.itemReverseZIndex = true;
+    }
+
+    // Set padding values only when layoutMode is not NONE
+    frame.paddingTop = paddingTop;
+    frame.paddingRight = paddingRight;
+    frame.paddingBottom = paddingBottom;
+    frame.paddingLeft = paddingLeft;
+
+    // Set axis alignment only when layoutMode is not NONE
+    frame.primaryAxisAlignItems = primaryAxisAlignItems;
+    frame.counterAxisAlignItems = counterAxisAlignItems;
+
+    // Set layout sizing (defer FILL until after parenting — it requires an auto-layout parent)
+    if (layoutSizingHorizontal !== "FILL" && layoutSizingVertical !== "FILL") {
+      frame.layoutSizingHorizontal = layoutSizingHorizontal;
+      frame.layoutSizingVertical = layoutSizingVertical;
+    }
+
+    // Set item spacing only when layoutMode is not NONE
+    frame.itemSpacing = itemSpacing;
+
+    // Set counter axis spacing when wrapping
+    if (params.counterAxisSpacing !== undefined && layoutWrap === "WRAP") {
+      frame.counterAxisSpacing = params.counterAxisSpacing;
+    }
+  }
+
+  // Set fill color if provided (fillImage wins over fillColor)
+  if (fillColor) {
+    applyColorPaint(frame, "fills", fillColor);
+  }
+  if (params.fillImage && params.fillImage.base64) {
+    applyImageFill(frame, params.fillImage);
+  }
+
+  // Set stroke color and weight if provided
+  if (strokeColor) {
+    applyColorPaint(frame, "strokes", strokeColor);
+  }
+
+  // Set stroke weight if provided
+  if (strokeWeight !== undefined) {
+    frame.strokeWeight = strokeWeight;
+  }
+  if (params.strokeAlign !== undefined) {
+    frame.strokeAlign = params.strokeAlign;
+  }
+
+  // Set effects (shadows, blurs) if provided
+  if (params.effects && Array.isArray(params.effects)) {
+    frame.effects = buildFigmaEffects(params.effects);
+  }
+
+  await appendOrInsertChild(frame, parentId, params.insertAt);
+
+  // ABSOLUTE positioning requires the node to be parented first
+  applyLayoutPositioning(frame, params);
+
+  // Now set FILL sizing after the frame has been parented (FILL requires auto-layout parent)
+  if (layoutMode !== "NONE") {
+    if (layoutSizingHorizontal === "FILL" || layoutSizingVertical === "FILL") {
+      try {
+        frame.layoutSizingHorizontal = layoutSizingHorizontal;
+        frame.layoutSizingVertical = layoutSizingVertical;
+      } catch (e) {
+        // FILL may fail if parent is not auto-layout — fall back to FIXED
+        if (layoutSizingHorizontal === "FILL") {
+          try { frame.layoutSizingHorizontal = "FILL"; } catch (e2) { frame.layoutSizingHorizontal = "FIXED"; }
+        }
+        if (layoutSizingVertical === "FILL") {
+          try { frame.layoutSizingVertical = "FILL"; } catch (e2) { frame.layoutSizingVertical = "FIXED"; }
+        }
+      }
+    }
+  }
+
+  return {
+    id: frame.id,
+    name: frame.name,
+    x: frame.x,
+    y: frame.y,
+    width: frame.width,
+    height: frame.height,
+    fills: frame.fills,
+    strokes: frame.strokes,
+    strokeWeight: frame.strokeWeight,
+    layoutMode: frame.layoutMode,
+    layoutWrap: frame.layoutWrap,
+    itemReverseZIndex: frame.itemReverseZIndex,
+    parentId: frame.parent ? frame.parent.id : undefined,
+  };
+}
+
+export async function createText(params: any) {
+  const {
+    x = 0,
+    y = 0,
+    text = "Text",
+    fontSize = 14,
+    fontWeight = 400,
+    fontColor = { r: 0, g: 0, b: 0, a: 1 }, // Default to black
+    name = "",
+    parentId,
+    width,
+  } = params || {};
+
+  // Accept optional fontFamily and fontStyle params
+  const userFontFamily = params.fontFamily || "Inter";
+  const userFontStyle = params.fontStyle || fontWeightToStyle(fontWeight);
+
+  const textNode = figma.createText();
+  textNode.x = x;
+  textNode.y = y;
+  textNode.name = name || text;
+  try {
+    await loadFontCached({
+      family: userFontFamily,
+      style: userFontStyle,
+    });
+    textNode.fontName = { family: userFontFamily, style: userFontStyle };
+    textNode.fontSize = parseInt(fontSize);
+  } catch (error) {
+    console.error("Error setting font", error);
+    // Fallback to Inter if the requested font is not available
+    try {
+      await loadFontCached({ family: "Inter", style: fontWeightToStyle(fontWeight) });
+      textNode.fontName = { family: "Inter", style: fontWeightToStyle(fontWeight) };
+      textNode.fontSize = parseInt(fontSize);
+    } catch (fallbackError) {
+      console.error("Error setting fallback font", fallbackError);
+    }
+  }
+  await setCharacters(textNode, text);
+
+  // Set text color
+  applyColorPaint(textNode, "fills", fontColor);
+
+  // Set text alignment if provided
+  if (params.textAlignHorizontal) {
+    textNode.textAlignHorizontal = params.textAlignHorizontal;
+  }
+
+  // Set line height if provided
+  if (params.lineHeight !== undefined) {
+    textNode.lineHeight = { value: params.lineHeight, unit: "PIXELS" };
+  }
+
+  // Set letter spacing if provided
+  if (params.letterSpacing !== undefined) {
+    textNode.letterSpacing = { value: params.letterSpacing, unit: "PIXELS" };
+  }
+
+  // Set text case if provided
+  if (params.textCase) {
+    textNode.textCase = params.textCase;
+  }
+
+  // Set opacity if provided
+  if (params.opacity !== undefined) {
+    textNode.opacity = params.opacity;
+  }
+
+  // If width is specified, set fixed width with auto-height (text wraps at this width)
+  if (width) {
+    textNode.resize(width, textNode.height);
+    textNode.textAutoResize = "HEIGHT";
+  }
+
+  await appendOrInsertChild(textNode, parentId, params.insertAt);
+
+  // ABSOLUTE positioning requires the node to be parented first
+  applyLayoutPositioning(textNode, params);
+
+  return {
+    id: textNode.id,
+    name: textNode.name,
+    x: textNode.x,
+    y: textNode.y,
+    width: textNode.width,
+    height: textNode.height,
+    characters: textNode.characters,
+    fontSize: textNode.fontSize,
+    fontWeight: fontWeight,
+    fontColor: fontColor,
+    fontName: textNode.fontName,
+    fills: textNode.fills,
+    parentId: textNode.parent ? textNode.parent.id : undefined,
+  };
+}
+
+export async function createEllipse(params: any) {
+  var x = params.x || 0;
+  var y = params.y || 0;
+  var width = params.width || 100;
+  var height = params.height || 100;
+  var name = params.name || "Ellipse";
+  var parentId = params.parentId;
+
+  var ellipse = figma.createEllipse();
+  ellipse.x = x;
+  ellipse.y = y;
+  ellipse.resize(width, height);
+  ellipse.name = name;
+
+  // Set fill color if provided
+  if (params.fillColor) {
+    var fc: any = params.fillColor;
+    if (typeof fc === "string") {
+      fc = hexToFigmaColor(fc) || { r: 0.85, g: 0.85, b: 0.85, a: 1 };
+    }
+    applyColorPaint(ellipse, "fills", fc);
+  }
+
+  // Set stroke color and weight if provided
+  if (params.strokeColor) {
+    var sc: any = params.strokeColor;
+    if (typeof sc === "string") {
+      sc = hexToFigmaColor(sc) || { r: 0, g: 0, b: 0, a: 1 };
+    }
+    applyColorPaint(ellipse, "strokes", sc);
+  }
+  if (params.strokeWeight !== undefined) {
+    ellipse.strokeWeight = params.strokeWeight;
+  }
+
+  // Set arc data if provided (for arcs/donuts)
+  if (params.arcData) {
+    ellipse.arcData = {
+      startingAngle: params.arcData.startingAngle || 0,
+      endingAngle: params.arcData.endingAngle || 6.2831853,
+      innerRadius: params.arcData.innerRadius || 0,
+    };
+  }
+
+  await appendOrInsertChild(ellipse, parentId, params.insertAt);
+
+  return {
+    id: ellipse.id,
+    name: ellipse.name,
+    x: ellipse.x,
+    y: ellipse.y,
+    width: ellipse.width,
+    height: ellipse.height,
+  };
+}
+
+export async function createSection(params: any) {
+  const { name = "Section", x = 0, y = 0, width = 1000, height = 1000, childIds } = params || {};
+
+  const section = figma.createSection();
+  section.name = name;
+  section.x = x;
+  section.y = y;
+  section.resizeWithoutConstraints(width, height);
+
+  // Move children into the section if provided
+  let childCount = 0;
+  if (childIds && Array.isArray(childIds)) {
+    for (const childId of childIds) {
+      const childNode = await figma.getNodeByIdAsync(childId);
+      if (childNode) {
+        section.appendChild(childNode);
+        childCount++;
+      }
+    }
+  }
+
+  figma.currentPage.appendChild(section);
+
+  return {
+    id: section.id,
+    name: section.name,
+    childCount: childCount,
+  };
+}
+
+export async function createSvg(params: any) {
+  var svgString = params.svg;
+  var frame = figma.createNodeFromSvg(svgString);
+
+  if (params.name) frame.name = params.name;
+  if (params.x !== undefined) frame.x = params.x;
+  if (params.y !== undefined) frame.y = params.y;
+  if (params.width && params.height) frame.resize(params.width, params.height);
+
+  await appendOrInsertChild(frame, params.parentId, params.insertAt);
+
+  return {
+    id: frame.id,
+    name: frame.name,
+    x: frame.x,
+    y: frame.y,
+    width: frame.width,
+    height: frame.height,
+    childCount: frame.children.length,
+  };
+}

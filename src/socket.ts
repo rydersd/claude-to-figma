@@ -1,6 +1,22 @@
 #!/usr/bin/env bun
 
 import { Server, ServerWebSocket } from "bun";
+import { writeFileSync } from "node:fs";
+import { RELAY_PORT, RELAY_PROTOCOL_VERSION, RELAY_VERSION_HEADER } from "./relay-protocol.js";
+
+// Full message logging is noisy and records design content; opt in with
+// L2F_RELAY_DEBUG=1.
+const DEBUG = process.env.L2F_RELAY_DEBUG === "1";
+const debug = (...args: unknown[]) => { if (DEBUG) console.log(...args); };
+
+// Browsers send an Origin header; the MCP server sends none. Refuse ordinary
+// web origins, otherwise any page open in a browser could drive Figma. The
+// Figma plugin UI is a sandboxed iframe with a "null" origin; Figma's own
+// origins are allowed too in case a Figma build reports one.
+const FIGMA_ORIGINS = new Set(["null", "https://www.figma.com", "https://figma.com"]);
+function allowedOrigin(origin: string | null): boolean {
+  return origin === null || FIGMA_ORIGINS.has(origin);
+}
 
 // Store clients by channel
 const channels = new Map<string, Set<ServerWebSocket<any>>>();
@@ -9,6 +25,14 @@ const channels = new Map<string, Set<ServerWebSocket<any>>>();
 // else (the Figma plugin) counts as a plugin.
 const roles = new WeakMap<ServerWebSocket<any>, "mcp" | "plugin">();
 const isPlugin = (ws: ServerWebSocket<any>) => roles.get(ws) !== "mcp";
+
+// JSON.stringify replacer for logging: shortens long strings (base64 image
+// data, SVG, eval code) so one message can't flood the terminal.
+function truncateLongStrings(_key: string, value: unknown) {
+  return typeof value === "string" && value.length > 500
+    ? `${value.slice(0, 80)}… <${(value.length / 1024).toFixed(0)}KB string>`
+    : value;
+}
 
 function handleConnection(ws: ServerWebSocket<any>) {
   // Don't add to clients immediately - wait for channel join
@@ -44,9 +68,10 @@ function handleConnection(ws: ServerWebSocket<any>) {
 }
 
 const server = Bun.serve({
-  port: 3055,
-  // uncomment this to allow connections in windows wsl
-  // hostname: "0.0.0.0",
+  port: RELAY_PORT,
+  // Loopback only, so nothing else on the network can drive Figma. For
+  // Windows + WSL, start the relay with L2F_RELAY_HOST=0.0.0.0.
+  hostname: process.env.L2F_RELAY_HOST || "127.0.0.1",
   fetch(req: Request, server: Server) {
     // Handle CORS preflight
     if (req.method === "OPTIONS") {
@@ -57,6 +82,10 @@ const server = Bun.serve({
           "Access-Control-Allow-Headers": "Content-Type, Authorization",
         },
       });
+    }
+
+    if (!allowedOrigin(req.headers.get("origin"))) {
+      return new Response("Forbidden origin", { status: 403 });
     }
 
     // Handle WebSocket upgrade
@@ -73,7 +102,7 @@ const server = Bun.serve({
     // Return response for non-WebSocket requests
     return new Response("WebSocket server running", {
       headers: {
-        "Access-Control-Allow-Origin": "*",
+        [RELAY_VERSION_HEADER]: RELAY_PROTOCOL_VERSION,
       },
     });
   },
@@ -82,14 +111,14 @@ const server = Bun.serve({
     message(ws: ServerWebSocket<any>, message: string | Buffer) {
       try {
         const data = JSON.parse(message as string);
-        console.log(`\n=== Received message from client ===`);
-        console.log(`Type: ${data.type}, Channel: ${data.channel || 'N/A'}`);
+        debug(`\n=== Received message from client ===`);
+        debug(`Type: ${data.type}, Channel: ${data.channel || 'N/A'}`);
         if (data.message?.command) {
-          console.log(`Command: ${data.message.command}, ID: ${data.id}`);
+          debug(`Command: ${data.message.command}, ID: ${data.id}`);
         } else if (data.message?.result) {
-          console.log(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
+          debug(`Response: ID: ${data.id}, Has Result: ${!!data.message.result}`);
         }
-        console.log(`Full message:`, JSON.stringify(data, null, 2));
+        debug(`Full message:`, JSON.stringify(data, truncateLongStrings, 2));
 
         if (data.type === "join") {
           const channelName = data.channel;
@@ -187,8 +216,8 @@ const server = Bun.serve({
                 sender: "peer",
                 channel: channelName
               };
-              console.log(`\n=== Broadcasting to peer #${broadcastCount} ===`);
-              console.log(JSON.stringify(broadcastMessage, null, 2));
+              debug(`\n=== Broadcasting to peer #${broadcastCount} ===`);
+              debug(JSON.stringify(broadcastMessage, truncateLongStrings, 2));
               client.send(JSON.stringify(broadcastMessage));
             }
           });
@@ -196,7 +225,7 @@ const server = Bun.serve({
           if (broadcastCount === 0) {
             console.log(`⚠️  No other clients in channel "${channelName}" to receive message!`);
           } else {
-            console.log(`✓ Broadcast to ${broadcastCount} peer(s) in channel "${channelName}"`);
+            debug(`✓ Broadcast to ${broadcastCount} peer(s) in channel "${channelName}"`);
           }
         }
 
@@ -251,4 +280,10 @@ const server = Bun.serve({
   }
 });
 
-console.log(`WebSocket server running on port ${server.port}`);
+// When started by the installed plugin, record our own pid only once we hold
+// the port, so a relay that lost the race never overwrites the winner's.
+if (process.env.L2F_RELAY_PID_FILE) {
+  writeFileSync(process.env.L2F_RELAY_PID_FILE, String(process.pid));
+}
+
+console.log(`WebSocket server running on ${server.hostname}:${server.port} (protocol ${RELAY_PROTOCOL_VERSION})`);

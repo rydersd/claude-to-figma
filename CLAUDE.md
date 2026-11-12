@@ -8,38 +8,41 @@ This project is a fork of [cursor-talk-to-figma-mcp](https://github.com/sonnylaz
 
 ## Project Overview
 
-MCP (Model Context Protocol) server that bridges Claude Code with Figma. Three components communicate in a pipeline:
+MCP (Model Context Protocol) server that bridges MCP-compatible AI assistants with Figma. Three components communicate in a pipeline:
 
 ```
-Claude Code ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay ←(WebSocket)→ Figma Plugin
+MCP Client ←(stdio)→ MCP Server ←(WebSocket)→ WebSocket Relay ←(WebSocket)→ Figma Plugin
 ```
 
 ## Build & Development Commands
 
 ```bash
 bun install              # Install dependencies
-bun run build            # Build MCP server (dist/) AND Figma plugin (src/claude_figma_plugin/code.js) via tsup
-bun run build:plugin     # Build Figma plugin only (src/claude_figma_plugin/code.js)
+bun run typecheck        # tsc --noEmit — REQUIRED before claiming a change compiles
+bun run build            # Build MCP server (dist/) AND Figma plugin (src/llm2figma_plugin/code.js) via tsup
+bun run build:plugin     # Build Figma plugin only (src/llm2figma_plugin/code.js)
 bun run dev              # Build in watch mode
 bun socket               # Start WebSocket relay server (port 3055)
 bun run start            # Run built MCP server
 bun setup                # Full setup (install + write .mcp.json)
 ```
 
-There is no test suite or linter configured.
+`bun run build` uses tsup/esbuild, which **strips types without checking them** — a build can succeed on code that does not typecheck. Run `bun run typecheck` separately; "build succeeded" is not evidence the code compiles.
+
+Tests: `bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts tests/efficiency.test.ts tests/launcher.test.ts` runs unit and plugin-contract tests (no Figma needed). `tests/library-live.test.ts` hits the real Figma REST API and only runs when `FIGMA_API_TOKEN`/`FIGMA_LIBRARY_FILE_KEYS` are set (skipped otherwise). The other files in `tests/` are integration tests that require a live Figma plugin on a WebSocket channel and time out otherwise. No linter is configured.
 
 ## Architecture
 
-### MCP Server (`src/claude_to_figma_mcp/server.ts`)
-The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 90+ tools (create shapes, modify text, manage layouts, export images, component migration, design queries, event streaming, etc.) and several AI prompts (design strategies). Communicates with Claude Code over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds. Plugin-pushed events (no request ID) are routed to the event buffer in `events.ts`.
+### MCP Server (`src/llm2figma_mcp/server.ts`)
+The main server implementing the MCP protocol via `@modelcontextprotocol/sdk`. Exposes 90+ tools (create shapes, modify text, manage layouts, export images, component migration, design queries, etc.) and several AI prompts (design strategies). Communicates with Claude Code over stdio and with the WebSocket relay via `ws`. Each request gets a UUID, is tracked in a `pendingRequests` Map with timeout/promise callbacks, and resolves when the plugin responds. Tool definitions live in `src/llm2figma_mcp/tools/` (one file per category), including `tools/library.ts` — REST discovery of Figma team-library component sets (`get_library_components`, `search_library_components`) and `$lib:` reference resolution consumed by `create_node_tree`'s `instance` node type. Plugin-pushed events (no request ID) are routed to the event buffer in `events.ts`.
 
 ### WebSocket Relay (`src/socket.ts`)
 Lightweight Bun WebSocket server on port 3055. Routes messages between MCP server and Figma plugin using channel-based isolation. Clients call `join` to enter a channel; messages broadcast only within the same channel.
 
-### Figma Plugin (`src/claude_figma_plugin/`)
-Runs inside Figma. The plugin source lives in `src/claude_figma_plugin/src/` as 14 TypeScript modules. `bun run build` compiles them via tsup into `code.js` as an IIFE bundle. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares dynamic-page document access and localhost network access.
+### Figma Plugin (`src/llm2figma_plugin/`)
+Runs inside Figma. The plugin source lives in `src/llm2figma_plugin/src/` as 14 TypeScript modules. `bun run build` compiles them via tsup into `code.js` as an IIFE bundle. `ui.html` is the plugin UI for WebSocket connection management and settings. `manifest.json` declares dynamic-page document access and localhost network access.
 
-**Plugin modules** (`src/claude_figma_plugin/src/`):
+**Plugin modules** (`src/llm2figma_plugin/src/`):
 - `main.ts` -- command dispatcher (100 commands), plugin lifecycle
 - `analysis.ts` -- node introspection, style scanning, batch operations, design queries
 - `components.ts` -- component creation, instances, styles, variables
@@ -68,7 +71,7 @@ Runs inside Figma. The plugin source lives in `src/claude_figma_plugin/src/` as 
 
 The `create_node_tree` tool creates entire node hierarchies in one round-trip. Key features:
 
-- **Nested tree spec**: frames, text, rectangles, vectors — only frames have children
+- **Nested tree spec**: frames, text, rectangles, vectors, and library component instances (`$lib:` refs, see `tools/library.ts`) — only frames have children
 - **`$repeat` directives**: data-driven repetition for tables/lists — `{"$repeat": {"data": [...], "template": {...}}}`
 - **`$var:` color binding**: reference Figma variables by name — creates real variable bindings, not just resolved values
 - **Hex color shorthand**: `"#3d6daa"` instead of `{"r": 0.24, "g": 0.43, "b": 0.67, "a": 1}`
@@ -76,7 +79,7 @@ The `create_node_tree` tool creates entire node hierarchies in one round-trip. K
 
 ## Event Streaming (`figma_events_subscribe` / `figma_events_poll`)
 
-Two MCP tools (defined in `src/claude_to_figma_mcp/tools/events.ts`) let Claude observe design changes the user makes inside Figma. Events flow plugin → relay → MCP server, where they accumulate in a 200-event ring buffer (`src/claude_to_figma_mcp/events.ts`) until polled.
+Two MCP tools (defined in `src/llm2figma_mcp/tools/events.ts`) let Claude observe design changes the user makes inside Figma. Events flow plugin → relay → MCP server, where they accumulate in a 200-event ring buffer (`src/llm2figma_mcp/events.ts`) until polled.
 
 - **`figma_events_subscribe`** — `{ enabled: boolean }`. Starts (or stops) event streaming. While subscribed, the plugin pushes `selectionchange`, `nodechange`, and `currentpagechange` events to the MCP server with no request ID.
 - **`figma_events_poll`** — drains buffered events. Filters: `peek` (read without clearing), `eventTypes` (`["selectionchange" | "nodechange" | "currentpagechange"]`), `since` (epoch ms), `limit` (most recent N), `excludePluginOperations` (filter out events caused by tool commands).
@@ -89,14 +92,27 @@ Full details and gotchas: [`wiki/concepts/event-streaming.md`](wiki/concepts/eve
 
 1. Run `bun setup` — installs dependencies and writes MCP config (machine-specific)
 2. `bun socket` in one terminal (WebSocket relay)
-3. In Figma: Plugins → Development → Link existing plugin → select `src/claude_figma_plugin/manifest.json`
+3. In Figma: Plugins → Development → Link existing plugin → select `src/llm2figma_plugin/manifest.json`
 4. Run plugin in Figma and click Connect, then use tools from Claude Code (they auto-join when one file is connected)
 
 Add the MCP server to Claude Code:
 
 ```bash
-claude mcp add ClaudeToFigma -- bun /path-to-repo/src/claude_to_figma_mcp/server.ts
+claude mcp add LLM2Figma -- bun /path-to-repo/src/llm2figma_mcp/server.ts
 ```
+
+### Team library tools (optional)
+
+`get_library_components` / `search_library_components` and `$lib:` refs in `create_node_tree` need two environment variables set before the MCP server starts:
+
+- `FIGMA_API_TOKEN` — a Figma personal access token with the `File content: read` and `Library content: read` scopes
+- `FIGMA_LIBRARY_FILE_KEYS` — comma-separated file keys (from each library file's URL: `figma.com/design/<FILE_KEY>/...`) of the libraries to index
+
+Export both in your shell (e.g. `~/.zshrc`) and reference them from `.mcp.json` as `"${FIGMA_API_TOKEN}"` / `"${FIGMA_LIBRARY_FILE_KEYS}"` in the `LLM2Figma` server's `env` block, then restart the MCP server. Without them, the two library tools soft-fail with setup instructions instead of erroring.
+
+## Claude Code plugin (`plugin/`)
+
+`plugin/` is a self-contained Claude Code plugin, `llm2figma`, listed by `.claude-plugin/marketplace.json`. The installed copy has no `node_modules`, so `plugin/server/server.js` and `plugin/server/relay.js` are `bun build` bundles of `src/`, and `plugin/figma-plugin/` copies the Figma plugin files. **After changing `src/`, run `bun run build` (or `bun run build:claude-plugin`) and commit `plugin/`.** When installed as a plugin, the server starts the relay itself if port 3055 is free (`src/llm2figma_mcp/plugin-runtime.ts`) and copies the Figma plugin to `${CLAUDE_PLUGIN_DATA}/figma-plugin/` so the import path survives updates. Skills: `plugin/skills/draw-in-figma` (how to work in Figma well) and `plugin/skills/setup` (`/llm2figma:setup`).
 
 ## Machine Portability
 
@@ -127,3 +143,12 @@ Non-obvious knowledge (architecture decisions, gotchas, patterns) lives in `wiki
 - `wiki/concepts/sf-symbol-icon-extraction.md` — exact SF Symbol → Figma via `NSSymbolImageRep.outlinePath` (cross-linked to `~/Developer/GitHub/llm-tooling/`)
 
 File new findings here as you work. See the global wiki rule in `~/.claude/CLAUDE.md`.
+
+## Efficient design workflow
+
+- Establish the file/page and selection once, then inspect only the properties needed for the next decision. Use `fields`, `maxNodes`, `maxDepth`, and `maxTextLength` with node inspection; include `children` only when necessary. Defaults cap inspection at 100 nodes, depth 2, and 2,000 characters per text node. Follow explicit `inspection.truncated` metadata with targeted child/root reads.
+- Keep a small reference snapshot of palettes/variable refs, font choices, component/root IDs, layout helper snippets, and already-read skill guidance. `reference_cache` scopes entries to a file/page or task; defaults to 30-minute expiry with a 64-entry, 64KB-per-entry bound. Refresh references after library changes, deletions, or changes to the source design. Cache misses require a fresh read.
+- Reuse auto-layout helpers, section templates, real library instances, and `$repeat` templates. Use one `figma_eval` helper definition per composition when custom layout logic is needed. Successful and in-flight font loads are shared for the plugin session; failed loads can retry.
+- Batch related mutations and validate the composition after the batch. `scan_node_styles` with `summary:true` returns counts, font families, up to ten unbound-color example IDs, and coverage metadata. Its default budget is 100 nodes at depth 10. `truncated:true` means validation covered only part of the tree; increase the budget or validate separate subtrees before reporting completion.
+- After repairs and compact validation, take one screenshot per completed composition. Repeat screenshots after meaningful visual changes or when a visual defect remains unresolved.
+- Load relevant skill guidance once per task. The `efficient_workflow` MCP prompt carries these rules for any compatible client.

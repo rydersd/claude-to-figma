@@ -13,5 +13,11 @@
     "types": ["bun-types"]
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/claude_figma_plugin/src"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/llm2figma_plugin/src",
+    "src/claude_to_figma_mcp",
+    "src/claude_figma_plugin"
+  ]
 }

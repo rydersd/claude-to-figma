@@ -1,7 +1,7 @@
 # Wiki Index
 
 > Auto-maintained by Claude. Last updated: 2026-04-16. Articles: 2.
-> Purpose: non-obvious knowledge about the claude-to-figma bridge — architecture decisions, patterns, and gotchas that wouldn't be obvious from reading code.
+> Purpose: non-obvious knowledge about the llm2figma bridge — architecture decisions, patterns, and gotchas that wouldn't be obvious from reading code.
 
 ## Recent
 

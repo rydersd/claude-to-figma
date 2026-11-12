@@ -90,12 +90,12 @@ The original implementation reserved 40 slots for high-pri, which inverted into 
 | File | Role |
 |------|------|
 | `src/socket.ts:199-213` | Relay event routing with channel membership check |
-| `src/claude_figma_plugin/src/events.ts` | Plugin event listeners, lifecycle, guard, throttle |
-| `src/claude_figma_plugin/src/main.ts:40-63` | Operation guard wrapper + subscribe/unsubscribe commands |
-| `src/claude_figma_plugin/ui.html:910-930` | Event forwarding over WebSocket + streaming indicator |
-| `src/claude_to_figma_mcp/events.ts` | Priority-aware event buffer |
-| `src/claude_to_figma_mcp/tools/events.ts` | `figma_events_subscribe` + `figma_events_poll` tools |
-| `src/claude_to_figma_mcp/connection.ts:90-100` | Event reception + disconnect reset |
+| `src/llm2figma_plugin/src/events.ts` | Plugin event listeners, lifecycle, guard, throttle |
+| `src/llm2figma_plugin/src/main.ts:40-63` | Operation guard wrapper + subscribe/unsubscribe commands |
+| `src/llm2figma_plugin/ui.html:910-930` | Event forwarding over WebSocket + streaming indicator |
+| `src/llm2figma_mcp/events.ts` | Priority-aware event buffer |
+| `src/llm2figma_mcp/tools/events.ts` | `figma_events_subscribe` + `figma_events_poll` tools |
+| `src/llm2figma_mcp/connection.ts:90-100` | Event reception + disconnect reset |
 
 ## See Also
 

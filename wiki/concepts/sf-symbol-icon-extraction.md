@@ -6,11 +6,11 @@
 > Updated: 2026-04-16
 > Source: [llm-tooling/patterns/apple-symbol-outline-extraction.md](/Users/ryders/Developer/GitHub/llm-tooling/patterns/apple-symbol-outline-extraction.md) (first discovered 2026-04-15 during illtool-standalone design-system sync)
 
-## Why This Matters For claude-to-figma
+## Why This Matters For llm2figma
 
 The `icons-to-figma` skill currently exports SF Symbols via AppleScript UI automation of the SF Symbols app + clipboard copy. That pipeline is brittle (requires `cliclick`, Accessibility permissions, and the SF Symbols app GUI). The `outlinePath` approach is a higher-fidelity alternative that reads the vector directly from AppKit without touching the GUI.
 
-When `claude-to-figma` is used to build a design-system mirror of a real macOS/iPadOS app, the icons in Figma **must match what the app renders**. Approximate SVGs drift in stroke weight, corner behavior, optical alignment, and negative space. If the app renders Apple's outlines, the Figma inventory must use those outlines too.
+When `llm2figma` is used to build a design-system mirror of a real macOS/iPadOS app, the icons in Figma **must match what the app renders**. Approximate SVGs drift in stroke weight, corner behavior, optical alignment, and negative space. If the app renders Apple's outlines, the Figma inventory must use those outlines too.
 
 ## The Pattern (summary)
 
@@ -57,7 +57,7 @@ Drift shows up in stroke weight, corner behavior, optical alignment, fill propor
 
 ## Integration Options For This Project
 
-Two paths to bring this into `claude-to-figma`:
+Two paths to bring this into `llm2figma`:
 
 1. **Upgrade `icons-to-figma` skill** — replace the SF Symbols app GUI automation with a small Swift helper binary that takes symbol name + size + weight, writes SVG to stdout. Then call that binary from the skill pipeline.
 2. **New dedicated tool** — add a Figma plugin command `import_sf_symbol` that accepts a pre-rendered SVG and places it as a vector node. Keep extraction upstream.

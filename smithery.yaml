@@ -10,5 +10,5 @@ startCommand:
     |-
     (config) => ({
       command: 'bunx',
-      args: ['src/claude_to_figma_mcp/server.ts']
+      args: ['src/llm2figma_mcp/server.ts']
     })
