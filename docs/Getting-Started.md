@@ -65,39 +65,38 @@ To run from source with Bun instead of the built output:
 
 ## Team library setup
 
-`get_library_components`, `search_library_components`, and `$lib:` refs in [[Create-Node-Tree#library-component-instances-lib-refs|create_node_tree instance nodes]] read published components straight from the Figma REST API (`api.figma.com`), not through the plugin/WebSocket path — see [[Architecture#rest-discovery-team-libraries|REST discovery]]. Two environment variables enable them:
+`get_library_components`, `search_library_components`, and `$lib:` refs in [[Create-Node-Tree#library-component-instances-lib-refs|create_node_tree instance nodes]] read published components straight from the Figma REST API (`api.figma.com`), not through the plugin/WebSocket path — see [[Architecture#rest-discovery-team-libraries|REST discovery]]. They need a token in the macOS Keychain and one environment variable:
 
 1. **Create a personal access token** — Figma → Settings → Security → Personal access tokens → generate one with these scopes:
    - **File content: read**
    - **Library content: read**
-2. **Find your library file keys** — open each library file in Figma and copy the key out of its URL: `figma.com/design/<FILE_KEY>/...`
-3. **Export both in your shell profile** (e.g. `~/.zshrc`):
-
-   ```bash
-   export FIGMA_API_TOKEN="figd_..."
-   export FIGMA_LIBRARY_FILE_KEYS="abc123,def456"
-   ```
-
-4. **Pass them through `.mcp.json`** — the `ClaudeToFigma` server entry's `env` block references the shell variables (never hardcode the token):
+   - **file_comments:read**
+   - **file_comments:write** (for the upcoming comments tools)
+2. **Store it in the Keychain** — from the repo, run `bun run token`. It prompts for the token with hidden input (so it never lands in shell history), stores it as service `llm2figma`, account `figma-api-token`, and checks it against Figma. Run it again to replace the token; `bun run token -- --check` only re-checks. The server reads the Keychain on each REST call, so a new token works without a restart.
+3. **Find your library file keys** — open each library file in Figma and copy the key out of its URL: `figma.com/design/<FILE_KEY>/...`
+4. **Pass the keys through `.mcp.json`** — in the `LLM2Figma` server entry's `env` block (the keys are not secret; the token never goes here):
 
    ```json
    {
      "mcpServers": {
-       "ClaudeToFigma": {
+       "LLM2Figma": {
          "command": "bun",
-         "args": ["src/claude_to_figma_mcp/server.ts"],
+         "args": ["src/llm2figma_mcp/server.ts"],
          "env": {
-           "FIGMA_API_TOKEN": "${FIGMA_API_TOKEN}",
-           "FIGMA_LIBRARY_FILE_KEYS": "${FIGMA_LIBRARY_FILE_KEYS}"
+           "FIGMA_LIBRARY_FILE_KEYS": "abc123,def456"
          }
        }
      }
    }
    ```
 
-5. **Restart the MCP server** so it picks up the new environment.
+5. **Restart the MCP server** so it picks up the file keys. `setup_status` reports `figmaTokenInKeychain` (whether the item exists, never its value).
 
-Without these two variables set, `get_library_components` and `search_library_components` return setup instructions instead of a component list — this is a soft failure, not a crash. The server indexes each configured file key once per session (REST calls to `/v1/files/:key/components`, `/component_sets`, and `/meta`) and caches the result; pass `refresh: true` to either tool to refetch after a library update.
+**Upgrading from the old setup:** delete the `export FIGMA_API_TOKEN=...` line from your shell profile (`~/.zshrc` and similar), open a new terminal, and revoke the old token in Figma. `bun setup` removes `FIGMA_API_TOKEN` from `.mcp.json` when it rewrites it.
+
+**macOS only:** on Linux or WSL there is no Keychain, so the library tools soft-fail with a message.
+
+Without the token or the file keys, `get_library_components` and `search_library_components` return setup instructions instead of a component list — this is a soft failure, not a crash. The server indexes each configured file key once per session (REST calls to `/v1/files/:key/components`, `/component_sets`, and `/meta`) and caches the result; pass `refresh: true` to either tool to refetch after a library update.
 
 ## Feature flags
 

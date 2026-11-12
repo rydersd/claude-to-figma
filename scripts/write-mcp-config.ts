@@ -11,6 +11,8 @@ export function makeMcpConfig(previous: any, bunPath: string, repoRoot: string, 
   // Migrate the entry name while preserving credentials and unrelated servers.
   const previousServer = { ...servers.ClaudeToFigma, ...servers.LLM2Figma };
   const env = { L2F_ALL: "${L2F_ALL:-}", ...flagRefs, ...servers.ClaudeToFigma?.env, ...servers.LLM2Figma?.env };
+  // The Figma token lives in the macOS Keychain only; drop any copy an earlier setup left here.
+  delete env.FIGMA_API_TOKEN;
   delete servers.ClaudeToFigma;
   servers.LLM2Figma = {
     ...previousServer, type: "stdio", command: bunPath,

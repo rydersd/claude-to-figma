@@ -38,7 +38,7 @@ Two tools discover published components from configured Figma team libraries ove
 - `get_library_components {verbose?, refresh?}` — lists every component set across the configured libraries
 - `search_library_components {query, limit?, refresh?}` — scored search returning ready-to-place `componentKey`s, consumed by `create_component_instance` or `$lib:` refs in [[Create-Node-Tree#library-component-instances-lib-refs|create_node_tree instance nodes]]
 
-Both require `FIGMA_API_TOKEN` + `FIGMA_LIBRARY_FILE_KEYS` (see [[Getting-Started#team-library-setup|team library setup]]) and soft-fail with setup instructions otherwise.
+Both require a Figma token in the macOS Keychain + `FIGMA_LIBRARY_FILE_KEYS` (see [[Getting-Started#team-library-setup|team library setup]]) and soft-fail with setup instructions otherwise.
 
 ## MCP prompts
 

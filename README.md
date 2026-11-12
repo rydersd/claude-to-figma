@@ -100,44 +100,45 @@ Or add it to a project's `.mcp.json`:
 }
 ```
 
-### Environment Variables (team library tools, optional)
+### Figma token and library file keys (team library tools, optional)
 
-`get_library_components`, `search_library_components`, and `$lib:` component references in `create_node_tree` read published team-library components straight from the Figma REST API. Two environment variables enable them:
+`get_library_components`, `search_library_components`, and `$lib:` component references in `create_node_tree` read published team-library components straight from the Figma REST API. They need two things:
 
-- `FIGMA_API_TOKEN` — a Figma personal access token (Figma → Settings → Security → Personal access tokens) with the **File content: read** and **Library content: read** scopes
-- `FIGMA_LIBRARY_FILE_KEYS` — comma-separated file keys of the libraries to index, taken from each library file's URL: `figma.com/design/<FILE_KEY>/...`
+1. **A Figma personal access token in the macOS Keychain.** Create one in Figma → Settings → Security → Personal access tokens with these scopes: **File content: read**, **Library content: read**, **file_comments:read** and **file_comments:write** (the comment scopes are for the upcoming comments tools). Then run:
 
-Export both in your shell profile (e.g. `~/.zshrc`):
+   ```bash
+   bun run token
+   ```
 
-```bash
-export FIGMA_API_TOKEN="figd_..."
-export FIGMA_LIBRARY_FILE_KEYS="abc123,def456"
-```
+   It prompts for the token (input hidden, so it stays out of shell history), stores it in the Keychain as service `llm2figma`, account `figma-api-token`, and checks it against Figma. `bun run token -- --check` re-checks the stored token without changing it. The server reads the token from the Keychain on each REST call, so a replaced token works without a restart. It is never read from an environment variable or `.mcp.json`.
 
-Then pass them through in `.mcp.json`'s `LLM2Figma` server entry:
+2. **`FIGMA_LIBRARY_FILE_KEYS`** (not secret) — comma-separated file keys of the libraries to index, taken from each library file's URL: `figma.com/design/<FILE_KEY>/...`. Pass it through `.mcp.json`'s `LLM2Figma` server entry:
 
-```json
-{
-  "mcpServers": {
-    "LLM2Figma": {
-      "command": "bun",
-      "args": ["src/llm2figma_mcp/server.ts"],
-      "env": {
-        "FIGMA_API_TOKEN": "${FIGMA_API_TOKEN}",
-        "FIGMA_LIBRARY_FILE_KEYS": "${FIGMA_LIBRARY_FILE_KEYS}"
-      }
-    }
-  }
-}
-```
+   ```json
+   {
+     "mcpServers": {
+       "LLM2Figma": {
+         "command": "bun",
+         "args": ["src/llm2figma_mcp/server.ts"],
+         "env": {
+           "FIGMA_LIBRARY_FILE_KEYS": "abc123,def456"
+         }
+       }
+     }
+   }
+   ```
 
-Restart the MCP server after setting these. Without them, the two library tools return setup instructions instead of a component list.
+Restart the MCP server after changing the file keys. Without them, or without the Keychain item, the library tools return setup instructions instead of a component list. `setup_status` reports `figmaTokenInKeychain` (whether the item exists, never its value).
+
+**Upgrading from an earlier setup:** delete any `export FIGMA_API_TOKEN=...` line from your shell profile (`~/.zshrc` and similar), open a new terminal, and revoke the old token in Figma. `bun setup` removes a `FIGMA_API_TOKEN` entry from `.mcp.json` when it rewrites it.
+
+**macOS only.** On Linux or WSL there is no Keychain, so the library tools soft-fail with a message.
 
 #### Library components vs. library variables
 
 These two are **not** symmetrical, and only one of them needs the token above:
 
-| | Discovery route | Needs `FIGMA_API_TOKEN` |
+| | Discovery route | Needs the Keychain token |
 |---|---|---|
 | Library **components** (`$lib:`) | Figma REST API | Yes |
 | Library **variables** (`$var:`) | Plugin API (`figma.teamLibrary`) | No |
@@ -289,7 +290,7 @@ The MCP server provides the following tools for interacting with Figma:
 
 - `get_styles` - Returns all local paint, text, effect, and grid styles in the document
 - `get_local_variables` - Returns all local variables (design tokens) organized by collection — use names with `$var:Collection/Name` in color fields to bind real Figma variables
-- `get_library_variables` - Returns design tokens published by the team libraries **enabled on this file**, each with a ready-to-use `$var:` ref. Needs no `FIGMA_API_TOKEN` — unlike library *components*, variables are readable straight from the plugin API
+- `get_library_variables` - Returns design tokens published by the team libraries **enabled on this file**, each with a ready-to-use `$var:` ref. Needs no Figma token — unlike library *components*, variables are readable straight from the plugin API
 - `get_local_components` - Returns all local components with their IDs, names, descriptions, and published keys
 - `create_component` - Converts an existing frame into a reusable Figma component, returning its new component ID and key
 - `create_component_instance` - Places an instance of a component by local ID or published key at (x, y), with optional parent

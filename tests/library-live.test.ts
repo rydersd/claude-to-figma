@@ -1,16 +1,13 @@
 /**
- * Live REST smoke test — hits api.figma.com with real credentials.
- * Runs only when FIGMA_API_TOKEN and FIGMA_LIBRARY_FILE_KEYS are set:
- *   bun test tests/library-live.test.ts
+ * Live REST smoke test — hits api.figma.com with the token stored in the macOS Keychain
+ * (`bun run token`). Runs only when FIGMA_LIBRARY_FILE_KEYS is set:
+ *   FIGMA_LIBRARY_FILE_KEYS=<key> bun test tests/library-live.test.ts
  */
 
 import { describe, test, expect } from "bun:test";
 import { loadLibraryIndex, getLibraryConfig } from "../src/llm2figma_mcp/tools/library";
 
-const configured = (() => {
-  const { token, fileKeys } = getLibraryConfig();
-  return Boolean(token && fileKeys.length > 0);
-})();
+const configured = getLibraryConfig().fileKeys.length > 0;
 
 describe("live library fetch", () => {
   test.skipIf(!configured)("indexes at least one component set with keys", async () => {
