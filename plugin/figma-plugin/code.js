@@ -691,6 +691,7 @@
       id: page.id,
       type: page.type,
       editorType: figma.editorType,
+      fileKey: figma.fileKey ?? null,
       children: page.children.map((node) => ({
         id: node.id,
         name: node.name,
