@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { listChannels } from "../connection.js";
 import { ensureRelay, figmaPluginManifestPath, isPluginInstall } from "../plugin-runtime.js";
 import { RELAY_PORT } from "../../relay-protocol.js";
+import { hasFigmaTokenItem } from "../keychain.js";
 
 // One call that answers "is everything connected, and if not, what's next?"
 export function registerSetupTools(server: McpServer) {
@@ -37,6 +38,8 @@ export function registerSetupTools(server: McpServer) {
         relayRunning: relay,
         connectedFigmaFiles: files.map((f) => f.name),
         figmaPluginManifest: manifest ?? "src/llm2figma_plugin/manifest.json in the llm2figma repo",
+        // Existence only; the token itself is never read here. Needed by the REST tools (team library).
+        figmaTokenInKeychain: await hasFigmaTokenItem(),
         next,
       };
       return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };

@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
 import { logger } from "../helpers.js";
+import { FigmaTokenError, getFigmaToken, TOKEN_SETUP_HELP } from "../keychain.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -240,20 +241,13 @@ const FIGMA_API_BASE = "https://api.figma.com";
 export class LibraryConfigError extends Error {}
 
 export const CONFIG_HELP =
-  "Library tools need two environment variables:\n" +
-  "  FIGMA_API_TOKEN — a Figma personal access token (Figma → Settings → Security → " +
-  "Personal access tokens) with scopes 'File content: read' and 'Library content: read'.\n" +
-  "  FIGMA_LIBRARY_FILE_KEYS — comma-separated file keys of the libraries to index, " +
-  "from each library file's URL: figma.com/design/<FILE_KEY>/...\n" +
-  "Set them in your shell (e.g. ~/.zshrc) and reference them from .mcp.json as " +
-  '"${FIGMA_API_TOKEN}", then restart the MCP server.';
+  "Library tools need FIGMA_LIBRARY_FILE_KEYS: comma-separated file keys of the libraries to index, " +
+  "from each library file's URL: figma.com/design/<FILE_KEY>/... Set it in the LLM2Figma env block " +
+  "of .mcp.json, then restart the MCP server.\n" +
+  TOKEN_SETUP_HELP;
 
-export function getLibraryConfig(env: NodeJS.ProcessEnv = process.env): {
-  token?: string;
-  fileKeys: string[];
-} {
+export function getLibraryConfig(env: NodeJS.ProcessEnv = process.env): { fileKeys: string[] } {
   return {
-    token: env.FIGMA_API_TOKEN || undefined,
     fileKeys: (env.FIGMA_LIBRARY_FILE_KEYS || "")
       .split(",")
       .map((k) => k.trim())
@@ -263,14 +257,21 @@ export function getLibraryConfig(env: NodeJS.ProcessEnv = process.env): {
 
 // 15s bound so a hung Figma API request can't stall the tool call indefinitely.
 async function figmaGet(path: string, token: string): Promise<any> {
-  const response = await fetch(`${FIGMA_API_BASE}${path}`, {
-    headers: { "X-Figma-Token": token },
-    signal: AbortSignal.timeout(15000),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${FIGMA_API_BASE}${path}`, {
+      headers: { "X-Figma-Token": token },
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (error: any) {
+    // Fixed text only: a runtime error for a bad header quotes the header value.
+    const why = error?.name === "TimeoutError" ? "timed out after 15s" : "could not reach api.figma.com";
+    throw new Error(`Figma API request for ${path} failed: ${why}`);
+  }
   if (!response.ok) {
     const hint =
       response.status === 401 || response.status === 403
-        ? "check FIGMA_API_TOKEN and its scopes ('File content: read' + 'Library content: read')"
+        ? "check the Keychain token (re-store it with `bun run token`) and its scopes ('File content: read' + 'Library content: read')"
         : response.status === 404
           ? "check the file key in FIGMA_LIBRARY_FILE_KEYS (from the library file's URL)"
           : response.status === 429
@@ -308,14 +309,26 @@ async function fetchLibraryFile(fileKey: string, token: string): Promise<Library
   );
 }
 
-export async function loadLibraryIndex(opts: { refresh?: boolean } = {}): Promise<LibraryIndex> {
-  const { token, fileKeys } = getLibraryConfig();
-  if (!token || fileKeys.length === 0) {
+export async function loadLibraryIndex(
+  opts: { refresh?: boolean; readToken?: () => Promise<string> } = {}
+): Promise<LibraryIndex> {
+  const { fileKeys } = getLibraryConfig();
+  if (fileKeys.length === 0) {
     throw new LibraryConfigError(CONFIG_HELP);
   }
+  // Read per index build, only when something must be fetched; never kept past this call.
+  let token: string | undefined;
   const index: LibraryIndex = [];
   for (const fileKey of fileKeys) {
     if (opts.refresh || !indexCache.has(fileKey)) {
+      if (token === undefined) {
+        try {
+          token = await (opts.readToken ?? getFigmaToken)();
+        } catch (error) {
+          if (error instanceof FigmaTokenError) throw new LibraryConfigError(error.message);
+          throw error;
+        }
+      }
       const sets = await fetchLibraryFile(fileKey, token);
       indexCache.set(fileKey, sets);
       logger.info(`Indexed library ${fileKey}: ${sets.length} component sets`);
@@ -367,7 +380,7 @@ export function formatSearchResults(
 function asToolError(error: unknown) {
   const message =
     error instanceof LibraryConfigError
-      ? `Library tools are not configured.\n${CONFIG_HELP}`
+      ? `Library tools are not configured.\n${error.message}`
       : `Library error: ${error instanceof Error ? error.message : String(error)}`;
   return { content: [{ type: "text" as const, text: message }] };
 }
@@ -375,7 +388,7 @@ function asToolError(error: unknown) {
 export function registerTools(server: McpServer, _sendCommandToFigma: SendCommandFn) {
   server.tool(
     "get_library_components",
-    "List every published component set available from the configured Figma team libraries (the Assets panel equivalent). Compact by default; verbose:true adds per-variant names, keys, and property values. Requires FIGMA_API_TOKEN + FIGMA_LIBRARY_FILE_KEYS.",
+    "List every published component set available from the configured Figma team libraries (the Assets panel equivalent). Compact by default; verbose:true adds per-variant names, keys, and property values. Requires a Figma token in the macOS Keychain + FIGMA_LIBRARY_FILE_KEYS.",
     {
       verbose: z.boolean().optional().describe("Include per-variant names, keys, and property values"),
       refresh: z.boolean().optional().describe("Refetch from the Figma API instead of the session cache"),

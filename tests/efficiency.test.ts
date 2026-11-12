@@ -145,11 +145,20 @@ describe("llm2figma setup compatibility", () => {
     expect(config.mcpServers.LLM2Figma.command).toBe("/bun path/bun");
     expect(config.mcpServers.LLM2Figma.args[0]).toBe("/repo path/src/llm2figma_mcp/server.ts");
   });
-  test("regeneration migrates the legacy name and preserves env and unrelated servers", () => {
-    const previous = { mcpServers: { ClaudeToFigma: { env: { FIGMA_API_TOKEN: "test-token" } }, Other: { command: "other" } } };
+  test("regeneration migrates the legacy name, drops FIGMA_API_TOKEN, keeps other env and unrelated servers", () => {
+    const previous = { mcpServers: { ClaudeToFigma: { env: { FIGMA_API_TOKEN: "test-token", FIGMA_LIBRARY_FILE_KEYS: "abc", L2F_COMMENTS: "1" } }, Other: { command: "other" } } };
     const config = makeMcpConfig(previous, "/bun", "/repo", { hostname: "host" });
-    expect(config.mcpServers.LLM2Figma.env.FIGMA_API_TOKEN).toBe("test-token");
+    expect(config.mcpServers.LLM2Figma.env.FIGMA_API_TOKEN).toBeUndefined();
+    expect(JSON.stringify(config)).not.toContain("test-token");
+    expect(config.mcpServers.LLM2Figma.env.FIGMA_LIBRARY_FILE_KEYS).toBe("abc");
+    expect(config.mcpServers.LLM2Figma.env.L2F_COMMENTS).toBe("1");
     expect(config.mcpServers.Other).toEqual(previous.mcpServers.Other);
     expect(config.mcpServers.ClaudeToFigma).toBeUndefined();
+  });
+  test("rewriting an existing LLM2Figma entry removes a literal token", () => {
+    const previous = { mcpServers: { LLM2Figma: { env: { FIGMA_API_TOKEN: "figd_literal", FIGMA_LIBRARY_FILE_KEYS: "${FIGMA_LIBRARY_FILE_KEYS}" } } } };
+    const config = makeMcpConfig(previous, "/bun", "/repo", {});
+    expect(JSON.stringify(config)).not.toContain("figd_literal");
+    expect(config.mcpServers.LLM2Figma.env.FIGMA_LIBRARY_FILE_KEYS).toBe("${FIGMA_LIBRARY_FILE_KEYS}");
   });
 });

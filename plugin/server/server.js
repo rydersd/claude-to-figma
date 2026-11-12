@@ -18446,7 +18446,7 @@ function registerTools6(server, sendCommandToFigma2) {
       return { content: [{ type: "text", text: `Error getting local variables: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
-  server.tool("get_library_variables", "Get design tokens published by the team libraries enabled on this Figma file, organized by collection. Each variable includes a `ref` you can pass straight to $var: in create_node_tree. Unlike get_library_components this needs no FIGMA_API_TOKEN \u2014 it reads the libraries enabled on the file. Returns an empty collections list if no variable libraries are enabled.", {}, async () => {
+  server.tool("get_library_variables", "Get design tokens published by the team libraries enabled on this Figma file, organized by collection. Each variable includes a `ref` you can pass straight to $var: in create_node_tree. Unlike get_library_components this needs no Figma API token \u2014 it reads the libraries enabled on the file. Returns an empty collections list if no variable libraries are enabled.", {}, async () => {
     try {
       const result = await sendCommandToFigma2("get_library_variables");
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
@@ -19225,6 +19225,73 @@ function registerTools12(server, sendCommandToFigma2) {
   });
 }
 
+// src/llm2figma_mcp/keychain.ts
+var KEYCHAIN_SERVICE = "llm2figma";
+var KEYCHAIN_ACCOUNT = "figma-api-token";
+var KEYCHAIN_TIMEOUT_MS = 1e4;
+
+class FigmaTokenError extends Error {
+}
+var TOKEN_SETUP_HELP = "Store a Figma personal access token (Figma \u2192 Settings \u2192 Security \u2192 Personal access tokens; scopes " + "'File content: read', 'Library content: read', 'file_comments:read', 'file_comments:write') in the " + "macOS Keychain with `bun run token` in the llm2figma repo, or: " + `security add-generic-password -U -s ${KEYCHAIN_SERVICE} -a ${KEYCHAIN_ACCOUNT} -w (it prompts for the token).`;
+var defaultSpawn = (cmd) => Bun.spawn(cmd, { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+async function runSecurity(args2, opts) {
+  const proc = (opts.spawn ?? defaultSpawn)(["security", ...args2]);
+  const output = new Response(proc.stdout).text();
+  output.catch(() => {});
+  let timer;
+  const timedOut = new Promise((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), opts.timeoutMs ?? KEYCHAIN_TIMEOUT_MS);
+  });
+  try {
+    const code = await Promise.race([proc.exited, timedOut]);
+    if (code === "timeout") {
+      proc.kill();
+      return { code, stdout: "" };
+    }
+    return { code, stdout: await output };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function lookupArgs() {
+  return ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT];
+}
+async function getFigmaToken(opts = {}) {
+  const platform = opts.platform ?? process.platform;
+  if (platform !== "darwin") {
+    throw new FigmaTokenError(`The Figma API token is read from the macOS Keychain, which isn't available on ${platform}. ` + "Tools that call the Figma REST API are unavailable here.");
+  }
+  let result;
+  try {
+    result = await runSecurity([...lookupArgs(), "-w"], opts);
+  } catch {
+    throw new FigmaTokenError(`Could not run the macOS security tool to read the Figma API token. ${TOKEN_SETUP_HELP}`);
+  }
+  if (result.code === "timeout") {
+    throw new FigmaTokenError("Timed out reading the Figma API token from the Keychain. If macOS asked for Keychain access, " + "unlock it and click Allow (or Always Allow), then retry.");
+  }
+  const token = result.stdout.trim();
+  if (result.code === 44 || result.code === 0 && !token) {
+    throw new FigmaTokenError(`No Figma API token in the Keychain. ${TOKEN_SETUP_HELP}`);
+  }
+  if (result.code !== 0) {
+    throw new FigmaTokenError(`Could not read the Figma API token from the Keychain (security exited with code ${result.code}; ` + `the Keychain may be locked or access was denied). ${TOKEN_SETUP_HELP}`);
+  }
+  if (!/^[\x21-\x7e]+$/.test(token)) {
+    throw new FigmaTokenError("The Figma API token in the Keychain contains spaces, line breaks or other characters a token never has. " + "Store it again with `bun run token`.");
+  }
+  return token;
+}
+async function hasFigmaTokenItem(opts = {}) {
+  if ((opts.platform ?? process.platform) !== "darwin")
+    return false;
+  try {
+    return (await runSecurity(lookupArgs(), opts)).code === 0;
+  } catch {
+    return false;
+  }
+}
+
 // src/llm2figma_mcp/tools/library.ts
 function parseVariantProperties(name) {
   const props = {};
@@ -19357,23 +19424,26 @@ var FIGMA_API_BASE = "https://api.figma.com";
 
 class LibraryConfigError extends Error {
 }
-var CONFIG_HELP = `Library tools need two environment variables:
-` + "  FIGMA_API_TOKEN \u2014 a Figma personal access token (Figma \u2192 Settings \u2192 Security \u2192 " + `Personal access tokens) with scopes 'File content: read' and 'Library content: read'.
-` + "  FIGMA_LIBRARY_FILE_KEYS \u2014 comma-separated file keys of the libraries to index, " + `from each library file's URL: figma.com/design/<FILE_KEY>/...
-` + "Set them in your shell (e.g. ~/.zshrc) and reference them from .mcp.json as " + '"${FIGMA_API_TOKEN}", then restart the MCP server.';
+var CONFIG_HELP = "Library tools need FIGMA_LIBRARY_FILE_KEYS: comma-separated file keys of the libraries to index, " + "from each library file's URL: figma.com/design/<FILE_KEY>/... Set it in the LLM2Figma env block " + `of .mcp.json, then restart the MCP server.
+` + TOKEN_SETUP_HELP;
 function getLibraryConfig(env = process.env) {
   return {
-    token: env.FIGMA_API_TOKEN || undefined,
     fileKeys: (env.FIGMA_LIBRARY_FILE_KEYS || "").split(",").map((k) => k.trim()).filter(Boolean)
   };
 }
 async function figmaGet(path3, token) {
-  const response = await fetch(`${FIGMA_API_BASE}${path3}`, {
-    headers: { "X-Figma-Token": token },
-    signal: AbortSignal.timeout(15000)
-  });
+  let response;
+  try {
+    response = await fetch(`${FIGMA_API_BASE}${path3}`, {
+      headers: { "X-Figma-Token": token },
+      signal: AbortSignal.timeout(15000)
+    });
+  } catch (error) {
+    const why = error?.name === "TimeoutError" ? "timed out after 15s" : "could not reach api.figma.com";
+    throw new Error(`Figma API request for ${path3} failed: ${why}`);
+  }
   if (!response.ok) {
-    const hint = response.status === 401 || response.status === 403 ? "check FIGMA_API_TOKEN and its scopes ('File content: read' + 'Library content: read')" : response.status === 404 ? "check the file key in FIGMA_LIBRARY_FILE_KEYS (from the library file's URL)" : response.status === 429 ? `rate limited \u2014 retry after ${response.headers.get("retry-after") || "a moment"}` : "unexpected Figma API error";
+    const hint = response.status === 401 || response.status === 403 ? "check the Keychain token (re-store it with `bun run token`) and its scopes ('File content: read' + 'Library content: read')" : response.status === 404 ? "check the file key in FIGMA_LIBRARY_FILE_KEYS (from the library file's URL)" : response.status === 429 ? `rate limited \u2014 retry after ${response.headers.get("retry-after") || "a moment"}` : "unexpected Figma API error";
     throw new Error(`Figma API ${response.status} on ${path3}: ${hint}`);
   }
   return response.json();
@@ -19394,13 +19464,23 @@ async function fetchLibraryFile(fileKey, token) {
   return buildLibraryIndex(fileKey, libraryName, compRes?.meta?.components || [], setRes?.meta?.component_sets || []);
 }
 async function loadLibraryIndex(opts = {}) {
-  const { token, fileKeys } = getLibraryConfig();
-  if (!token || fileKeys.length === 0) {
+  const { fileKeys } = getLibraryConfig();
+  if (fileKeys.length === 0) {
     throw new LibraryConfigError(CONFIG_HELP);
   }
+  let token;
   const index = [];
   for (const fileKey of fileKeys) {
     if (opts.refresh || !indexCache.has(fileKey)) {
+      if (token === undefined) {
+        try {
+          token = await (opts.readToken ?? getFigmaToken)();
+        } catch (error) {
+          if (error instanceof FigmaTokenError)
+            throw new LibraryConfigError(error.message);
+          throw error;
+        }
+      }
       const sets = await fetchLibraryFile(fileKey, token);
       indexCache.set(fileKey, sets);
       logger.info(`Indexed library ${fileKey}: ${sets.length} component sets`);
@@ -19440,11 +19520,11 @@ function formatSearchResults(results) {
 }
 function asToolError(error) {
   const message = error instanceof LibraryConfigError ? `Library tools are not configured.
-${CONFIG_HELP}` : `Library error: ${error instanceof Error ? error.message : String(error)}`;
+${error.message}` : `Library error: ${error instanceof Error ? error.message : String(error)}`;
   return { content: [{ type: "text", text: message }] };
 }
 function registerTools13(server, _sendCommandToFigma) {
-  server.tool("get_library_components", "List every published component set available from the configured Figma team libraries (the Assets panel equivalent). Compact by default; verbose:true adds per-variant names, keys, and property values. Requires FIGMA_API_TOKEN + FIGMA_LIBRARY_FILE_KEYS.", {
+  server.tool("get_library_components", "List every published component set available from the configured Figma team libraries (the Assets panel equivalent). Compact by default; verbose:true adds per-variant names, keys, and property values. Requires a Figma token in the macOS Keychain + FIGMA_LIBRARY_FILE_KEYS.", {
     verbose: z2.boolean().optional().describe("Include per-variant names, keys, and property values"),
     refresh: z2.boolean().optional().describe("Refetch from the Figma API instead of the session cache")
   }, async ({ verbose, refresh }) => {
@@ -23741,6 +23821,7 @@ function registerSetupTools(server) {
       relayRunning: relay,
       connectedFigmaFiles: files.map((f) => f.name),
       figmaPluginManifest: manifest ?? "src/llm2figma_plugin/manifest.json in the llm2figma repo",
+      figmaTokenInKeychain: await hasFigmaTokenItem(),
       next
     };
     return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };

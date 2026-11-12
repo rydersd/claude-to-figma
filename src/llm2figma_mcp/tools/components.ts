@@ -21,7 +21,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
     }
   });
 
-  server.tool("get_library_variables", "Get design tokens published by the team libraries enabled on this Figma file, organized by collection. Each variable includes a `ref` you can pass straight to $var: in create_node_tree. Unlike get_library_components this needs no FIGMA_API_TOKEN — it reads the libraries enabled on the file. Returns an empty collections list if no variable libraries are enabled.", {}, async () => {
+  server.tool("get_library_variables", "Get design tokens published by the team libraries enabled on this Figma file, organized by collection. Each variable includes a `ref` you can pass straight to $var: in create_node_tree. Unlike get_library_components this needs no Figma API token — it reads the libraries enabled on the file. Returns an empty collections list if no variable libraries are enabled.", {}, async () => {
     try {
       const result = await sendCommandToFigma("get_library_variables");
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
