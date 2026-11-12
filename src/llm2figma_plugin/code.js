@@ -63,6 +63,7 @@
   // src/shared/spec.ts
   var SPEC_TYPES = ["frame", "text", "rectangle", "vector", "instance"];
   var OPAQUE_TYPE = "$opaque";
+  var UNREAD_KEY = "$unread";
   var NO_PAINT = "#00000000";
   var COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning"];
   var SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
@@ -223,8 +224,27 @@
     "textAutoResize",
     "pathData",
     "pathHash",
-    "properties"
+    "properties",
+    UNREAD_KEY
   ];
+  var MAX_SHOWN_CHARS = 80;
+  var MAX_SHOWN_ITEMS = 10;
+  function clip(text, max = MAX_SHOWN_CHARS) {
+    return text.length > max ? text.slice(0, max - 3) + "..." : text;
+  }
+  function showValue(value) {
+    let text;
+    try {
+      text = JSON.stringify(value) ?? String(value);
+    } catch {
+      text = String(value);
+    }
+    return clip(text);
+  }
+  function showList(items) {
+    const shown = items.slice(0, MAX_SHOWN_ITEMS).map((item) => clip(String(item))).join(", ");
+    return items.length > MAX_SHOWN_ITEMS ? `${shown} and ${items.length - MAX_SHOWN_ITEMS} more` : shown;
+  }
   function fontWeightToStyle(weight) {
     switch (weight) {
       case 100:
@@ -321,6 +341,43 @@
     if (key === "properties") return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : void 0;
     return value;
   }
+  var STRUCTURAL_KEYS = /* @__PURE__ */ new Set(["id", "type", "children", UNREAD_KEY]);
+  var SHORTHANDS = { text: ["fontWeight"] };
+  var OPAQUE_KEYS = /* @__PURE__ */ new Set(["id", "type", "name", "nodeType", "truncated", "reason", "children"]);
+  function strictProblem(node) {
+    const type = node.type;
+    if (type === OPAQUE_TYPE) {
+      const stray2 = Object.keys(node).filter((k) => !OPAQUE_KEYS.has(k));
+      return stray2.length ? `${showList(stray2)} cannot be written on a ${OPAQUE_TYPE} node` : null;
+    }
+    if (!SPEC_TYPES.includes(type)) return `Unknown Spec node type: ${showValue(type)}`;
+    const allowed = /* @__PURE__ */ new Set([...SPEC_VOCABULARY[type], ...SHORTHANDS[type] ?? []]);
+    const stray = Object.keys(node).filter((k) => !STRUCTURAL_KEYS.has(k) && !allowed.has(k));
+    if (stray.length) return `${showList(stray)} cannot be written on a ${type} node`;
+    const bad = [];
+    const unread = node[UNREAD_KEY];
+    if (unread !== void 0 && (!Array.isArray(unread) || unread.some((k) => typeof k !== "string"))) {
+      bad.push(`${UNREAD_KEY} ${showValue(unread)} must be the list of keys the pull recorded`);
+    }
+    for (const key of SPEC_VOCABULARY[type]) {
+      const value = node[key];
+      if (value === void 0) continue;
+      if (value === null) {
+        bad.push(`${key} is null (delete the key to mean its default)`);
+        continue;
+      }
+      if (COLOR_KEYS.has(key) && typeof value === "object" && !isVarPaint(value) && !("r" in value)) {
+        bad.push(`${key} ${showValue(value)} is not a colour`);
+      } else if (canonicalValue(key, value) === void 0) {
+        bad.push(`${key} ${showValue(value)} cannot be written`);
+      } else if (key === "fontSize" && !Number.isInteger(canonicalValue(key, value))) {
+        bad.push(`fontSize ${showValue(value)} must be a whole number of pixels`);
+      }
+    }
+    if (!bad.length) return null;
+    const more = bad.length > MAX_SHOWN_ITEMS ? `; and ${bad.length - MAX_SHOWN_ITEMS} more` : "";
+    return bad.slice(0, MAX_SHOWN_ITEMS).join("; ") + more;
+  }
   var isAutoLayout = (layoutMode) => typeof layoutMode === "string" && layoutMode !== "NONE";
   function orderKeys(props) {
     const out = {};
@@ -328,7 +385,11 @@
     for (const key of Object.keys(props).sort()) if (!(key in out) && props[key] !== void 0) out[key] = props[key];
     return out;
   }
-  function normalizeNode(node, parent = {}) {
+  function normalizeNode(node, parent = {}, options = {}) {
+    if (options.strict) {
+      const problem = strictProblem(node);
+      if (problem) throw new Error(problem);
+    }
     if (node.type === OPAQUE_TYPE) {
       return orderKeys({
         type: OPAQUE_TYPE,
@@ -339,7 +400,7 @@
       });
     }
     const type = node.type;
-    if (!SPEC_TYPES.includes(type)) throw new Error(`Unknown Spec node type: ${JSON.stringify(node.type)}`);
+    if (!SPEC_TYPES.includes(type)) throw new Error(`Unknown Spec node type: ${showValue(node.type)}`);
     const src = { ...node };
     if (type === "text") {
       if (src.fontStyle === void 0 && src.fontWeight !== void 0) src.fontStyle = fontWeightToStyle(Number(src.fontWeight));
@@ -355,6 +416,8 @@
       const value = canonicalValue(key, src[key]);
       if (value !== void 0) out[key] = value;
     }
+    const unread = Array.isArray(src[UNREAD_KEY]) ? [...new Set(src[UNREAD_KEY].filter((k) => typeof k === "string"))].sort() : [];
+    if (unread.length) out[UNREAD_KEY] = unread;
     if (isAutoLayout(parent.layoutMode) && out.layoutPositioning !== "ABSOLUTE") {
       delete out.x;
       delete out.y;
@@ -374,7 +437,7 @@
     if (typeof out.fontSize === "number" && !Number.isInteger(out.fontSize)) delete out.fontSize;
     const defaults = SPEC_DEFAULTS[type];
     for (const key of Object.keys(out)) {
-      if (key === "type" || NEVER_DROPPED.has(key) || !(key in defaults)) continue;
+      if (key === "type" || NEVER_DROPPED.has(key) || !(key in defaults) || unread.includes(key)) continue;
       if (stableStringify(out[key]) === stableStringify(defaults[key])) delete out[key];
     }
     return orderKeys(out);
@@ -385,6 +448,42 @@
     if (Array.isArray(value)) return "[" + value.map((v) => v === void 0 ? "null" : stableStringify(v)).join(",") + "]";
     const keys = Object.keys(value).filter((k) => value[k] !== void 0).sort();
     return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(value[k])).join(",") + "}";
+  }
+  function hashString(text) {
+    let h1 = 3735928559;
+    let h2 = 1103547991;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ h1 >>> 16, 2246822507);
+    h1 ^= Math.imul(h2 ^ h2 >>> 13, 3266489909);
+    h2 = Math.imul(h2 ^ h2 >>> 16, 2246822507);
+    h2 ^= Math.imul(h1 ^ h1 >>> 13, 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
+  }
+  function hashProps(props) {
+    return hashString(stableStringify(props));
+  }
+  function lockProps(props) {
+    if (typeof props.pathData !== "string") return props;
+    const { pathData, ...rest } = props;
+    return orderKeys({ ...rest, pathHash: hashString(pathData) });
+  }
+  function lockNodesFromTree(tree, rootParentId) {
+    const nodes = {};
+    const visit = (node, parentId) => {
+      const { id, children, ...props } = node;
+      if (typeof id !== "string" || !id) throw new Error("Every node in a pulled Spec needs an id");
+      if (nodes[id]) throw new Error(`Duplicate node id in Spec: ${id}`);
+      const kids = Array.isArray(children) ? children : [];
+      const stored = lockProps(props);
+      nodes[id] = { props: stored, propsHash: hashProps(stored), parentId, children: kids.map((child) => child.id) };
+      for (const child of kids) visit(child, id);
+    };
+    visit(tree, rootParentId);
+    return nodes;
   }
 
   // src/llm2figma_plugin/src/utils.ts
@@ -8744,8 +8843,9 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     "assert_contained",
     "snapshot_positions",
     "diff_positions",
-    // L2F_SPEC_SYNC: reads a subtree; the Spec file is written by the server.
-    "export_spec"
+    // L2F_SPEC_SYNC: read a subtree; the Spec file is written by the server.
+    "export_spec",
+    "read_spec_nodes"
   ]);
   var COMMAND_EDITORS = {};
   function allowedEditors(command) {
@@ -8898,15 +8998,22 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       layoutSizingVertical: node.layoutSizingVertical
     };
   }
-  async function paintedProps(node, cache) {
+  function unreadList() {
+    const unread = [];
+    return { unread, mark: (key, value) => {
+      if (value === void 0) unread.push(key);
+      return value;
+    } };
+  }
+  async function paintedProps(node, cache, mark) {
     return {
       width: node.width,
       height: node.height,
-      fillColor: await solidColor(node.fills, cache),
-      strokeColor: await solidColor(node.strokes, cache),
-      strokeWeight: notMixed(node.strokeWeight),
+      fillColor: mark("fillColor", await solidColor(node.fills, cache)),
+      strokeColor: mark("strokeColor", await solidColor(node.strokes, cache)),
+      strokeWeight: mark("strokeWeight", notMixed(node.strokeWeight)),
       strokeAlign: node.strokeAlign,
-      effects: readEffects(node.effects)
+      effects: mark("effects", readEffects(node.effects))
     };
   }
   function sharedStrokeCap(node) {
@@ -8934,15 +9041,25 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     return out;
   }
   async function readSpecNode(node, cache) {
+    const read = await readSpecValues(node, cache);
+    if ("props" in read && read.unread.length) read.props[UNREAD_KEY] = [...read.unread].sort();
+    return "props" in read ? { props: read.props } : read;
+  }
+  async function readSpecValues(node, cache) {
     const reason = opaqueReason(node);
     if (reason) return { opaque: reason };
     const type = SPEC_TYPE_OF[node.type];
+    const { unread, mark } = unreadList();
+    const props = await readByType(node, type, cache, mark);
+    return props ? { props, unread } : { opaque: "main component missing" };
+  }
+  async function readByType(node, type, cache, mark) {
     switch (type) {
       case "frame":
-        return { props: {
+        return {
           ...common(node, type),
-          ...await paintedProps(node, cache),
-          cornerRadius: notMixed(node.cornerRadius),
+          ...await paintedProps(node, cache, mark),
+          cornerRadius: mark("cornerRadius", notMixed(node.cornerRadius)),
           clipsContent: node.clipsContent,
           layoutMode: node.layoutMode,
           layoutWrap: node.layoutWrap,
@@ -8955,14 +9072,21 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           itemSpacing: node.itemSpacing,
           counterAxisSpacing: node.counterAxisSpacing,
           itemReverseZIndex: node.itemReverseZIndex
-        } };
+        };
       case "rectangle":
-        return { props: { ...common(node, type), ...await paintedProps(node, cache), cornerRadius: notMixed(node.cornerRadius) } };
+        return { ...common(node, type), ...await paintedProps(node, cache, mark), cornerRadius: mark("cornerRadius", notMixed(node.cornerRadius)) };
       case "vector":
-        return { props: { ...common(node, type), ...await paintedProps(node, cache), strokeCap: sharedStrokeCap(node), pathData: singlePath(node) } };
+        return {
+          ...common(node, type),
+          ...await paintedProps(node, cache, mark),
+          strokeCap: mark("strokeCap", sharedStrokeCap(node)),
+          pathData: mark("pathData", singlePath(node))
+        };
       case "text": {
         const letterSpacing = node.letterSpacing && node.letterSpacing.unit === "PERCENT" && node.letterSpacing.value === 0 ? 0 : pixels(node.letterSpacing);
-        return { props: {
+        const lineHeight = node.lineHeight && node.lineHeight.unit === "AUTO" ? void 0 : mark("lineHeight", pixels(node.lineHeight));
+        const fontSize = typeof node.fontSize === "number" && Number.isInteger(round2(node.fontSize)) ? node.fontSize : mark("fontSize", void 0);
+        return {
           ...common(node, type),
           // An auto-renamed layer follows its characters: its name is not its own.
           name: node.autoRename === true ? void 0 : node.name,
@@ -8971,29 +9095,27 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           textAutoResize: node.textAutoResize,
           width: node.width,
           height: node.height,
-          effects: readEffects(node.effects),
+          effects: mark("effects", readEffects(node.effects)),
           fontFamily: node.fontName && node.fontName.family,
           fontStyle: node.fontName && node.fontName.style,
-          fontSize: node.fontSize,
-          fontColor: await solidColor(node.fills, cache),
-          lineHeight: pixels(node.lineHeight),
-          letterSpacing,
+          fontSize,
+          fontColor: mark("fontColor", await solidColor(node.fills, cache)),
+          lineHeight,
+          letterSpacing: mark("letterSpacing", letterSpacing),
           textCase: node.textCase
-        } };
+        };
       }
       case "instance": {
         const main = await cache.mainComponent(node);
-        if (!main) return { opaque: "main component missing" };
-        return { props: {
+        if (!main) return null;
+        return {
           ...common(node, type),
           ...cache.componentSource(main),
           properties: flatProperties(node),
           width: node.width,
           height: node.height
-        } };
+        };
       }
-      default:
-        return { opaque: "unsupported type" };
     }
   }
   function opaqueNode(node, reason, truncated = false) {
@@ -9003,8 +9125,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     return 1 + (Array.isArray(node.children) ? node.children.reduce((n, child) => n + countNodes(child), 0) : 0);
   }
   var clamp = (value, fallback, min, max) => Math.min(max, Math.max(min, Math.floor(typeof value === "number" && isFinite(value) ? value : fallback)));
-  async function exportSpec(params) {
+  async function readSubtree2(params, options) {
     const { nodeId, expect, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+    const { commandType } = options;
+    const forced = options.forced ?? /* @__PURE__ */ new Map();
     if (!nodeId || typeof nodeId !== "string") throw new Error("Missing nodeId parameter");
     if (nodeId.includes(";")) throw new Error(`Cannot pull ${nodeId}: it is inside an instance. Pull a node outside the instance; instances are exported as leaves.`);
     const { node: root, page, fileKey, fileName } = await resolveSpecTarget(nodeId, expect || {});
@@ -9020,7 +9144,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     let bytes = 0;
     let opaqueCount = 0;
     let truncatedCount = 0;
-    if (commandId) await sendProgressUpdate(commandId, "export_spec", "started", 0, nodeBudget, 0, `Reading up to ${nodeBudget} nodes`);
+    if (commandId) await sendProgressUpdate(commandId, commandType, "started", 0, nodeBudget, 0, `Reading up to ${nodeBudget} nodes`);
     const placeholder = (node, reason) => {
       opaqueCount++;
       truncatedCount++;
@@ -9029,7 +9153,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const readOne = async (node, parent2) => {
       read++;
       if (commandId && read % PROGRESS_EVERY === 0) {
-        await sendProgressUpdate(commandId, "export_spec", "in_progress", Math.min(99, Math.round(read / nodeBudget * 100)), nodeBudget, read, `Read ${read} nodes`);
+        await sendProgressUpdate(commandId, commandType, "in_progress", Math.min(99, Math.round(read / nodeBudget * 100)), nodeBudget, read, `Read ${read} nodes`);
       }
       const result = await readSpecNode(node, cache);
       const raw = "props" in result ? result.props : opaqueNode(node, result.opaque);
@@ -9053,6 +9177,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       const { node, out, depth, layoutMode } = queue[i];
       out.children = [];
       for (const child of node.children || []) {
+        const recorded = forced.get(child.id);
+        if (recorded !== void 0) {
+          opaqueCount++;
+          out.children.push(opaqueNode(child, recorded, true));
+          continue;
+        }
         if (depth >= depthLimit) {
           out.children.push(placeholder(child, "depth limit"));
           continue;
@@ -9078,17 +9208,71 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
     }
     const tree = top.out;
-    if (commandId) await sendProgressUpdate(commandId, "export_spec", "completed", 100, nodeBudget, read, `Read ${read} nodes`);
+    if (commandId) await sendProgressUpdate(commandId, commandType, "completed", 100, nodeBudget, read, `Read ${read} nodes`);
     return {
+      root,
       fileKey,
       fileName,
       pageId: page.id,
       rootId: root.id,
       rootParentId: parent ? parent.id : null,
+      rootParentLayoutMode: parent && parent.type !== "PAGE" ? parent.layoutMode : null,
       tree,
-      nodeCount: countNodes(tree),
       opaqueCount,
       truncated: truncatedCount > 0
+    };
+  }
+  async function exportSpec(params) {
+    const read = await readSubtree2(params, { commandType: "export_spec" });
+    return {
+      fileKey: read.fileKey,
+      fileName: read.fileName,
+      pageId: read.pageId,
+      rootId: read.rootId,
+      rootParentId: read.rootParentId,
+      tree: read.tree,
+      nodeCount: countNodes(read.tree),
+      opaqueCount: read.opaqueCount,
+      truncated: read.truncated
+    };
+  }
+  function liveSize(node) {
+    return node && typeof node.width === "number" && typeof node.height === "number" ? { width: round2(node.width), height: round2(node.height) } : void 0;
+  }
+  async function readSpecNodes(params) {
+    const { rootId, expect, baseHashes, truncated, sizeIds, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+    if (!rootId || typeof rootId !== "string") throw new Error("Missing rootId parameter");
+    const bases = baseHashes && typeof baseHashes === "object" ? baseHashes : {};
+    const forced = /* @__PURE__ */ new Map();
+    if (truncated && typeof truncated === "object") {
+      for (const [id, reason] of Object.entries(truncated)) if (typeof reason === "string") forced.set(id, reason);
+    }
+    const read = await readSubtree2(
+      { nodeId: rootId, expect, maxNodes, maxDepth, maxBytes, commandId },
+      { commandType: "read_spec_nodes", forced }
+    );
+    const entries = lockNodesFromTree(read.tree, read.rootParentId);
+    const nodes = {};
+    for (const [id, entry] of Object.entries(entries)) {
+      const out = { propsHash: entry.propsHash, parentId: entry.parentId, children: entry.children };
+      if (bases[id] !== entry.propsHash) out.props = entry.props;
+      nodes[id] = out;
+    }
+    for (const id of Array.isArray(sizeIds) ? sizeIds : []) {
+      if (!nodes[id]) continue;
+      const size = liveSize(id === read.rootId ? read.root : await figma.getNodeByIdAsync(id));
+      if (size) nodes[id].size = size;
+    }
+    return {
+      fileKey: read.fileKey,
+      fileName: read.fileName,
+      pageId: read.pageId,
+      rootId: read.rootId,
+      rootParentId: read.rootParentId,
+      rootParentLayoutMode: read.rootParentLayoutMode,
+      truncated: read.truncated,
+      nodeCount: Object.keys(nodes).length,
+      nodes
     };
   }
 
@@ -9370,6 +9554,8 @@ ${detail}`);
         return await diffPositions(params);
       case "export_spec":
         return await exportSpec(params);
+      case "read_spec_nodes":
+        return await readSpecNodes(params);
       case "delete_node":
         return await deleteNode(params);
       case "delete_multiple_nodes":

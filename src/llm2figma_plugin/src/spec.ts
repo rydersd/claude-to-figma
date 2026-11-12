@@ -3,13 +3,15 @@
 // property here is in SPEC_VOCABULARY, which both can write back. What cannot
 // be read faithfully is left out here (figma.mixed values, paint lists with
 // more than one visible paint or a non-solid paint, ambiguous variables,
-// non-pixel line height and letter spacing, disagreeing stroke caps, multi-path
-// vectors); text with more than one style is an OpaqueNode. The shared
-// normaliser (src/shared/spec.ts) then drops derived values and defaults.
+// non-pixel line height and letter spacing, fractional font sizes, disagreeing
+// stroke caps, multi-path vectors) and its key listed in the node's `$unread`,
+// so an absent key is never mistaken for its default; text with more than one
+// style is an OpaqueNode. The shared normaliser (src/shared/spec.ts) then drops
+// derived values and defaults.
 // `figma` is a global provided by the Figma plugin runtime.
 
 import { WALK_LIMITS } from "../../shared/walk";
-import { NO_PAINT, OPAQUE_TYPE, colorToHex, normalizeNode, round2, type ParentLayout, type SpecType } from "../../shared/spec";
+import { NO_PAINT, OPAQUE_TYPE, UNREAD_KEY, colorToHex, lockNodesFromTree, normalizeNode, round2, type ParentLayout, type SpecType } from "../../shared/spec";
 import { getVariableByName, sendProgressUpdate } from "./utils";
 
 const SPEC_TYPE_OF: Record<string, SpecType> = {
@@ -180,11 +182,19 @@ function common(node: any, type: SpecType): Record<string, unknown> {
   };
 }
 
-async function paintedProps(node: any, cache: SpecReadCache): Promise<Record<string, unknown>> {
+// Records a key whose Figma value the format cannot express: `value` is
+// undefined because it could not be read, not because it is absent.
+type Unread = (key: string, value: unknown) => unknown;
+function unreadList(): { unread: string[]; mark: Unread } {
+  const unread: string[] = [];
+  return { unread, mark: (key, value) => { if (value === undefined) unread.push(key); return value; } };
+}
+
+async function paintedProps(node: any, cache: SpecReadCache, mark: Unread): Promise<Record<string, unknown>> {
   return {
     width: node.width, height: node.height,
-    fillColor: await solidColor(node.fills, cache), strokeColor: await solidColor(node.strokes, cache),
-    strokeWeight: notMixed(node.strokeWeight), strokeAlign: node.strokeAlign, effects: readEffects(node.effects),
+    fillColor: mark("fillColor", await solidColor(node.fills, cache)), strokeColor: mark("strokeColor", await solidColor(node.strokes, cache)),
+    strokeWeight: mark("strokeWeight", notMixed(node.strokeWeight)), strokeAlign: node.strokeAlign, effects: mark("effects", readEffects(node.effects)),
   };
 }
 
@@ -222,48 +232,66 @@ function flatProperties(node: any): Record<string, unknown> {
 export type SpecRead = { props: Record<string, unknown> } | { opaque: string };
 
 // A node's properties in Spec vocabulary, before normalisation, or the reason
-// it is an OpaqueNode.
+// it is an OpaqueNode. Keys left out because their value cannot be expressed
+// are listed, sorted, in `$unread`.
 export async function readSpecNode(node: any, cache: SpecReadCache): Promise<SpecRead> {
+  const read = await readSpecValues(node, cache);
+  if ("props" in read && read.unread.length) read.props[UNREAD_KEY] = [...read.unread].sort();
+  return "props" in read ? { props: read.props } : read;
+}
+
+async function readSpecValues(node: any, cache: SpecReadCache): Promise<{ props: Record<string, unknown>; unread: string[] } | { opaque: string }> {
   const reason = opaqueReason(node);
   if (reason) return { opaque: reason };
   const type = SPEC_TYPE_OF[node.type];
+  const { unread, mark } = unreadList();
+  const props = await readByType(node, type, cache, mark);
+  return props ? { props, unread } : { opaque: "main component missing" };
+}
+
+async function readByType(node: any, type: SpecType, cache: SpecReadCache, mark: Unread): Promise<Record<string, unknown> | null> {
   switch (type) {
     case "frame":
-      return { props: {
-        ...common(node, type), ...(await paintedProps(node, cache)),
-        cornerRadius: notMixed(node.cornerRadius), clipsContent: node.clipsContent, layoutMode: node.layoutMode,
+      return {
+        ...common(node, type), ...(await paintedProps(node, cache, mark)),
+        cornerRadius: mark("cornerRadius", notMixed(node.cornerRadius)), clipsContent: node.clipsContent, layoutMode: node.layoutMode,
         layoutWrap: node.layoutWrap, paddingTop: node.paddingTop, paddingRight: node.paddingRight,
         paddingBottom: node.paddingBottom, paddingLeft: node.paddingLeft, primaryAxisAlignItems: node.primaryAxisAlignItems,
         counterAxisAlignItems: node.counterAxisAlignItems, itemSpacing: node.itemSpacing,
         counterAxisSpacing: node.counterAxisSpacing, itemReverseZIndex: node.itemReverseZIndex,
-      } };
+      };
     case "rectangle":
-      return { props: { ...common(node, type), ...(await paintedProps(node, cache)), cornerRadius: notMixed(node.cornerRadius) } };
+      return { ...common(node, type), ...(await paintedProps(node, cache, mark)), cornerRadius: mark("cornerRadius", notMixed(node.cornerRadius)) };
     case "vector":
-      return { props: { ...common(node, type), ...(await paintedProps(node, cache)), strokeCap: sharedStrokeCap(node), pathData: singlePath(node) } };
+      return {
+        ...common(node, type), ...(await paintedProps(node, cache, mark)),
+        strokeCap: mark("strokeCap", sharedStrokeCap(node)), pathData: mark("pathData", singlePath(node)),
+      };
     case "text": {
       const letterSpacing = node.letterSpacing && node.letterSpacing.unit === "PERCENT" && node.letterSpacing.value === 0
         ? 0 : pixels(node.letterSpacing);
-      return { props: {
+      // AUTO line height is the absent default; any other non-pixel value is unread.
+      const lineHeight = node.lineHeight && node.lineHeight.unit === "AUTO" ? undefined : mark("lineHeight", pixels(node.lineHeight));
+      // The write path is whole pixels only.
+      const fontSize = typeof node.fontSize === "number" && Number.isInteger(round2(node.fontSize)) ? node.fontSize : mark("fontSize", undefined);
+      return {
         ...common(node, type),
         // An auto-renamed layer follows its characters: its name is not its own.
         name: node.autoRename === true ? undefined : node.name,
         text: node.characters, textAlignHorizontal: node.textAlignHorizontal, textAutoResize: node.textAutoResize,
-        width: node.width, height: node.height, effects: readEffects(node.effects),
+        width: node.width, height: node.height, effects: mark("effects", readEffects(node.effects)),
         fontFamily: node.fontName && node.fontName.family, fontStyle: node.fontName && node.fontName.style,
-        fontSize: node.fontSize, fontColor: await solidColor(node.fills, cache), lineHeight: pixels(node.lineHeight),
-        letterSpacing, textCase: node.textCase,
-      } };
+        fontSize, fontColor: mark("fontColor", await solidColor(node.fills, cache)), lineHeight,
+        letterSpacing: mark("letterSpacing", letterSpacing), textCase: node.textCase,
+      };
     }
     case "instance": {
       const main: any = await cache.mainComponent(node);
-      if (!main) return { opaque: "main component missing" };
-      return { props: {
+      if (!main) return null;
+      return {
         ...common(node, type), ...cache.componentSource(main), properties: flatProperties(node), width: node.width, height: node.height,
-      } };
+      };
     }
-    default:
-      return { opaque: "unsupported type" };
   }
 }
 
@@ -284,16 +312,27 @@ function countNodes(node: any): number {
 const clamp = (value: unknown, fallback: number, min: number, max: number) =>
   Math.min(max, Math.max(min, Math.floor(typeof value === "number" && isFinite(value) ? value : fallback)));
 
-// export_spec {nodeId, expect, maxNodes, maxDepth, maxBytes}: the subtree as a
-// canonical Spec tree (every node with its id). The walk is breadth-first and
+interface ReadOptions {
+  // The command name progress updates are reported under.
+  commandType: string;
+  // Nodes to read as truncated OpaqueNodes without entering them, with the
+  // reason the SpecLock recorded: the nodes the pull cut off, so a larger
+  // budget never reads them as edited. Not counted as truncated by this read.
+  forced?: ReadonlyMap<string, string>;
+}
+
+// The walk export_spec and read_spec_nodes share, {nodeId, expect, maxNodes,
+// maxDepth, maxBytes}: the subtree as a canonical Spec tree (every node with its id). The walk is breadth-first and
 // never enters an instance or an OpaqueNode. maxNodes counts the nodes read,
 // maxBytes (at most MAX_SPEC_BYTES) the serialised tree, placeholders included
 // (only a root whose own children's placeholders exceed it can go over). A node the walk could
 // not read (node budget, depth limit or byte budget) is an OpaqueNode with
 // truncated: true and a reason in its parent's children, so every frame's child
 // list is complete. Only a root that cannot be read fails the export.
-export async function exportSpec(params: any) {
+async function readSubtree(params: any, options: ReadOptions) {
   const { nodeId, expect, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+  const { commandType } = options;
+  const forced = options.forced ?? new Map<string, string>();
   if (!nodeId || typeof nodeId !== "string") throw new Error("Missing nodeId parameter");
   if (nodeId.includes(";")) throw new Error(`Cannot pull ${nodeId}: it is inside an instance. Pull a node outside the instance; instances are exported as leaves.`);
   const { node: root, page, fileKey, fileName } = await resolveSpecTarget(nodeId, expect || {});
@@ -310,7 +349,7 @@ export async function exportSpec(params: any) {
   let bytes = 0;
   let opaqueCount = 0;
   let truncatedCount = 0;
-  if (commandId) await sendProgressUpdate(commandId, "export_spec", "started", 0, nodeBudget, 0, `Reading up to ${nodeBudget} nodes`);
+  if (commandId) await sendProgressUpdate(commandId, commandType, "started", 0, nodeBudget, 0, `Reading up to ${nodeBudget} nodes`);
 
   const placeholder = (node: any, reason: string) => {
     opaqueCount++;
@@ -321,7 +360,7 @@ export async function exportSpec(params: any) {
   const readOne = async (node: any, parent: ParentLayout) => {
     read++;
     if (commandId && read % PROGRESS_EVERY === 0) {
-      await sendProgressUpdate(commandId, "export_spec", "in_progress", Math.min(99, Math.round((read / nodeBudget) * 100)), nodeBudget, read, `Read ${read} nodes`);
+      await sendProgressUpdate(commandId, commandType, "in_progress", Math.min(99, Math.round((read / nodeBudget) * 100)), nodeBudget, read, `Read ${read} nodes`);
     }
     const result = await readSpecNode(node, cache);
     const raw = "props" in result ? result.props : opaqueNode(node, result.opaque);
@@ -351,6 +390,8 @@ export async function exportSpec(params: any) {
     const { node, out, depth, layoutMode } = queue[i];
     out.children = [];
     for (const child of node.children || []) {
+      const recorded = forced.get(child.id);
+      if (recorded !== undefined) { opaqueCount++; out.children.push(opaqueNode(child, recorded, true)); continue; }
       if (depth >= depthLimit) { out.children.push(placeholder(child, "depth limit")); continue; }
       if (!stoppedBy && read >= nodeBudget) stoppedBy = "node budget";
       if (stoppedBy) { out.children.push(placeholder(child, stoppedBy)); continue; }
@@ -371,9 +412,66 @@ export async function exportSpec(params: any) {
   }
   const tree = top.out;
 
-  if (commandId) await sendProgressUpdate(commandId, "export_spec", "completed", 100, nodeBudget, read, `Read ${read} nodes`);
+  if (commandId) await sendProgressUpdate(commandId, commandType, "completed", 100, nodeBudget, read, `Read ${read} nodes`);
   return {
-    fileKey, fileName, pageId: page.id, rootId: root.id, rootParentId: parent ? parent.id : null,
-    tree, nodeCount: countNodes(tree), opaqueCount, truncated: truncatedCount > 0,
+    root, fileKey, fileName, pageId: page.id as string, rootId: root.id as string, rootParentId: parent ? parent.id as string : null,
+    rootParentLayoutMode: (parent && parent.type !== "PAGE" ? parent.layoutMode : null) as string | null,
+    tree, opaqueCount, truncated: truncatedCount > 0,
+  };
+}
+
+// export_spec {nodeId, expect, maxNodes, maxDepth, maxBytes}: the subtree as a
+// canonical Spec tree, for pull_spec to write.
+export async function exportSpec(params: any) {
+  const read = await readSubtree(params, { commandType: "export_spec" });
+  return {
+    fileKey: read.fileKey, fileName: read.fileName, pageId: read.pageId, rootId: read.rootId, rootParentId: read.rootParentId,
+    tree: read.tree, nodeCount: countNodes(read.tree), opaqueCount: read.opaqueCount, truncated: read.truncated,
+  };
+}
+
+// Width and height as Figma holds them, rounded like every other number.
+function liveSize(node: any): { width: number; height: number } | undefined {
+  return node && typeof node.width === "number" && typeof node.height === "number"
+    ? { width: round2(node.width), height: round2(node.height) } : undefined;
+}
+
+// read_spec_nodes {rootId, expect, baseHashes, truncated, sizeIds, maxNodes,
+// maxDepth, maxBytes}: for plan_spec, every live node under the root as
+// {propsHash, parentId, children}, read by the same walk as export_spec, so an
+// untouched node hashes the same as its SpecLock entry. `truncated` maps the
+// ids the SpecLock recorded as cut off to their recorded reason; they are read
+// as those placeholders whatever the budget. `props` (in SpecLock form) is
+// included only when propsHash differs from the baseHashes entry (or there is
+// none), so an unchanged design costs a hash per node. `size` is the live width
+// and height of the nodes in sizeIds (an update naming one dimension needs the
+// other). Writes nothing.
+export async function readSpecNodes(params: any) {
+  const { rootId, expect, baseHashes, truncated, sizeIds, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+  if (!rootId || typeof rootId !== "string") throw new Error("Missing rootId parameter");
+  const bases: Record<string, string> = baseHashes && typeof baseHashes === "object" ? baseHashes : {};
+  const forced = new Map<string, string>();
+  if (truncated && typeof truncated === "object") {
+    for (const [id, reason] of Object.entries(truncated)) if (typeof reason === "string") forced.set(id, reason);
+  }
+  const read = await readSubtree(
+    { nodeId: rootId, expect, maxNodes, maxDepth, maxBytes, commandId },
+    { commandType: "read_spec_nodes", forced },
+  );
+  const entries = lockNodesFromTree(read.tree, read.rootParentId);
+  const nodes: Record<string, Record<string, unknown>> = {};
+  for (const [id, entry] of Object.entries(entries)) {
+    const out: Record<string, unknown> = { propsHash: entry.propsHash, parentId: entry.parentId, children: entry.children };
+    if (bases[id] !== entry.propsHash) out.props = entry.props;
+    nodes[id] = out;
+  }
+  for (const id of Array.isArray(sizeIds) ? sizeIds : []) {
+    if (!nodes[id]) continue;
+    const size = liveSize(id === read.rootId ? read.root : await figma.getNodeByIdAsync(id));
+    if (size) nodes[id].size = size;
+  }
+  return {
+    fileKey: read.fileKey, fileName: read.fileName, pageId: read.pageId, rootId: read.rootId, rootParentId: read.rootParentId,
+    rootParentLayoutMode: read.rootParentLayoutMode, truncated: read.truncated, nodeCount: Object.keys(nodes).length, nodes,
   };
 }

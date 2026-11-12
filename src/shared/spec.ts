@@ -9,7 +9,9 @@
 // values equal to SPEC_DEFAULTS left out. Both sides go through it, so raw
 // floats and spelling differences never reach a comparison. The plugin leaves
 // out what it cannot read faithfully (figma.mixed values, multi-paint lists,
-// ambiguous variables...) before calling it; see src/llm2figma_plugin/src/spec.ts.
+// ambiguous variables...) before calling it, listing those keys in `$unread`;
+// see src/llm2figma_plugin/src/spec.ts. Spec input is normalised with
+// {strict: true}, which refuses what the default mode would silently drop.
 
 export const SPEC_VERSION = 1;
 export const SPEC_LOCK_VERSION = 1;
@@ -23,6 +25,15 @@ export const SPEC_TYPES: readonly SpecType[] = ["frame", "text", "rectangle", "v
 // truncated: true in its parent's children, so the parent's child list is
 // always complete and nothing reads as removed.
 export const OPAQUE_TYPE = "$opaque";
+
+// `"$unread": [sorted keys]` on an editable node: the vocabulary keys whose
+// Figma value the format cannot express (a gradient fill, mixed stroke weights,
+// a fractional font size...), so the export left them out. An absent key listed
+// here does NOT mean its default: Figma holds something else. Written by the
+// export only; it is part of the node's props, its SpecLock entry and its
+// propsHash. Allowed on every editable type besides SPEC_VOCABULARY; a Spec may
+// neither edit nor remove it, and plan_spec never writes a key listed in it.
+export const UNREAD_KEY = "$unread";
 
 // A colour with no paint: applyColorPaint writes alpha 0 as an empty paint list.
 export const NO_PAINT = "#00000000";
@@ -40,7 +51,7 @@ const AUTO_LAYOUT = [
 // key here is written by both createNode and updateNodeProperties for that
 // type (tests/spec-sync.test.ts, "writable vocabulary parity"); FILL sizing on
 // a frame is written by applyDeferredFill(node, spec, only, {checkParent: true}).
-// Anything else is dropped by normalizeNode.
+// Anything else is dropped by normalizeNode (and refused by its strict mode).
 export const SPEC_VOCABULARY: Record<SpecType, readonly string[]> = {
   frame: [...COMMON, "width", "height", ...PAINTED, "cornerRadius", "clipsContent", "layoutMode", ...AUTO_LAYOUT, ...SIZING],
   rectangle: [...COMMON, "width", "height", ...PAINTED, "cornerRadius", ...SIZING],
@@ -99,8 +110,30 @@ const KEY_ORDER = [
   "visible", "x", "y", "width", "height",
   "layoutPositioning", ...SIZING, "layoutMode", ...AUTO_LAYOUT, "clipsContent", "fillColor", "strokeColor", "strokeWeight",
   "strokeAlign", "strokeCap", "cornerRadius", "opacity", "effects", "fontFamily", "fontStyle", "fontSize", "fontColor",
-  "lineHeight", "letterSpacing", "textCase", "textAlignHorizontal", "textAutoResize", "pathData", "pathHash", "properties",
+  "lineHeight", "letterSpacing", "textCase", "textAlignHorizontal", "textAutoResize", "pathData", "pathHash", "properties", UNREAD_KEY,
 ];
+
+// Errors quote user input; every value, key list and type string in one is
+// bounded so a pathological Spec cannot produce a huge message.
+export const MAX_SHOWN_CHARS = 80;
+export const MAX_SHOWN_ITEMS = 10;
+
+export function clip(text: string, max: number = MAX_SHOWN_CHARS): string {
+  return text.length > max ? text.slice(0, max - 3) + "..." : text;
+}
+
+// A value as JSON, clipped.
+export function showValue(value: unknown): string {
+  let text: string;
+  try { text = JSON.stringify(value) ?? String(value); } catch { text = String(value); }
+  return clip(text);
+}
+
+// Up to MAX_SHOWN_ITEMS items, each clipped, then "and N more".
+export function showList(items: readonly unknown[]): string {
+  const shown = items.slice(0, MAX_SHOWN_ITEMS).map(item => clip(String(item))).join(", ");
+  return items.length > MAX_SHOWN_ITEMS ? `${shown} and ${items.length - MAX_SHOWN_ITEMS} more` : shown;
+}
 
 // Shared with the plugin's create path (utils.ts re-exports it), so a Spec's
 // fontWeight shorthand maps to the same fontStyle create would load.
@@ -211,6 +244,54 @@ export function canonicalValue(key: string, value: unknown): unknown {
 
 export interface ParentLayout { layoutMode?: string }
 
+export interface NormalizeOptions {
+  // For user input (a Spec file): throw, naming each one, instead of silently
+  // dropping a key the type cannot write or a value the write path cannot take.
+  // Otherwise such a key would read as "deleted" and reset to its default.
+  // Reads from Figma are normalised without it (the plugin already left out
+  // what it cannot express and listed it in $unread).
+  strict?: boolean;
+}
+
+// Keys a Spec node may carry besides its type's writable vocabulary.
+const STRUCTURAL_KEYS = new Set(["id", "type", "children", UNREAD_KEY]);
+// create_node_tree shorthands the normaliser resolves (fontWeight -> fontStyle).
+const SHORTHANDS: Partial<Record<SpecType, readonly string[]>> = { text: ["fontWeight"] };
+const OPAQUE_KEYS = new Set(["id", "type", "name", "nodeType", "truncated", "reason", "children"]);
+
+// What strict normalisation refuses in a raw Spec node, as one message, or null.
+function strictProblem(node: Record<string, any>): string | null {
+  const type = node.type;
+  if (type === OPAQUE_TYPE) {
+    const stray = Object.keys(node).filter(k => !OPAQUE_KEYS.has(k));
+    return stray.length ? `${showList(stray)} cannot be written on a ${OPAQUE_TYPE} node` : null;
+  }
+  if (!SPEC_TYPES.includes(type)) return `Unknown Spec node type: ${showValue(type)}`;
+  const allowed = new Set([...SPEC_VOCABULARY[type as SpecType], ...(SHORTHANDS[type as SpecType] ?? [])]);
+  const stray = Object.keys(node).filter(k => !STRUCTURAL_KEYS.has(k) && !allowed.has(k));
+  if (stray.length) return `${showList(stray)} cannot be written on a ${type} node`;
+  const bad: string[] = [];
+  const unread = node[UNREAD_KEY];
+  if (unread !== undefined && (!Array.isArray(unread) || unread.some(k => typeof k !== "string"))) {
+    bad.push(`${UNREAD_KEY} ${showValue(unread)} must be the list of keys the pull recorded`);
+  }
+  for (const key of SPEC_VOCABULARY[type as SpecType]) {
+    const value = node[key];
+    if (value === undefined) continue;
+    if (value === null) { bad.push(`${key} is null (delete the key to mean its default)`); continue; }
+    if (COLOR_KEYS.has(key) && typeof value === "object" && !isVarPaint(value) && !("r" in (value as object))) {
+      bad.push(`${key} ${showValue(value)} is not a colour`);
+    } else if (canonicalValue(key, value) === undefined) {
+      bad.push(`${key} ${showValue(value)} cannot be written`);
+    } else if (key === "fontSize" && !Number.isInteger(canonicalValue(key, value))) {
+      bad.push(`fontSize ${showValue(value)} must be a whole number of pixels`);
+    }
+  }
+  if (!bad.length) return null;
+  const more = bad.length > MAX_SHOWN_ITEMS ? `; and ${bad.length - MAX_SHOWN_ITEMS} more` : "";
+  return bad.slice(0, MAX_SHOWN_ITEMS).join("; ") + more;
+}
+
 const isAutoLayout = (layoutMode: unknown) => typeof layoutMode === "string" && layoutMode !== "NONE";
 
 function orderKeys(props: Record<string, unknown>): Record<string, unknown> {
@@ -223,7 +304,11 @@ function orderKeys(props: Record<string, unknown>): Record<string, unknown> {
 // The canonical properties of one node (no id, no children). `node` is a node
 // in Spec vocabulary, read from Figma or from a Spec file; `parent` is its
 // parent's layout, which decides whether x and y are derived.
-export function normalizeNode(node: Record<string, any>, parent: ParentLayout = {}): Record<string, unknown> {
+export function normalizeNode(node: Record<string, any>, parent: ParentLayout = {}, options: NormalizeOptions = {}): Record<string, unknown> {
+  if (options.strict) {
+    const problem = strictProblem(node);
+    if (problem) throw new Error(problem);
+  }
   if (node.type === OPAQUE_TYPE) {
     return orderKeys({
       type: OPAQUE_TYPE, name: node.name, nodeType: node.nodeType, truncated: node.truncated === true ? true : undefined,
@@ -231,7 +316,7 @@ export function normalizeNode(node: Record<string, any>, parent: ParentLayout = 
     });
   }
   const type = node.type as SpecType;
-  if (!SPEC_TYPES.includes(type)) throw new Error(`Unknown Spec node type: ${JSON.stringify(node.type)}`);
+  if (!SPEC_TYPES.includes(type)) throw new Error(`Unknown Spec node type: ${showValue(node.type)}`);
 
   // Shorthands create_node_tree accepts, resolved the way create resolves them.
   const src: Record<string, any> = { ...node };
@@ -252,6 +337,8 @@ export function normalizeNode(node: Record<string, any>, parent: ParentLayout = 
     const value = canonicalValue(key, src[key]);
     if (value !== undefined) out[key] = value;
   }
+  const unread = Array.isArray(src[UNREAD_KEY]) ? [...new Set(src[UNREAD_KEY].filter((k: unknown) => typeof k === "string") as string[])].sort() : [];
+  if (unread.length) out[UNREAD_KEY] = unread;
 
   // Values Figma derives from layout: comparing them would report untouched nodes.
   if (isAutoLayout(parent.layoutMode) && out.layoutPositioning !== "ABSOLUTE") { delete out.x; delete out.y; }
@@ -272,9 +359,11 @@ export function normalizeNode(node: Record<string, any>, parent: ParentLayout = 
   // The write path is pixels-only and uses parseInt.
   if (typeof out.fontSize === "number" && !Number.isInteger(out.fontSize)) delete out.fontSize;
 
+  // A value given for a key Figma holds unexpressed is a request to change it,
+  // never "the default": it is kept so plan_spec can report it.
   const defaults = SPEC_DEFAULTS[type];
   for (const key of Object.keys(out)) {
-    if (key === "type" || NEVER_DROPPED.has(key) || !(key in defaults)) continue;
+    if (key === "type" || NEVER_DROPPED.has(key) || !(key in defaults) || unread.includes(key)) continue;
     if (stableStringify(out[key]) === stableStringify(defaults[key])) delete out[key];
   }
   return orderKeys(out);
@@ -282,12 +371,12 @@ export function normalizeNode(node: Record<string, any>, parent: ParentLayout = 
 
 // A Spec tree in canonical form: ids kept, every frame given a children array,
 // each child normalised against its parent's layout.
-export function normalizeSpecTree(node: Record<string, any>, parent: ParentLayout = {}): Record<string, any> {
-  const props = normalizeNode(node, parent);
+export function normalizeSpecTree(node: Record<string, any>, parent: ParentLayout = {}, options: NormalizeOptions = {}): Record<string, any> {
+  const props = normalizeNode(node, parent, options);
   const out: Record<string, any> = node.id !== undefined ? { id: node.id, ...props } : { ...props };
   if (props.type === "frame") {
     const layout = { layoutMode: typeof node.layoutMode === "string" ? node.layoutMode : "NONE" };
-    out.children = (Array.isArray(node.children) ? node.children : []).map((child: any) => normalizeSpecTree(child, layout));
+    out.children = (Array.isArray(node.children) ? node.children : []).map((child: any) => normalizeSpecTree(child, layout, options));
   }
   return out;
 }

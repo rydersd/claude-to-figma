@@ -163,6 +163,7 @@ export type FigmaCommand =
   | "assert_contained"
   | "snapshot_positions"
   | "export_spec"
+  | "read_spec_nodes"
   | "diff_positions";
 
 export type CommandParams = {
@@ -530,6 +531,15 @@ export type CommandParams = {
   export_spec: {
     nodeId: string;
     expect?: { fileKey?: string | null; fileName?: string | null; pageId?: string | null };
+    maxNodes?: number;
+    maxDepth?: number;
+  };
+  read_spec_nodes: {
+    rootId: string;
+    expect?: { fileKey?: string | null; fileName?: string | null; pageId?: string | null };
+    baseHashes: Record<string, string>;
+    truncatedIds?: string[];
+    sizeIds?: string[];
     maxNodes?: number;
     maxDepth?: number;
   };

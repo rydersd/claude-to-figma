@@ -14,7 +14,7 @@
 
 - [Event Streaming](concepts/event-streaming.md) — How `figma_events_subscribe` / `figma_events_poll` work; priority buffer, plugin operation guard, listener lifecycle, known limitations (undo/redo, DELETE nodeName, multiplayer REMOTE).
 - [Geometry verification](concepts/geometry-verification.md) — `L2F_VERIFY` gotchas: resize read-back causes, `absoluteBoundingBox` containment and its blind spot for section offsets, snapshot expiry.
-- [Spec sync](concepts/spec-sync.md) — `L2F_SPEC_SYNC` design: shared normaliser, SpecLock props equal Spec nodes, defaults that 11d must apply on create, variable refs that must resolve back, truncated OpaqueNodes.
+- [Spec sync](concepts/spec-sync.md) — `L2F_SPEC_SYNC` design: shared normaliser, SpecLock props equal Spec nodes, defaults that 11d must apply on create, variable refs that must resolve back, truncated OpaqueNodes; plan_spec (11c): live read through the same normaliser, forced-opaque cut-offs, minimal moves, derived-key check.
 - [SF Symbol Icon Extraction](concepts/sf-symbol-icon-extraction.md) — Use `NSSymbolImageRep.outlinePath` for exact vector geometry. Do not route through PDF (Quartz flattens to image XObjects). Summary of llm-tooling pattern with forward link.
 
 ## References

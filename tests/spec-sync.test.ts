@@ -301,6 +301,21 @@ describe("spec sync (PR 11b)", () => {
       expect(normalizeNode({ type: "text", text: "a", fills: [], cornerRadius: 4 })).toEqual({ type: "text", text: "a", textAutoResize: "WIDTH_AND_HEIGHT" });
     });
 
+    test("strict mode (for Spec input) refuses what the default mode drops; $unread keys keep their value", () => {
+      const strict = { strict: true };
+      expect(normalizeNode({ type: "text", text: "a", cornerRadius: 4 })).toEqual({ type: "text", text: "a", textAutoResize: "WIDTH_AND_HEIGHT" });
+      expect(() => normalizeNode({ type: "text", text: "a", cornerRadius: 4 }, {}, strict)).toThrow("cornerRadius cannot be written on a text node");
+      expect(() => normalizeNode({ type: "rectangle", opacity: null }, {}, strict)).toThrow("opacity is null");
+      expect(() => normalizeNode({ type: "text", text: "a", fontSize: 13.5 }, {}, strict)).toThrow("fontSize 13.5 must be a whole number of pixels");
+      expect(() => normalizeNode({ type: "$opaque", name: "G", nodeType: "GROUP", reason: "unsupported type", fillColor: "#FFF" }, {}, strict)).toThrow("fillColor cannot be written on a $opaque node");
+      expect(() => normalizeSpecTree({ type: "frame", children: [{ type: "rectangle", foo: 1 }] }, {}, strict)).toThrow("foo cannot be written on a rectangle node");
+      expect(() => normalizeNode({ type: "frame", $unread: "fillColor" }, {}, strict)).toThrow("must be the list of keys the pull recorded");
+      // A key listed in $unread is never dropped as "the default": the Spec asked for that value.
+      expect(normalizeNode({ type: "rectangle", name: "R", fillColor: "#d9d9d9", $unread: ["fillColor", "cornerRadius", "fillColor"] }, {}, strict))
+        .toEqual({ type: "rectangle", name: "R", fillColor: "#D9D9D9", $unread: ["cornerRadius", "fillColor"] });
+      expect(normalizeNode({ type: "rectangle", name: "R", fillColor: "#d9d9d9" })).toEqual({ type: "rectangle", name: "R" });
+    });
+
     test("rule D: x/y, FIXED width/height, and padding, spacing and itemReverseZIndex under auto-layout are kept at their defaults", () => {
       expect(normalizeNode({ type: "rectangle", name: "R", x: 0, y: 0, width: 100, height: 100 }))
         .toEqual({ type: "rectangle", name: "R", x: 0, y: 0, width: 100, height: 100 });
@@ -530,8 +545,8 @@ describe("spec sync (PR 11b)", () => {
         expect(find(exported.tree, `Mixed ${key}`)).toEqual({ id: expect.any(String), type: "$opaque", name: `Mixed ${key}`, nodeType: "TEXT", reason: "mixed-style text" });
       }
       expect(exported.opaqueCount).toBe(keys.length);
-      // Other figma.mixed values are left out of an editable node.
-      expect(find(exported.tree, "Corners")).toEqual({ id: expect.any(String), type: "rectangle", name: "Corners", x: 0, y: 0, width: 100, height: 100, fillColor: "#FF0000" });
+      // Other figma.mixed values are left out of an editable node, and listed as unread.
+      expect(find(exported.tree, "Corners")).toEqual({ id: expect.any(String), type: "rectangle", name: "Corners", x: 0, y: 0, width: 100, height: 100, fillColor: "#FF0000", $unread: ["cornerRadius", "strokeWeight"] });
       const root = makeNode("TEXT", { name: "Rich root", characters: "x", fontSize: mixed }, page);
       await expect(exportOf(root)).rejects.toThrow("mixed-style text");
     });
@@ -1193,7 +1208,7 @@ describe("spec sync (PR 11b)", () => {
         return tools;
       };
       expect(names({})).toEqual([]);
-      expect(names({ L2F_SPEC_SYNC: "1" })).toEqual(["pull_spec"]);
+      expect(names({ L2F_SPEC_SYNC: "1" })).toEqual(["pull_spec", "plan_spec"]);
       const server = readFileSync("src/llm2figma_mcp/server.ts", "utf8");
       expect(server).toContain('registerFeature("SPEC_SYNC", registerSpecTools)');
       expect(server.match(/registerSpecTools/g)).toHaveLength(2);
