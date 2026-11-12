@@ -15,6 +15,7 @@ import { createNodeTree } from './node-tree';
 import { screenshotRegion, batchMutate, scanNodeStyles, introspectNode, setProperties, optimizeStructure, designQuery, figmaEval, diffComponents, migrateInstance, batchMigrate } from './analysis';
 import { formatError } from './utils';
 import { assertEditorAllowed } from './editor-gate';
+import { assertContained, snapshotPositions, diffPositions } from './verify';
 import { startEventStreaming, stopEventStreaming, setPluginOperationGuard } from './events';
 
 // Plugin state
@@ -169,6 +170,12 @@ async function handleCommand(command: string, params: any) {
       return await moveNode(params);
     case "resize_node":
       return await resizeNode(params);
+    case "assert_contained":
+      return await assertContained(params);
+    case "snapshot_positions":
+      return await snapshotPositions(params);
+    case "diff_positions":
+      return await diffPositions(params);
     case "delete_node":
       return await deleteNode(params);
     case "delete_multiple_nodes":

@@ -1,6 +1,10 @@
 (function () {
   'use strict';
 
+  var __defProp = Object.defineProperty;
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
   // src/shared/inspection.ts
   function boundNodeTree(root, options = {}) {
     const maxNodes = Math.min(1e3, Math.max(1, options.maxNodes ?? 100));
@@ -2690,7 +2694,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
   async function setStrokeProperties(params) {
-    const { nodeId, weight, cap, join, align, dashPattern } = params || {};
+    const { nodeId, weight, cap: cap2, join, align, dashPattern } = params || {};
     if (!nodeId) {
       throw new Error("Missing nodeId parameter");
     }
@@ -2704,8 +2708,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (weight !== void 0) {
       node.strokeWeight = weight;
     }
-    if (cap !== void 0) {
-      node.strokeCap = cap;
+    if (cap2 !== void 0) {
+      node.strokeCap = cap2;
     }
     if (join !== void 0) {
       node.strokeJoin = join;
@@ -2875,6 +2879,345 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
+  // src/shared/walk.ts
+  var WALK_LIMITS = { defaultNodes: 2e3, maxNodes: 1e4, defaultDepth: 30, maxDepth: 100 };
+  function walkTree(root, visit, options = {}, getChildren = (node) => node && node.children) {
+    const maxNodes = Math.min(WALK_LIMITS.maxNodes, Math.max(1, Math.floor(options.maxNodes ?? WALK_LIMITS.defaultNodes)));
+    const maxDepth = Math.min(WALK_LIMITS.maxDepth, Math.max(0, Math.floor(options.maxDepth ?? WALK_LIMITS.defaultDepth)));
+    let visited = 0;
+    let truncated = false;
+    const cutOff = /* @__PURE__ */ new Set();
+    const stack = [{ node: root, depth: 0, parent: null }];
+    while (stack.length) {
+      if (visited >= maxNodes) {
+        truncated = true;
+        for (const pending of stack) if (pending.parent !== null) cutOff.add(pending.parent);
+        break;
+      }
+      const { node, depth, parent } = stack.pop();
+      visited++;
+      if (visit(node, depth, parent) === false) continue;
+      const children = getChildren(node);
+      if (!children || !children.length) continue;
+      if (depth >= maxDepth) {
+        truncated = true;
+        cutOff.add(node);
+        continue;
+      }
+      for (let i = children.length - 1; i >= 0; i--) stack.push({ node: children[i], depth: depth + 1, parent: node });
+    }
+    return { visited, truncated, truncatedParents: [...cutOff], maxNodes, maxDepth };
+  }
+
+  // src/shared/verify.ts
+  var CONTAINMENT_TOLERANCE = 0.5;
+  var SIZE_EPSILON = 0.01;
+  function toBox(value) {
+    if (!value || typeof value !== "object") return null;
+    const { x, y, width, height } = value;
+    return [x, y, width, height].every((n) => typeof n === "number" && isFinite(n)) ? { x, y, width, height } : null;
+  }
+  function boxOverflow(parent, child, tolerance = CONTAINMENT_TOLERANCE) {
+    const overflow = {
+      left: parent.x - child.x,
+      top: parent.y - child.y,
+      right: child.x + child.width - (parent.x + parent.width),
+      bottom: child.y + child.height - (parent.y + parent.height)
+    };
+    return Object.values(overflow).some((v) => v > tolerance) ? overflow : null;
+  }
+  function axisCause(axis, requested, applied, s) {
+    const horizontal = axis === "width";
+    const sizing = horizontal ? s.layoutSizingHorizontal : s.layoutSizingVertical;
+    const min = horizontal ? s.minWidth : s.minHeight;
+    const max = horizontal ? s.maxWidth : s.maxHeight;
+    const minName = horizontal ? "minWidth" : "minHeight";
+    const maxName = horizontal ? "maxWidth" : "maxHeight";
+    if (sizing === "HUG" || sizing === "FILL") return `${axis}: ${horizontal ? "layoutSizingHorizontal" : "layoutSizingVertical"} is ${sizing}`;
+    if (typeof min === "number" && requested < min - SIZE_EPSILON) return `${axis}: ${minName} is ${min}`;
+    if (typeof max === "number" && requested > max + SIZE_EPSILON) return `${axis}: ${maxName} is ${max}`;
+    if (s.type === "TEXT" && (s.textAutoResize === "WIDTH_AND_HEIGHT" || !horizontal && s.textAutoResize === "HEIGHT")) {
+      return `${axis}: textAutoResize is ${s.textAutoResize}`;
+    }
+    return `${axis}: unexplained (requested ${requested}, Figma applied ${applied}; no sizing mode, min/max or text auto-resize accounts for it)`;
+  }
+  function resizeReadBack(requested, applied, state2) {
+    const causes = [];
+    if (Math.abs(applied.width - requested.width) > SIZE_EPSILON) causes.push(axisCause("width", requested.width, applied.width, state2));
+    if (Math.abs(applied.height - requested.height) > SIZE_EPSILON) causes.push(axisCause("height", requested.height, applied.height, state2));
+    return {
+      requested: { width: requested.width, height: requested.height },
+      applied: { width: applied.width, height: applied.height },
+      partial: causes.length > 0,
+      cause: causes.length ? causes.join("; ") : null
+    };
+  }
+  function boxMoved(a, b, tolerance) {
+    if (!a || !b) return a !== b;
+    return Math.abs(a.x - b.x) > tolerance || Math.abs(a.y - b.y) > tolerance || Math.abs(a.width - b.width) > tolerance || Math.abs(a.height - b.height) > tolerance;
+  }
+  function diffPositionEntries(before, after, tolerance = CONTAINMENT_TOLERANCE) {
+    const now = new Map(after.map((e) => [e.id, e]));
+    const then = new Set(before.map((e) => e.id));
+    const missing = [];
+    const moved = [];
+    for (const old of before) {
+      const cur = now.get(old.id);
+      if (!cur) {
+        missing.push(old.id);
+        continue;
+      }
+      const reparented = old.parentId !== cur.parentId;
+      const boxChanged = boxMoved(old.box, cur.box, tolerance);
+      if (reparented || boxChanged) {
+        moved.push({ id: old.id, name: cur.name, reparented, boxChanged, from: { parentId: old.parentId, box: old.box }, to: { parentId: cur.parentId, box: cur.box } });
+      }
+    }
+    const added = after.filter((e) => !then.has(e.id)).map((e) => e.id);
+    return { missing, added, moved };
+  }
+
+  // src/llm2figma_plugin/src/verify.ts
+  function resizeWithReadBack(node, width, height) {
+    if ("resize" in node) node.resize(width, height);
+    else node.resizeWithoutConstraints(width, height);
+    return resizeReadBack({ width, height }, { width: node.width, height: node.height }, {
+      type: node.type,
+      layoutSizingHorizontal: node.layoutSizingHorizontal,
+      layoutSizingVertical: node.layoutSizingVertical,
+      minWidth: node.minWidth,
+      maxWidth: node.maxWidth,
+      minHeight: node.minHeight,
+      maxHeight: node.maxHeight,
+      textAutoResize: node.textAutoResize
+    });
+  }
+  function positionEntry(node) {
+    return {
+      id: node.id,
+      name: node.name,
+      parentId: node.parent ? node.parent.id : null,
+      box: "absoluteBoundingBox" in node ? toBox(node.absoluteBoundingBox) : null
+    };
+  }
+  var _PositionSnapshotStore = class _PositionSnapshotStore {
+    constructor(now = Date.now) {
+      this.now = now;
+      __publicField(this, "entries", /* @__PURE__ */ new Map());
+      __publicField(this, "counter", 0);
+    }
+    purge() {
+      for (const [id, s] of this.entries) if (s.expiresAt <= this.now()) this.entries.delete(id);
+    }
+    add(rootId, entries, truncated, walk, truncatedParentIds = []) {
+      this.purge();
+      if (this.entries.size >= _PositionSnapshotStore.MAX_ENTRIES) this.entries.delete(this.entries.keys().next().value);
+      const snapshotId = `snap-${++this.counter}-${this.now().toString(36)}`;
+      const expiresAt = this.now() + _PositionSnapshotStore.TTL_MS;
+      this.entries.set(snapshotId, { rootId, entries, truncated, truncatedParentIds, expiresAt, walk });
+      return { snapshotId, expiresAt };
+    }
+    get(snapshotId) {
+      this.purge();
+      const snapshot = this.entries.get(snapshotId);
+      if (!snapshot) {
+        throw new Error(`Snapshot expired: ${snapshotId} is unknown or older than 30 minutes (snapshots are lost when the plugin reloads). Take a new snapshot with snapshot_positions.`);
+      }
+      return snapshot;
+    }
+  };
+  __publicField(_PositionSnapshotStore, "TTL_MS", 30 * 60 * 1e3);
+  __publicField(_PositionSnapshotStore, "MAX_ENTRIES", 64);
+  var PositionSnapshotStore = _PositionSnapshotStore;
+  var snapshotStore = new PositionSnapshotStore();
+  var LIST_CAP = 100;
+  var cap = (list) => list.slice(0, LIST_CAP);
+  async function requireNode(nodeId) {
+    if (!nodeId) throw new Error("Missing nodeId parameter");
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+    return node;
+  }
+  function readSubtree(root, walk) {
+    const entries = [];
+    const result = walkTree(root, (node) => {
+      entries.push(positionEntry(node));
+    }, walk);
+    return { entries, truncated: result.truncated, truncatedParentIds: result.truncatedParents.map((n) => n.id) };
+  }
+  async function snapshotPositions(params) {
+    const { nodeId, maxNodes, maxDepth } = params || {};
+    const root = await requireNode(nodeId);
+    const walk = { maxNodes, maxDepth };
+    const { entries, truncated, truncatedParentIds } = readSubtree(root, walk);
+    const { snapshotId, expiresAt } = snapshotStore.add(root.id, entries, truncated, walk, truncatedParentIds);
+    return { snapshotId, rootId: root.id, count: entries.length, truncated, expiresAt };
+  }
+  function unseenBySnapshot(entry, nowById, snapshotIds, cutOff) {
+    let parentId = entry.parentId;
+    const guard = /* @__PURE__ */ new Set();
+    while (parentId && !snapshotIds.has(parentId) && !guard.has(parentId)) {
+      guard.add(parentId);
+      const parent = nowById.get(parentId);
+      if (!parent) return true;
+      parentId = parent.parentId;
+    }
+    return !parentId || !snapshotIds.has(parentId) || cutOff.has(parentId);
+  }
+  async function diffPositions(params) {
+    const { snapshotId, tolerance = CONTAINMENT_TOLERANCE } = params || {};
+    if (!snapshotId) throw new Error("Missing snapshotId parameter");
+    const snapshot = snapshotStore.get(snapshotId);
+    const root = await figma.getNodeByIdAsync(snapshot.rootId);
+    const after = [];
+    let rewalkTruncated = false;
+    if (root) {
+      const now = readSubtree(root, snapshot.walk);
+      after.push(...now.entries);
+      rewalkTruncated = now.truncated;
+    }
+    const seen = new Set(after.map((e) => e.id));
+    for (const old of snapshot.entries) {
+      if (seen.has(old.id)) continue;
+      const node = await figma.getNodeByIdAsync(old.id);
+      if (node && !node.removed) after.push(positionEntry(node));
+    }
+    const diff = diffPositionEntries(snapshot.entries, after, tolerance);
+    let added = diff.added;
+    const unsnapshotted = [];
+    if (snapshot.truncated) {
+      const nowById = new Map(after.map((e) => [e.id, e]));
+      const snapshotIds = new Set(snapshot.entries.map((e) => e.id));
+      const cutOff = new Set(snapshot.truncatedParentIds);
+      added = [];
+      for (const id of diff.added) {
+        if (unseenBySnapshot(nowById.get(id), nowById, snapshotIds, cutOff)) unsnapshotted.push(id);
+        else added.push(id);
+      }
+    }
+    const notes = [];
+    if (snapshot.truncated) notes.push("The snapshot was truncated: nodes under a parent whose children it did not finish reading are listed as unsnapshotted, not added, because they may have existed then.");
+    if (rewalkTruncated) notes.push("The re-walk hit its budget: snapshot nodes it did not reach were looked up by id (so missing still means gone), but new nodes past the budget are not listed in added.");
+    return {
+      snapshotId,
+      rootId: snapshot.rootId,
+      rootMissing: !root,
+      counts: { missing: diff.missing.length, added: added.length, moved: diff.moved.length, unsnapshotted: unsnapshotted.length },
+      missing: cap(diff.missing),
+      added: cap(added),
+      moved: cap(diff.moved),
+      unsnapshotted: cap(unsnapshotted),
+      listsTruncated: [diff.missing, added, diff.moved, unsnapshotted].some((l) => l.length > LIST_CAP),
+      truncated: snapshot.truncated || rewalkTruncated,
+      snapshotTruncated: snapshot.truncated,
+      rewalkTruncated,
+      ...notes.length ? { note: notes.join(" ") } : {}
+    };
+  }
+  var isRotated = (node) => typeof node.rotation === "number" && Math.abs(node.rotation) > 0.01;
+  async function assertContained(params) {
+    const { parentId, expected, tolerance = CONTAINMENT_TOLERANCE } = params || {};
+    const parent = await requireNode(parentId);
+    if (!("children" in parent) || !Array.isArray(parent.children)) throw new Error(`Node has no children: ${parentId}`);
+    const parentBox = toBox(parent.absoluteBoundingBox);
+    const parentRotated = isRotated(parent);
+    let expectedOffsets = null;
+    let parentGrewSinceSnapshot = null;
+    let snapshotTruncated = null;
+    let snapshotCutChildren = false;
+    const fromSnapshot = typeof expected === "string";
+    if (fromSnapshot) {
+      const snapshot = snapshotStore.get(expected);
+      const byId = new Map(snapshot.entries.map((e) => [e.id, e]));
+      const parentThen = byId.get(parent.id);
+      if (!parentThen || !parentThen.box) throw new Error(`Snapshot ${expected} does not hold a measurable box for parent ${parent.id}`);
+      snapshotTruncated = snapshot.truncated;
+      snapshotCutChildren = snapshot.truncatedParentIds.includes(parent.id);
+      expectedOffsets = {};
+      for (const entry of snapshot.entries) {
+        if (entry.parentId === parent.id && entry.box) {
+          expectedOffsets[entry.id] = { x: entry.box.x - parentThen.box.x, y: entry.box.y - parentThen.box.y };
+        }
+      }
+      parentGrewSinceSnapshot = parentBox ? parentBox.width > parentThen.box.width + tolerance || parentBox.height > parentThen.box.height + tolerance : null;
+    } else if (expected && typeof expected === "object") {
+      expectedOffsets = expected;
+    }
+    const outside = [];
+    const unmeasurable = [];
+    const rotated = [];
+    const displaced = [];
+    const notInExpected = [];
+    const placementUnchecked = [];
+    const childIds = /* @__PURE__ */ new Set();
+    for (const child of parent.children) {
+      childIds.add(child.id);
+      const box = toBox(child.absoluteBoundingBox);
+      const childRotated = isRotated(child);
+      if (childRotated) rotated.push({ id: child.id, name: child.name, rotation: child.rotation });
+      const want = expectedOffsets ? expectedOffsets[child.id] : void 0;
+      if (expectedOffsets && !want) notInExpected.push(child.id);
+      if (!box || !parentBox) {
+        unmeasurable.push({ id: child.id, name: child.name });
+        if (want && parentBox) displaced.push({ id: child.id, name: child.name, expected: want, actual: null });
+        continue;
+      }
+      const overflow = boxOverflow(parentBox, box, tolerance);
+      if (overflow) outside.push({ id: child.id, name: child.name, box, overflow });
+      if (!want) continue;
+      if (childRotated || parentRotated) {
+        placementUnchecked.push(child.id);
+        continue;
+      }
+      const actual = { x: box.x - parentBox.x, y: box.y - parentBox.y };
+      if (Math.abs(actual.x - want.x) > tolerance || Math.abs(actual.y - want.y) > tolerance) {
+        displaced.push({ id: child.id, name: child.name, expected: want, actual });
+      }
+    }
+    const expectedNotFound = expectedOffsets ? Object.keys(expectedOffsets).filter((id) => !childIds.has(id)) : [];
+    const placementChecked = expectedOffsets !== null;
+    let placementOk = null;
+    if (placementChecked && parentBox) {
+      if (displaced.length || expectedNotFound.length) placementOk = false;
+      else if (fromSnapshot && notInExpected.length) placementOk = snapshotCutChildren ? null : false;
+      else if (placementUnchecked.length) placementOk = null;
+      else placementOk = true;
+    }
+    const anyFailure = outside.length > 0 || unmeasurable.length > 0;
+    const contained = !parentBox ? false : anyFailure ? false : parentRotated ? null : true;
+    const notes = [];
+    if (!parentBox) notes.push("The parent has no absoluteBoundingBox, so nothing could be measured.");
+    else if (!placementChecked) notes.push("Containment alone does not prove placement: a section auto-grows around displaced children. Pass expected (a snapshot id or an offset map) to check positions.");
+    else notes.push("Offsets are absoluteBoundingBox origin minus the parent's (shadows and other render bounds ignored), never node x/y: a GROUP's children are positioned relative to the group's parent.");
+    if (parentRotated) notes.push("The parent is rotated: containment is only known to fail, and placement is not compared.");
+    if (placementUnchecked.length && !parentRotated) notes.push("Rotated children are listed in placementUnchecked and not compared.");
+    if (fromSnapshot && snapshotCutChildren && notInExpected.length) notes.push("The snapshot did not read all of this parent's children, so children not in it may have existed then; placement is unknown.");
+    else if (fromSnapshot && notInExpected.length) notes.push("Children not in the snapshot were added since it was taken; their placement was never checked.");
+    return {
+      parentId: parent.id,
+      parentName: parent.name,
+      parentBox,
+      parentRotated,
+      tolerance,
+      childCount: parent.children.length,
+      contained,
+      placementChecked,
+      placementOk,
+      parentGrewSinceSnapshot,
+      ...fromSnapshot ? { snapshotTruncated } : {},
+      counts: { outside: outside.length, unmeasurable: unmeasurable.length, rotated: rotated.length, displaced: displaced.length, notInExpected: notInExpected.length, expectedNotFound: expectedNotFound.length, placementUnchecked: placementUnchecked.length },
+      outside: cap(outside),
+      unmeasurable: cap(unmeasurable),
+      rotated: cap(rotated),
+      displaced: cap(displaced),
+      notInExpected: cap(notInExpected),
+      expectedNotFound: cap(expectedNotFound),
+      placementUnchecked: cap(placementUnchecked),
+      listsTruncated: [outside, unmeasurable, rotated, displaced, notInExpected, expectedNotFound, placementUnchecked].some((l) => l.length > LIST_CAP),
+      note: notes.join(" ")
+    };
+  }
+
   // src/llm2figma_plugin/src/transforms.ts
   async function moveNode(params) {
     const { nodeId, x, y } = params || {};
@@ -2915,16 +3258,13 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!("resize" in node) && !("resizeWithoutConstraints" in node)) {
       throw new Error(`Node does not support resizing: ${nodeId}`);
     }
-    if ("resize" in node) {
-      node.resize(width, height);
-    } else {
-      node.resizeWithoutConstraints(width, height);
-    }
+    const readBack = resizeWithReadBack(node, width, height);
     return {
       id: node.id,
       name: node.name,
       width: node.width,
-      height: node.height
+      height: node.height,
+      ...readBack
     };
   }
   async function deleteNode(params) {
@@ -6462,12 +6802,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             var resizeNode2 = await figma.getNodeByIdAsync(op.nodeId);
             if (!resizeNode2) throw new Error("Node not found: " + op.nodeId);
             if (!("resize" in resizeNode2) && !("resizeWithoutConstraints" in resizeNode2)) throw new Error("Node does not support resize: " + op.nodeId);
-            if ("resize" in resizeNode2) {
-              resizeNode2.resize(op.width, op.height);
-            } else {
-              resizeNode2.resizeWithoutConstraints(op.width, op.height);
-            }
-            result = { op: "resize", nodeId: op.nodeId, name: resizeNode2.name, width: op.width, height: op.height };
+            var resizeCheck = resizeWithReadBack(resizeNode2, op.width, op.height);
+            result = { op: "resize", nodeId: op.nodeId, name: resizeNode2.name, width: op.width, height: op.height, ...resizeCheck };
             break;
           case "delete":
             var deleteNode2 = await figma.getNodeByIdAsync(op.nodeId);
@@ -7222,7 +7558,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     var totalScanned = 0;
     var startTime = Date.now();
     var TIMEOUT_MS = 12e4;
-    async function walkTree(node, depth) {
+    async function walkTree2(node, depth) {
       if (depth > maxDepth) return;
       if (limit && matches.length >= limit) return;
       if (Date.now() - startTime > TIMEOUT_MS) return;
@@ -7297,11 +7633,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       if ("children" in node && node.children) {
         for (var i = 0; i < node.children.length; i++) {
           if (limit && matches.length >= limit) break;
-          await walkTree(node.children[i], depth + 1);
+          await walkTree2(node.children[i], depth + 1);
         }
       }
     }
-    await walkTree(rootNode, 0);
+    await walkTree2(rootNode, 0);
     var results = [];
     var updatedCount = 0;
     var failedCount = 0;
@@ -7872,7 +8208,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     "subscribe_events",
     "unsubscribe_events",
     "set_focus",
-    "set_selections"
+    "set_selections",
+    // L2F_VERIFY: snapshots live in a plugin-side store, never in the document.
+    "assert_contained",
+    "snapshot_positions",
+    "diff_positions"
   ]);
   var COMMAND_EDITORS = {};
   function allowedEditors(command) {
@@ -8157,6 +8497,12 @@ ${detail}`);
         return await moveNode(params);
       case "resize_node":
         return await resizeNode(params);
+      case "assert_contained":
+        return await assertContained(params);
+      case "snapshot_positions":
+        return await snapshotPositions(params);
+      case "diff_positions":
+        return await diffPositions(params);
       case "delete_node":
         return await deleteNode(params);
       case "delete_multiple_nodes":

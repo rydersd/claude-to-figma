@@ -18,6 +18,8 @@ const READ_ONLY = new Set([
   "get_local_variables", "get_library_variables", "get_vector_network",
   "scan_node_styles", "introspect_node", "design_query", "diff_components", "get_interactions",
   "subscribe_events", "unsubscribe_events", "set_focus", "set_selections",
+  // L2F_VERIFY: snapshots live in a plugin-side store, never in the document.
+  "assert_contained", "snapshot_positions", "diff_positions",
 ]);
 
 // Per-command overrides. Later commands that need a narrower set (for example
