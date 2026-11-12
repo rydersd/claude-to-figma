@@ -1,11 +1,14 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
-import { getChannelFileKey } from "../connection.js";
+import { randomUUID } from "node:crypto";
+import { getChannelFileKey, getCurrentChannel } from "../connection.js";
 import {
   SPEC_LOCK_VERSION, SPEC_VERSION, lockNodesFromTree, specHash, type SpecFile, type SpecLockFile,
 } from "../../shared/spec.js";
-import { backUp, readExistingPair, resolveSpecPaths, specBaseDir, writeFileAtomic } from "../spec-files.js";
+import { WALK_LIMITS } from "../../shared/walk.js";
+import { backUp, readExistingPair, readSpecPair, resolveSpecPaths, specBaseDir, writeFileAtomic } from "../spec-files.js";
+import { computePlan, prepareSpec, type LiveRead, type Plan, type PlanIssue, type PlanOperation } from "../spec-plan.js";
 
 // Spec sync (L2F_SPEC_SYNC). pull_spec writes a subtree to a Spec file the model
 // edits with ordinary file edits, and a SpecLock beside it recording what Figma
@@ -14,6 +17,8 @@ import { backUp, readExistingPair, resolveSpecPaths, specBaseDir, writeFileAtomi
 // export_spec reads up to 10,000 nodes and sends progress every 50; the default
 // 30 s would cut a large pull off.
 export const EXPORT_TIMEOUT_MS = 120_000;
+// read_spec_nodes walks the same subtree, with the same progress updates.
+export const READ_TIMEOUT_MS = 120_000;
 
 export interface SpecToolOptions {
   env?: Record<string, string | undefined>;
@@ -21,6 +26,9 @@ export interface SpecToolOptions {
   userFileKey?: () => string | undefined;
   cwd?: () => string;
   now?: () => Date;
+  // The relay channel the plugin answers on; recorded in each Plan.
+  channel?: () => string | null;
+  planStore?: PlanStore;
 }
 
 export interface PullArgs {
@@ -120,6 +128,137 @@ export async function pullSpec(args: PullArgs, send: SendCommandFn, options: Spe
   return result;
 }
 
+// --- plan_spec ---
+
+// Plans live server-side under an explicit planId, never "latest". Bounded:
+// 8 plans, 30 minutes each, 4 MB of JSON each (a 2,000-node Plan exceeds the
+// reference cache's 64 KB entries, so it has its own store).
+export const PLAN_LIMITS = { maxPlans: 8, ttlMs: 30 * 60_000, maxBytes: 4 * 1024 * 1024 };
+
+export class PlanStore {
+  private plans = new Map<string, { plan: Plan; expiresAt: number }>();
+  constructor(private clock: () => number = Date.now, private limits = PLAN_LIMITS) {}
+
+  private prune(): void {
+    const now = this.clock();
+    for (const [id, entry] of this.plans) if (entry.expiresAt <= now) this.plans.delete(id);
+  }
+
+  // Stores the plan under plan.planId; evicts the oldest when full. Returns the expiry (ms).
+  put(plan: Plan): number {
+    const bytes = Buffer.byteLength(JSON.stringify(plan), "utf8");
+    if (bytes > this.limits.maxBytes) {
+      throw new Error(`The plan is ${Math.ceil(bytes / 1024)} KB, over the ${this.limits.maxBytes / (1024 * 1024)} MB limit. Pull a smaller subtree.`);
+    }
+    this.prune();
+    while (this.plans.size >= this.limits.maxPlans) this.plans.delete(this.plans.keys().next().value!);
+    const expiresAt = this.clock() + this.limits.ttlMs;
+    this.plans.set(plan.planId, { plan, expiresAt });
+    return expiresAt;
+  }
+
+  // The plan with this id. An unknown or expired id is an error, never an empty plan.
+  get(planId: string): Plan {
+    const entry = this.plans.get(planId);
+    if (entry && entry.expiresAt > this.clock()) return entry.plan;
+    if (entry) this.plans.delete(planId);
+    throw new Error(`Plan ${planId} has expired or is unknown (plans last ${this.limits.ttlMs / 60_000} minutes, and only the ${this.limits.maxPlans} newest are kept). Run plan_spec again.`);
+  }
+
+  get size(): number {
+    this.prune();
+    return this.plans.size;
+  }
+}
+
+const defaultPlanStore = new PlanStore();
+export function getPlanStore(options: SpecToolOptions = {}): PlanStore {
+  return options.planStore ?? defaultPlanStore;
+}
+
+// At most this many entries of each list go back to the model; counts are always complete.
+export const PLAN_LIST_LIMIT = 100;
+
+export interface PlanSummary {
+  planId: string;
+  path: string;
+  counts: Plan["counts"];
+  operations: Array<Record<string, unknown>>;
+  drift: PlanIssue[];
+  conflicts: PlanIssue[];
+  truncated: boolean;
+  expiresAt: string;
+  note?: string;
+}
+
+function summarise(op: PlanOperation): Record<string, unknown> {
+  switch (op.op) {
+    case "update": return { op: op.op, id: op.id, name: op.name, keys: Object.keys(op.set).filter(k => !op.fromLive?.includes(k)) };
+    case "create": return { op: op.op, path: op.path, parentId: op.parentId, index: op.index, type: op.node.type, name: op.name };
+    case "move": return op.fromParentId === op.parentId
+      ? { op: op.op, id: op.id, name: op.name, parentId: op.parentId, index: op.index }
+      : { op: op.op, id: op.id, name: op.name, fromParentId: op.fromParentId, parentId: op.parentId, index: op.index };
+    case "remove": return { op: op.op, id: op.id, name: op.name };
+  }
+}
+
+function planNote(plan: Plan): string | undefined {
+  const notes: string[] = [];
+  if (!plan.counts.operations && !plan.counts.drift && !plan.counts.conflicts) notes.push("Figma matches the Spec: nothing to apply.");
+  if (plan.counts.drift) notes.push("Drift is what changed in Figma since the pull; it is kept as Figma has it. To take it into the Spec, pull_spec again (replaceEdited: true if the Spec has unapplied edits; it backs them up as .bak).");
+  if (plan.counts.conflicts) notes.push("Conflicts changed on both sides, or cannot be done safely; they are listed and skipped.");
+  if (plan.counts.unread) notes.push(`${plan.counts.unread} node(s) could not be read within the node budget; nothing in them is planned.`);
+  return notes.length ? notes.join(" ") : undefined;
+}
+
+export async function planSpec(args: { path: string }, send: SendCommandFn, options: SpecToolOptions = {}): Promise<PlanSummary> {
+  const env = options.env ?? process.env;
+  const paths = await resolveSpecPaths(args.path, specBaseDir(env, options.cwd));
+  const { spec, lock } = await readSpecPair(paths);
+  if (lock.pendingApply) {
+    throw new Error(`Refusing to plan ${paths.specPath}: an apply (plan ${lock.pendingApply}) was started and did not finish, so Figma may hold part of it. Pull again (pull_spec with replaceEdited: true backs up the Spec) and redo the edits.`);
+  }
+  // Validate before asking Figma: a bad Spec costs no round trip.
+  const pre = prepareSpec(spec, lock);
+
+  const live = await send("read_spec_nodes", {
+    rootId: lock.rootId, expect: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId },
+    baseHashes: pre.baseHashes, truncatedIds: pre.truncatedIds, sizeIds: pre.sizeIds,
+    maxNodes: WALK_LIMITS.maxNodes, maxDepth: WALK_LIMITS.maxDepth,
+  }, READ_TIMEOUT_MS) as LiveRead;
+  if (!live || typeof live !== "object" || !live.nodes || typeof live.nodes !== "object" || live.rootId !== lock.rootId) {
+    throw new Error("The Figma plugin returned no node read. Rebuild and re-run the plugin (bun run build) so it knows read_spec_nodes.");
+  }
+  const connectedKey = live.fileKey ?? (options.userFileKey ?? getChannelFileKey)() ?? null;
+  if (lock.fileKey && connectedKey && lock.fileKey !== connectedKey) {
+    throw new Error(`Wrong file: ${paths.specPath} is for file key ${lock.fileKey}, but the connected file's key is ${connectedKey}.`);
+  }
+
+  // Normalise again with the root's real parent layout (it decides the root's x/y).
+  const prepared = prepareSpec(spec, lock, { layoutMode: live.rootParentLayoutMode ?? undefined });
+  const body = computePlan({ spec, lock, live, prepared });
+  const now = (options.now ?? (() => new Date()))();
+  const plan: Plan = {
+    l2fPlan: 1, planId: `plan-${randomUUID()}`, createdAt: now.toISOString(),
+    specPath: paths.specPath, lockPath: paths.lockPath, specHash: specHash(spec), lockHash: specHash(lock),
+    channel: (options.channel ?? getCurrentChannel)(),
+    target: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId, rootId: lock.rootId },
+    ...body,
+  };
+  const expiresAt = getPlanStore(options).put(plan);
+
+  const truncated = plan.operations.length > PLAN_LIST_LIMIT || plan.drift.length > PLAN_LIST_LIMIT || plan.conflicts.length > PLAN_LIST_LIMIT;
+  const summary: PlanSummary = {
+    planId: plan.planId, path: paths.specPath, counts: plan.counts,
+    operations: plan.operations.slice(0, PLAN_LIST_LIMIT).map(summarise),
+    drift: plan.drift.slice(0, PLAN_LIST_LIMIT), conflicts: plan.conflicts.slice(0, PLAN_LIST_LIMIT),
+    truncated, expiresAt: new Date(expiresAt).toISOString(),
+  };
+  const note = planNote(plan);
+  if (note) summary.note = note;
+  return summary;
+}
+
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn, options: SpecToolOptions = {}) {
   server.tool(
     "pull_spec",
@@ -137,6 +276,22 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
       } catch (error) {
         return { isError: true, content: [{ type: "text", text: `Error pulling spec: ${error instanceof Error ? error.message : String(error)}` }] };
+      }
+    },
+  );
+
+  server.tool(
+    "plan_spec",
+    "Compare a Spec (after your edits), its SpecLock (Figma at the last pull) and live Figma, property by property, and return the difference as a Plan. Writes nothing: not to Figma, not to the Spec or SpecLock. Per property: Spec changed and Figma did not -> an update; Figma changed and the Spec did not -> drift (kept as Figma has it); both changed to the same value -> nothing; both changed differently -> a conflict (skipped). Structure the same way: a node without an id -> create; a changed parent or sibling order -> move; an id deleted from the Spec -> remove (only if Figma did not change it; a subtree the node budget cut off never yields removals); a node gone from Figma -> missing; a node added in Figma by hand is left alone and reported as drift. Errors, naming the node, on a duplicate or unknown id, an id inside an instance (contains ';'), a changed node type, or an edit to an OpaqueNode other than moving or removing it. Refuses while the SpecLock records an unfinished apply. Returns {planId, counts, operations, drift, conflicts} with at most 100 entries per list (truncated: true when more; counts are complete) and the planId; the full Plan stays on the server for 30 minutes under that explicit id. Nothing applies a Plan yet.",
+    {
+      path: z.string().min(1).describe("The Spec file (.l2f.json) written by pull_spec, after your edits"),
+    },
+    async (args: any) => {
+      try {
+        const result = await planSpec(args, sendCommandToFigma, options);
+        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      } catch (error) {
+        return { isError: true, content: [{ type: "text", text: `Error planning spec: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     },
   );

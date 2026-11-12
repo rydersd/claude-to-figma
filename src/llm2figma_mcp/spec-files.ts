@@ -128,3 +128,27 @@ export async function backUp(path: string, stamp: string): Promise<string | null
   await rename(path, target);
   return target;
 }
+
+// Read a pair that must already exist, for plan_spec. Never writes. A missing
+// SpecLock, a symlink, invalid JSON or the wrong shape is an error that says
+// what to do.
+export async function readSpecPair(paths: SpecPaths): Promise<{ spec: SpecFile; lock: SpecLockFile }> {
+  const read = async <T>(path: string, kind: string, guard: (value: any) => value is T): Promise<T> => {
+    const stat = await entry(path);
+    if (!stat) throw new Error(`${path} does not exist. Run pull_spec first.`);
+    if (stat.isSymbolicLink()) throw new Error(`Refusing ${path}: it is a symbolic link. A ${kind} is never read through a link.`);
+    if (!stat.isFile()) throw new Error(`Refusing ${path}: it is not a regular file.`);
+    let value: unknown;
+    try {
+      value = JSON.parse(await readFile(path, "utf8"));
+    } catch (error) {
+      throw new Error(`${path} is not valid JSON (${error instanceof Error ? error.message : String(error)}). Fix the edit and plan again.`);
+    }
+    if (!guard(value)) throw new Error(`${path} is not a ${kind} (it needs ${kind === "Spec" ? "l2fSpec: 1 and a tree" : "l2fLock: 1 and nodes"}).`);
+    return value;
+  };
+  return {
+    spec: await read(paths.specPath, "Spec", isSpecFile),
+    lock: await read(paths.lockPath, "SpecLock", isSpecLockFile),
+  };
+}

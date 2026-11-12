@@ -28,6 +28,11 @@ export function setChannelFileKey(channel: string, fileKey: string): void {
   channelFileKeys.set(channel, fileKey);
 }
 
+// The channel this server is joined to, or null.
+export function getCurrentChannel(): string | null {
+  return currentChannel;
+}
+
 // Defaults to the channel this server is joined to.
 export function getChannelFileKey(channel: string | null = currentChannel): string | undefined {
   return channel ? channelFileKeys.get(channel) : undefined;

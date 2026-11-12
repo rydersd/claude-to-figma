@@ -8,7 +8,7 @@
 // `figma` is a global provided by the Figma plugin runtime.
 
 import { walkTree, type WalkOptions } from "../../shared/walk";
-import { NO_PAINT, OPAQUE_TYPE, colorToHex, normalizeSpecTree, type SpecType } from "../../shared/spec";
+import { NO_PAINT, OPAQUE_TYPE, colorToHex, lockNodesFromTree, normalizeSpecTree, round2, type SpecType } from "../../shared/spec";
 import { getVariableByName, sendProgressUpdate } from "./utils";
 
 const SPEC_TYPE_OF: Record<string, SpecType> = {
@@ -236,12 +236,22 @@ function countNodes(node: any): number {
   return 1 + (Array.isArray(node.children) ? node.children.reduce((n: number, child: any) => n + countNodes(child), 0) : 0);
 }
 
-// export_spec {nodeId, expect, maxNodes, maxDepth}: the subtree as a canonical
+interface ReadOptions {
+  // Ids to read as truncated OpaqueNodes without entering them: the nodes the
+  // SpecLock recorded as cut off, so a larger budget never reads them as edited.
+  truncatedIds?: ReadonlySet<string>;
+  // The command name progress updates are reported under.
+  commandType: string;
+}
+
+// The walk export_spec and read_spec_nodes share: the subtree as a canonical
 // Spec tree (every node with its id). The walk never enters an instance or an
 // OpaqueNode; a frame whose children the budget cut off becomes an OpaqueNode
 // with truncated: true, so nothing below it can look removed.
-export async function exportSpec(params: any) {
+async function readSubtree(params: any, options: ReadOptions) {
   const { nodeId, expect, maxNodes, maxDepth, commandId } = params || {};
+  const { commandType } = options;
+  const forced = options.truncatedIds ?? new Set<string>();
   if (!nodeId || typeof nodeId !== "string") throw new Error("Missing nodeId parameter");
   if (nodeId.includes(";")) throw new Error(`Cannot pull ${nodeId}: it is inside an instance. Pull a node outside the instance; instances are exported as leaves.`);
   const { node: root, page, fileKey, fileName } = await resolveSpecTarget(nodeId, expect || {});
@@ -255,7 +265,7 @@ export async function exportSpec(params: any) {
   const visited: any[] = [];
   const result = walkTree<any>(root, node => {
     visited.push(node);
-    return opaqueReason(node) === null && node.type !== "INSTANCE";
+    return opaqueReason(node) === null && node.type !== "INSTANCE" && (node === root || !forced.has(node.id));
   }, walk);
   const cutOff = new Set(result.truncatedParents);
   if (cutOff.has(root)) throw new Error(`maxNodes/maxDepth are too small to read the children of ${nodeId}.`);
@@ -264,14 +274,14 @@ export async function exportSpec(params: any) {
   const cache = new SpecReadCache();
   let done = 0;
   let opaqueCount = 0;
-  if (commandId) await sendProgressUpdate(commandId, "export_spec", "started", 0, total, 0, `Reading ${total} nodes`);
+  if (commandId) await sendProgressUpdate(commandId, commandType, "started", 0, total, 0, `Reading ${total} nodes`);
 
   const build = async (node: any): Promise<Record<string, any>> => {
     done++;
     if (commandId && done % PROGRESS_EVERY === 0) {
-      await sendProgressUpdate(commandId, "export_spec", "in_progress", Math.round((done / total) * 100), total, done, `Read ${done}/${total} nodes`);
+      await sendProgressUpdate(commandId, commandType, "in_progress", Math.round((done / total) * 100), total, done, `Read ${done}/${total} nodes`);
     }
-    const truncated = cutOff.has(node);
+    const truncated = cutOff.has(node) || (node !== root && forced.has(node.id));
     if (truncated || opaqueReason(node)) { opaqueCount++; return opaqueNode(node, truncated); }
     const props = await readSpecProps(node, cache);
     if (!props) { opaqueCount++; return opaqueNode(node, false); }
@@ -284,11 +294,62 @@ export async function exportSpec(params: any) {
   };
   const rawTree = await build(root);
   const parent = root.parent;
-  const tree = normalizeSpecTree(rawTree, { layoutMode: parent && parent.type !== "PAGE" ? parent.layoutMode : undefined });
+  const rootParentLayoutMode = parent && parent.type !== "PAGE" ? parent.layoutMode : undefined;
+  const tree = normalizeSpecTree(rawTree, { layoutMode: rootParentLayoutMode });
 
-  if (commandId) await sendProgressUpdate(commandId, "export_spec", "completed", 100, total, done, `Read ${done} nodes`);
+  if (commandId) await sendProgressUpdate(commandId, commandType, "completed", 100, total, done, `Read ${done} nodes`);
   return {
-    fileKey, fileName, pageId: page.id, rootId: root.id, rootParentId: parent ? parent.id : null,
-    tree, nodeCount: countNodes(tree), opaqueCount, truncated: result.truncated,
+    root, fileKey, fileName, pageId: page.id as string, rootId: root.id as string, rootParentId: parent ? parent.id as string : null,
+    rootParentLayoutMode: rootParentLayoutMode ?? null, tree, opaqueCount, truncated: result.truncated,
+  };
+}
+
+// export_spec {nodeId, expect, maxNodes, maxDepth}: the subtree as a canonical
+// Spec tree, for pull_spec to write.
+export async function exportSpec(params: any) {
+  const read = await readSubtree(params, { commandType: "export_spec" });
+  return {
+    fileKey: read.fileKey, fileName: read.fileName, pageId: read.pageId, rootId: read.rootId, rootParentId: read.rootParentId,
+    tree: read.tree, nodeCount: countNodes(read.tree), opaqueCount: read.opaqueCount, truncated: read.truncated,
+  };
+}
+
+// Width and height as Figma holds them, rounded like every other number.
+function liveSize(node: any): { width: number; height: number } | undefined {
+  return node && typeof node.width === "number" && typeof node.height === "number"
+    ? { width: round2(node.width), height: round2(node.height) } : undefined;
+}
+
+// read_spec_nodes {rootId, expect, baseHashes, truncatedIds, sizeIds, maxNodes,
+// maxDepth}: for plan_spec, every live node under the root as {propsHash,
+// parentId, children}, read and normalised exactly as export_spec reads it, so
+// an untouched node hashes the same as its SpecLock entry. `props` is included
+// only when propsHash differs from the baseHashes entry (or there is none), so
+// an unchanged design costs a hash per node. `size` is the live width and
+// height of the nodes in sizeIds (an update naming one dimension needs the
+// other). Writes nothing.
+export async function readSpecNodes(params: any) {
+  const { rootId, expect, baseHashes, truncatedIds, sizeIds, maxNodes, maxDepth, commandId } = params || {};
+  if (!rootId || typeof rootId !== "string") throw new Error("Missing rootId parameter");
+  const bases: Record<string, string> = baseHashes && typeof baseHashes === "object" ? baseHashes : {};
+  const read = await readSubtree(
+    { nodeId: rootId, expect, maxNodes, maxDepth, commandId },
+    { commandType: "read_spec_nodes", truncatedIds: new Set(Array.isArray(truncatedIds) ? truncatedIds : []) },
+  );
+  const entries = lockNodesFromTree(read.tree, read.rootParentId);
+  const nodes: Record<string, Record<string, unknown>> = {};
+  for (const [id, entry] of Object.entries(entries)) {
+    const out: Record<string, unknown> = { propsHash: entry.propsHash, parentId: entry.parentId, children: entry.children };
+    if (bases[id] !== entry.propsHash) out.props = entry.props;
+    nodes[id] = out;
+  }
+  for (const id of Array.isArray(sizeIds) ? sizeIds : []) {
+    if (!nodes[id]) continue;
+    const size = liveSize(id === read.rootId ? read.root : await figma.getNodeByIdAsync(id));
+    if (size) nodes[id].size = size;
+  }
+  return {
+    fileKey: read.fileKey, fileName: read.fileName, pageId: read.pageId, rootId: read.rootId, rootParentId: read.rootParentId,
+    rootParentLayoutMode: read.rootParentLayoutMode, truncated: read.truncated, nodeCount: Object.keys(nodes).length, nodes,
   };
 }

@@ -17447,6 +17447,9 @@ var channelFileKeys = new Map;
 function setChannelFileKey(channel, fileKey) {
   channelFileKeys.set(channel, fileKey);
 }
+function getCurrentChannel() {
+  return currentChannel;
+}
 function getChannelFileKey(channel = currentChannel) {
   return channel ? channelFileKeys.get(channel) : undefined;
 }
@@ -23334,9 +23337,14 @@ function registerTools26(server, sendCommandToFigma2) {
   });
 }
 
+// src/llm2figma_mcp/tools/spec.ts
+import { randomUUID as randomUUID3 } from "crypto";
+
 // src/shared/spec.ts
 var SPEC_VERSION = 1;
 var SPEC_LOCK_VERSION = 1;
+var SPEC_TYPES = ["frame", "text", "rectangle", "vector", "instance"];
+var OPAQUE_TYPE = "$opaque";
 var NO_PAINT = "#00000000";
 var COMMON = ["name", "x", "y", "opacity", "layoutPositioning"];
 var SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
@@ -23417,6 +23425,7 @@ var SPEC_DEFAULTS = {
   instance: { ...BASE_DEFAULTS, properties: {} }
 };
 var ALWAYS_EMITTED = new Set(["name", "text", "textAutoResize", "pathData", "componentKey", "componentId"]);
+var DEFAULT_NAMES = { frame: "Frame", rectangle: "Rectangle", vector: "Vector" };
 var COLOR_KEYS = new Set(["fillColor", "strokeColor", "fontColor"]);
 var BOOLEAN_KEYS = new Set(["clipsContent", "itemReverseZIndex"]);
 var NUMBER_KEYS = new Set([
@@ -23474,9 +23483,183 @@ var KEY_ORDER = [
   "pathData",
   "properties"
 ];
+function fontWeightToStyle(weight) {
+  switch (weight) {
+    case 100:
+      return "Thin";
+    case 200:
+      return "Extra Light";
+    case 300:
+      return "Light";
+    case 400:
+      return "Regular";
+    case 500:
+      return "Medium";
+    case 600:
+      return "Semi Bold";
+    case 700:
+      return "Bold";
+    case 800:
+      return "Extra Bold";
+    case 900:
+      return "Black";
+    default:
+      return "Regular";
+  }
+}
 function round2(n) {
   const r = Math.round(n * 100) / 100;
   return Object.is(r, -0) ? 0 : r;
+}
+var byte = (v) => Math.round(Math.min(1, Math.max(0, Number(v) || 0)) * 255);
+var hex2 = (n) => n.toString(16).padStart(2, "0").toUpperCase();
+function hexFromBytes(r, g, b, a) {
+  if (a === 0)
+    return NO_PAINT;
+  return "#" + hex2(r) + hex2(g) + hex2(b) + (a === 255 ? "" : hex2(a));
+}
+function colorToHex(color, opacity = color.a ?? 1) {
+  return hexFromBytes(byte(color.r), byte(color.g), byte(color.b), byte(opacity));
+}
+function canonicalColor(value) {
+  if (typeof value === "string") {
+    const s = value.trim();
+    const m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s);
+    if (!m)
+      return s;
+    let h = m[1];
+    if (h.length === 3)
+      h = h.split("").map((c) => c + c).join("");
+    const n = (i) => parseInt(h.slice(i, i + 2), 16);
+    return hexFromBytes(n(0), n(2), n(4), h.length === 8 ? n(6) : 255);
+  }
+  if (value && typeof value === "object" && "r" in value)
+    return colorToHex(value);
+  return;
+}
+function canonicalEffects(list) {
+  if (!Array.isArray(list))
+    return;
+  const out = [];
+  for (const e of list) {
+    if (!e || typeof e !== "object")
+      return;
+    const visible = e.visible !== false;
+    if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
+      out.push({
+        type: e.type,
+        visible,
+        color: canonicalColor(e.color ?? { r: 0, g: 0, b: 0, a: 0.25 }),
+        offset: { x: round2(Number(e.offset?.x ?? 0)), y: round2(Number(e.offset?.y ?? 4)) },
+        radius: round2(Number(e.radius ?? 4)),
+        spread: round2(Number(e.spread ?? 0)),
+        blendMode: e.blendMode || "NORMAL"
+      });
+    } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+      out.push({ type: e.type, visible, radius: round2(Number(e.radius ?? 4)) });
+    } else {
+      return;
+    }
+  }
+  return out;
+}
+function canonicalValue(key, value) {
+  if (COLOR_KEYS.has(key))
+    return canonicalColor(value);
+  if (key === "effects")
+    return canonicalEffects(value);
+  if (NUMBER_KEYS.has(key)) {
+    const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+    return typeof n === "number" && isFinite(n) ? round2(n) : undefined;
+  }
+  if (BOOLEAN_KEYS.has(key))
+    return !!value;
+  if (key === "pathData")
+    return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : undefined;
+  if (key === "properties")
+    return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : undefined;
+  return value;
+}
+var isAutoLayout = (layoutMode) => typeof layoutMode === "string" && layoutMode !== "NONE";
+function orderKeys(props) {
+  const out = {};
+  for (const key of KEY_ORDER)
+    if (props[key] !== undefined)
+      out[key] = props[key];
+  for (const key of Object.keys(props).sort())
+    if (!(key in out) && props[key] !== undefined)
+      out[key] = props[key];
+  return out;
+}
+function normalizeNode(node, parent = {}) {
+  if (node.type === OPAQUE_TYPE) {
+    return orderKeys({ type: OPAQUE_TYPE, name: node.name, nodeType: node.nodeType, truncated: node.truncated === true ? true : undefined });
+  }
+  const type = node.type;
+  if (!SPEC_TYPES.includes(type))
+    throw new Error(`Unknown Spec node type: ${JSON.stringify(node.type)}`);
+  const src = { ...node };
+  if (type === "text") {
+    if (src.fontStyle === undefined && src.fontWeight !== undefined)
+      src.fontStyle = fontWeightToStyle(Number(src.fontWeight));
+    if (src.text === undefined)
+      src.text = "Text";
+    if (src.textAutoResize === undefined)
+      src.textAutoResize = src.width !== undefined ? "HEIGHT" : "WIDTH_AND_HEIGHT";
+    if (src.name === undefined || src.name === "")
+      src.name = src.text;
+  } else if (src.name === undefined && DEFAULT_NAMES[type]) {
+    src.name = DEFAULT_NAMES[type];
+  }
+  const out = { type };
+  for (const key of SPEC_VOCABULARY[type]) {
+    if (src[key] === undefined || src[key] === null)
+      continue;
+    const value = canonicalValue(key, src[key]);
+    if (value !== undefined)
+      out[key] = value;
+  }
+  if (isAutoLayout(parent.layoutMode) && out.layoutPositioning !== "ABSOLUTE") {
+    delete out.x;
+    delete out.y;
+  }
+  if (type === "text") {
+    if (out.textAutoResize !== "HEIGHT")
+      delete out.width;
+    for (const key of SIZING)
+      if (out[key] !== "FILL")
+        delete out[key];
+  }
+  if (out.layoutSizingHorizontal === "HUG" || out.layoutSizingHorizontal === "FILL")
+    delete out.width;
+  if (out.layoutSizingVertical === "HUG" || out.layoutSizingVertical === "FILL")
+    delete out.height;
+  if (type === "frame") {
+    if (!isAutoLayout(out.layoutMode))
+      for (const key of AUTO_LAYOUT)
+        delete out[key];
+    if (out.layoutWrap !== "WRAP")
+      delete out.counterAxisSpacing;
+  }
+  if (typeof out.fontSize === "number" && !Number.isInteger(out.fontSize))
+    delete out.fontSize;
+  const defaults = SPEC_DEFAULTS[type];
+  for (const key of Object.keys(out)) {
+    if (key === "type" || ALWAYS_EMITTED.has(key) || !(key in defaults))
+      continue;
+    if (stableStringify(out[key]) === stableStringify(defaults[key]))
+      delete out[key];
+  }
+  return orderKeys(out);
+}
+function normalizeSpecTree(node, parent = {}) {
+  const props = normalizeNode(node, parent);
+  const out = node.id !== undefined ? { id: node.id, ...props } : { ...props };
+  if (props.type === "frame") {
+    const layout = { layoutMode: typeof node.layoutMode === "string" ? node.layoutMode : "NONE" };
+    out.children = (Array.isArray(node.children) ? node.children : []).map((child) => normalizeSpecTree(child, layout));
+  }
+  return out;
 }
 function stableStringify(value) {
   if (typeof value === "number")
@@ -23530,6 +23713,9 @@ function isSpecFile(value) {
 function isSpecLockFile(value) {
   return !!value && typeof value === "object" && value.l2fLock === SPEC_LOCK_VERSION && !!value.nodes && typeof value.nodes === "object";
 }
+
+// src/shared/walk.ts
+var WALK_LIMITS = { defaultNodes: 2000, maxNodes: 1e4, defaultDepth: 30, maxDepth: 100 };
 
 // src/llm2figma_mcp/spec-files.ts
 import { randomBytes } from "crypto";
@@ -23635,9 +23821,497 @@ async function backUp(path4, stamp) {
   await rename(path4, target);
   return target;
 }
+async function readSpecPair(paths) {
+  const read = async (path4, kind, guard) => {
+    const stat = await entry(path4);
+    if (!stat)
+      throw new Error(`${path4} does not exist. Run pull_spec first.`);
+    if (stat.isSymbolicLink())
+      throw new Error(`Refusing ${path4}: it is a symbolic link. A ${kind} is never read through a link.`);
+    if (!stat.isFile())
+      throw new Error(`Refusing ${path4}: it is not a regular file.`);
+    let value;
+    try {
+      value = JSON.parse(await readFile2(path4, "utf8"));
+    } catch (error) {
+      throw new Error(`${path4} is not valid JSON (${error instanceof Error ? error.message : String(error)}). Fix the edit and plan again.`);
+    }
+    if (!guard(value))
+      throw new Error(`${path4} is not a ${kind} (it needs ${kind === "Spec" ? "l2fSpec: 1 and a tree" : "l2fLock: 1 and nodes"}).`);
+    return value;
+  };
+  return {
+    spec: await read(paths.specPath, "Spec", isSpecFile),
+    lock: await read(paths.lockPath, "SpecLock", isSpecLockFile)
+  };
+}
+
+// src/llm2figma_mcp/spec-plan.ts
+var MAX_LISTED_ERRORS = 10;
+var RESIZABLE = new Set(["frame", "rectangle", "vector"]);
+var COLOR_KEYS2 = new Set(["fillColor", "strokeColor", "fontColor"]);
+function comparableColor(value) {
+  if (value && typeof value === "object" && !Array.isArray(value) && typeof value.$var === "string") {
+    const opacity = value.opacity;
+    return opacity === undefined || opacity >= 1 ? `$var:${value.$var}` : { $var: value.$var, opacity };
+  }
+  return value;
+}
+var comparable = (key, value) => COLOR_KEYS2.has(key) ? comparableColor(value) : value;
+var sameValue = (key, a, b) => stableStringify(comparable(key, a)) === stableStringify(comparable(key, b));
+var same = (a, b) => stableStringify(a) === stableStringify(b);
+function withColorStrings(raw) {
+  let out = raw;
+  for (const key of COLOR_KEYS2) {
+    const value = comparableColor(raw[key]);
+    if (typeof value === "string" && value !== raw[key])
+      out = { ...out, [key]: value };
+  }
+  return out;
+}
+var STRUCTURAL_KEYS = new Set(["id", "type", "children"]);
+var SHORTHANDS = { text: ["fontWeight"] };
+var OPAQUE_KEYS = new Set(["id", "type", "name", "nodeType", "truncated", "children"]);
+function unknownKeys(raw) {
+  if (raw.type === OPAQUE_TYPE)
+    return Object.keys(raw).filter((k) => !OPAQUE_KEYS.has(k));
+  if (!SPEC_TYPES.includes(raw.type))
+    return [];
+  const allowed = new Set([...SPEC_VOCABULARY[raw.type], ...SHORTHANDS[raw.type] ?? []]);
+  return Object.keys(raw).filter((k) => !STRUCTURAL_KEYS.has(k) && !allowed.has(k));
+}
+function lockForm(props, pathHashed) {
+  if (!pathHashed || typeof props.pathData !== "string")
+    return props;
+  const { pathData, ...rest } = props;
+  return { ...rest, pathHash: hashString(pathData) };
+}
+var layoutOf = (raw) => ({ layoutMode: typeof raw.layoutMode === "string" ? raw.layoutMode : "NONE" });
+var where = (path4) => path4.length ? `tree.children[${path4.join("].children[")}]` : "tree";
+function nameOf(props, fallback) {
+  const name = props && typeof props.name === "string" ? props.name : fallback;
+  return name.length > 80 ? name.slice(0, 77) + "..." : name;
+}
+function failWith(errors) {
+  const shown = errors.slice(0, MAX_LISTED_ERRORS).map((e) => "- " + e).join(`
+`);
+  const more = errors.length > MAX_LISTED_ERRORS ? `
+- ...and ${errors.length - MAX_LISTED_ERRORS} more` : "";
+  throw new Error(`The Spec cannot be planned:
+${shown}${more}`);
+}
+function prepareSpec(spec, lock, rootParentLayout = {}) {
+  const errors = [];
+  for (const key of ["fileKey", "fileName", "pageId", "rootId"]) {
+    if ((spec[key] ?? null) !== (lock[key] ?? null)) {
+      errors.push(`header ${key} is ${JSON.stringify(spec[key])} but the SpecLock has ${JSON.stringify(lock[key])}; the header is not editable`);
+    }
+  }
+  if (spec.tree.id !== lock.rootId)
+    errors.push(`tree: the root must keep id ${lock.rootId} (found ${JSON.stringify(spec.tree.id)})`);
+  const desired = new Map;
+  const desiredChildren = new Map;
+  const creates = [];
+  const seen = new Set;
+  const visit = (raw, path4, parentId, parentLayout, underNew) => {
+    const at = where(path4);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      errors.push(`${at}: not a node object`);
+      return;
+    }
+    const id = raw.id;
+    if (id !== undefined && (typeof id !== "string" || !id)) {
+      errors.push(`${at}: id must be a non-empty string`);
+      return;
+    }
+    const stray = unknownKeys(raw);
+    if (stray.length) {
+      errors.push(`${at}${id ? ` (${id})` : ""}: ${stray.join(", ")} cannot be written on a ${String(raw.type)} node`);
+      return;
+    }
+    let props;
+    try {
+      props = normalizeNode(withColorStrings(raw), parentLayout);
+    } catch (error) {
+      errors.push(`${at}${id ? ` (${id})` : ""}: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    const kids = raw.children;
+    if (kids !== undefined && !Array.isArray(kids))
+      errors.push(`${at}: children must be an array`);
+    const childList = Array.isArray(kids) ? kids : [];
+    if (childList.length && props.type !== "frame") {
+      errors.push(`${at}${id ? ` (${id})` : ""}: only a frame can have children (this node is ${String(props.type)}${props.type === OPAQUE_TYPE ? "; an OpaqueNode's subtree is never in the Spec" : ""})`);
+    }
+    if (id !== undefined) {
+      if (id.includes(";"))
+        errors.push(`${at} (${id}): nodes inside an instance cannot be edited, moved or removed; instances are leaves`);
+      else if (seen.has(id))
+        errors.push(`${at} (${id}): duplicate id`);
+      else if (!lock.nodes[id])
+        errors.push(`${at} (${id}): the SpecLock does not know this id; a new node has no id`);
+      else if (underNew)
+        errors.push(`${at} (${id}): an existing node cannot be placed under a new node in one plan; apply the new parent first, pull, then move this node into it`);
+      else {
+        const base = lock.nodes[id];
+        if (base.props.type !== props.type) {
+          errors.push(`${at} (${id}): type changed from ${String(base.props.type)} to ${String(props.type)}; delete the node and add a new one without an id instead`);
+        } else if (props.type === OPAQUE_TYPE && !same(props, base.props)) {
+          errors.push(`${at} (${id}): "${nameOf(base.props, id)}" is an OpaqueNode; it can only be moved, reordered or removed, not edited`);
+        }
+      }
+      seen.add(id);
+      desired.set(id, { id, props, parentId, parentLayout, path: path4, raw });
+    } else {
+      if (props.type === OPAQUE_TYPE)
+        errors.push(`${at}: an OpaqueNode cannot be created`);
+      if (!underNew && parentId !== null) {
+        const siblings = desiredChildren.get(parentId) ?? [];
+        creates.push({
+          op: "create",
+          path: path4,
+          parentId,
+          index: path4[path4.length - 1],
+          after: siblings.length ? siblings[siblings.length - 1] : null,
+          name: nameOf(props, String(props.type)),
+          node: stripIds(normalizeSpecTree(raw, parentLayout))
+        });
+      }
+    }
+    const ownId = id !== undefined && !underNew ? id : null;
+    if (ownId)
+      desiredChildren.set(ownId, []);
+    const layout = layoutOf(raw);
+    childList.forEach((child, i) => {
+      visit(child, [...path4, i], ownId, layout, underNew || id === undefined);
+      if (ownId && child && typeof child === "object" && typeof child.id === "string" && desired.has(child.id) && desired.get(child.id).parentId === ownId) {
+        desiredChildren.get(ownId).push(child.id);
+      }
+    });
+  };
+  visit(spec.tree, [], lock.nodes[lock.rootId]?.parentId ?? null, rootParentLayout, false);
+  if (errors.length)
+    failWith(errors);
+  const baseHashes = {};
+  const truncatedIds = [];
+  for (const [id, node] of Object.entries(lock.nodes)) {
+    baseHashes[id] = node.propsHash;
+    if (node.props.truncated === true)
+      truncatedIds.push(id);
+  }
+  const pathHashed = Object.values(lock.nodes).some((n) => ("pathHash" in n.props));
+  for (const node of desired.values())
+    node.compare = lockForm(node.props, pathHashed);
+  const sizeIds = [];
+  for (const [id, node] of desired) {
+    const base = lock.nodes[id].props;
+    if (RESIZABLE.has(String(node.props.type)) && (!same(node.props.width, base.width) || !same(node.props.height, base.height)))
+      sizeIds.push(id);
+  }
+  return { desired, desiredChildren, creates, baseHashes, truncatedIds, sizeIds, pathHashed };
+}
+function stripIds(node) {
+  const { id: _id, children, ...rest } = node;
+  return children ? { ...rest, children: children.map(stripIds) } : rest;
+}
+function keptOrder(a, b) {
+  const pos = new Map(b.map((id, i) => [id, i]));
+  const seq = a.map((id) => pos.get(id));
+  const tails = [];
+  const prev = new Array(seq.length).fill(-1);
+  for (let i = 0;i < seq.length; i++) {
+    let lo = 0;
+    let hi = tails.length;
+    while (lo < hi) {
+      const mid = lo + hi >> 1;
+      if (seq[tails[mid]] < seq[i])
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    if (lo > 0)
+      prev[i] = tails[lo - 1];
+    tails[lo] = i;
+  }
+  const kept = new Set;
+  for (let i = tails.length ? tails[tails.length - 1] : -1;i >= 0; i = prev[i])
+    kept.add(a[i]);
+  return kept;
+}
+function applicable(props, key, value, parentLayout) {
+  if (value === undefined)
+    return false;
+  return key in normalizeNode({ ...props, [key]: value }, parentLayout);
+}
+function computePlan({ lock, live, prepared }) {
+  const base = lock.nodes;
+  const errors = [];
+  const operations = {
+    create: [],
+    update: [],
+    move: [],
+    remove: []
+  };
+  const drift = [];
+  const conflicts = [];
+  const expected = {};
+  let converged = 0;
+  const liveNodes = live.nodes;
+  const liveProps = (id) => {
+    const node = liveNodes[id];
+    if (!node)
+      return;
+    if (node.props)
+      return lockForm(node.props, prepared.pathHashed);
+    return base[id] && base[id].propsHash === node.propsHash ? base[id].props : undefined;
+  };
+  const touch = (id) => {
+    if (!id || expected[id] || !liveNodes[id])
+      return;
+    const { propsHash, parentId, children } = liveNodes[id];
+    expected[id] = { propsHash, parentId, children };
+  };
+  const label = (id) => nameOf(prepared.desired.get(id)?.props ?? base[id]?.props ?? liveProps(id), id);
+  const unread = new Set;
+  const addUnread = (id) => {
+    if (unread.has(id))
+      return;
+    unread.add(id);
+    for (const child of base[id]?.children ?? [])
+      addUnread(child);
+  };
+  for (const id of Object.keys(liveNodes)) {
+    const props = liveProps(id);
+    if (props && props.type === OPAQUE_TYPE && props.truncated === true && base[id] && base[id].props.truncated !== true)
+      addUnread(id);
+  }
+  for (const [id, want] of prepared.desired) {
+    const was = base[id];
+    const wanted = want.compare ?? want.props;
+    if (unread.has(id)) {
+      if (!sameProps(wanted, was.props) || want.parentId !== was.parentId) {
+        conflicts.push({ id, name: label(id), kind: "unread", detail: "Figma has more nodes here than this read could see; pull with a larger maxNodes" });
+      }
+      continue;
+    }
+    if (liveNodes[id] && liveNodes[id].propsHash === was.propsHash && sameProps(wanted, was.props))
+      continue;
+    const now = liveProps(id);
+    if (!liveNodes[id] || !now) {
+      conflicts.push({ id, name: label(id), kind: "missing", detail: "no longer in the live subtree (deleted, or moved out of it, in Figma)" });
+      continue;
+    }
+    if (now.type !== was.props.type) {
+      const edited = !sameProps(wanted, was.props);
+      (edited ? conflicts : drift).push({ id, name: label(id), kind: "type", detail: `Figma now has ${String(now.type)}${now.nodeType ? ` (${String(now.nodeType)})` : ""}` });
+      continue;
+    }
+    if (was.props.type === OPAQUE_TYPE) {
+      if (!same(now, was.props))
+        drift.push({ id, name: label(id), kind: "property", keys: diffKeys(was.props, now) });
+      continue;
+    }
+    const type = want.props.type;
+    const set2 = {};
+    const drifted = [];
+    const conflicted = [];
+    const keys = new Set([...Object.keys(was.props), ...Object.keys(wanted), ...Object.keys(now)]);
+    keys.delete("type");
+    for (const key of [...keys].sort()) {
+      const b = was.props[key];
+      const d = wanted[key];
+      const l = now[key];
+      if (d === undefined && b !== undefined && !applicable(want.props, key, b, want.parentLayout))
+        continue;
+      const desiredChanged = !sameValue(key, d, b);
+      const liveChanged = !sameValue(key, l, b);
+      if (!desiredChanged && !liveChanged)
+        continue;
+      if (desiredChanged && !liveChanged) {
+        let value = d;
+        if (value === undefined) {
+          value = SPEC_DEFAULTS[type][key];
+          if (value === undefined) {
+            errors.push(`${where(want.path)} (${id}): ${key} cannot be removed; set the value you want instead`);
+            continue;
+          }
+        }
+        if (key === "pathHash")
+          set2.pathData = want.props.pathData;
+        else
+          set2[key] = value;
+      } else if (!desiredChanged) {
+        drifted.push(key);
+      } else if (sameValue(key, d, l)) {
+        converged++;
+      } else {
+        conflicted.push(key);
+      }
+    }
+    if (drifted.length)
+      drift.push({ id, name: label(id), kind: "property", keys: drifted });
+    if (conflicted.length)
+      conflicts.push({ id, name: label(id), kind: "property", keys: conflicted });
+    if (Object.keys(set2).length) {
+      const op = { op: "update", id, name: label(id), nodeType: type, set: set2 };
+      if (RESIZABLE.has(type) && "width" in set2 !== "height" in set2) {
+        const other = "width" in set2 ? "height" : "width";
+        const size2 = liveNodes[id].size;
+        const value = size2 ? size2[other] : now[other] ?? SPEC_DEFAULTS[type][other];
+        if (value !== undefined) {
+          set2[other] = value;
+          op.fromLive = [other];
+        }
+      }
+      operations.update.push(op);
+      touch(id);
+    }
+  }
+  const desiredParent = (id) => prepared.desired.get(id)?.parentId;
+  const keptCache = new Map;
+  const kept = (cacheKey, a, b) => {
+    let hit = keptCache.get(cacheKey);
+    if (!hit) {
+      const inB = new Set(b);
+      const inA = new Set(a);
+      hit = keptOrder(a.filter((id) => inB.has(id)), b.filter((id) => inA.has(id)));
+      keptCache.set(cacheKey, hit);
+    }
+    return hit;
+  };
+  const liveKids = (id) => liveNodes[id] ? liveNodes[id].children : [];
+  const baseKids = (id) => base[id]?.children ?? [];
+  const wantKids = (id) => prepared.desiredChildren.get(id) ?? [];
+  for (const [id, want] of prepared.desired) {
+    if (unread.has(id) || !liveNodes[id])
+      continue;
+    const bp = base[id].parentId;
+    const lp = liveNodes[id].parentId;
+    if (id === lock.rootId) {
+      if (lp !== bp)
+        drift.push({ id, name: label(id), kind: "structure", detail: `the root moved in Figma (parent ${bp} -> ${lp})` });
+      continue;
+    }
+    const dp = want.parentId;
+    const desiredMoved = dp !== bp || !kept(`d:${bp}`, baseKids(bp), wantKids(bp)).has(id);
+    const liveMoved = lp !== bp || !kept(`l:${bp}`, baseKids(bp), liveKids(bp)).has(id);
+    if (!desiredMoved && !liveMoved)
+      continue;
+    if (!desiredMoved) {
+      drift.push({ id, name: label(id), kind: "structure", detail: lp !== bp ? `moved in Figma to parent ${lp}` : "reordered in Figma" });
+      continue;
+    }
+    if (liveMoved) {
+      if (dp === lp && kept(`dl:${dp}`, wantKids(dp), liveKids(dp)).has(id))
+        converged++;
+      else
+        conflicts.push({ id, name: label(id), kind: "structure", detail: "moved in both the Spec and Figma, to different places" });
+      continue;
+    }
+    if (unread.has(dp) || !liveNodes[dp]) {
+      conflicts.push({ id, name: label(id), kind: "structure", detail: `its new parent ${dp} is not in the live subtree` });
+      continue;
+    }
+    const siblings = wantKids(dp);
+    const index = want.path[want.path.length - 1];
+    const at = siblings.indexOf(id);
+    operations.move.push({ op: "move", id, name: label(id), fromParentId: bp, parentId: dp, index, after: at > 0 ? siblings[at - 1] : null });
+    touch(id);
+    touch(bp);
+    touch(dp);
+  }
+  for (const create of prepared.creates) {
+    if (unread.has(create.parentId) || !liveNodes[create.parentId]) {
+      conflicts.push({ id: create.parentId, name: create.name, kind: "missing", detail: `cannot create ${where(create.path)}: its parent is not in the live subtree` });
+      continue;
+    }
+    operations.create.push(create);
+    touch(create.parentId);
+  }
+  const liveUnder = (id, out) => {
+    for (const child of liveKids(id)) {
+      out.add(child);
+      liveUnder(child, out);
+    }
+    return out;
+  };
+  const baseUnder = (id, out) => {
+    for (const child of baseKids(id)) {
+      out.push(child);
+      baseUnder(child, out);
+    }
+    return out;
+  };
+  for (const id of Object.keys(base)) {
+    if (prepared.desired.has(id))
+      continue;
+    const bp = base[id].parentId;
+    if (bp !== null && !prepared.desired.has(bp))
+      continue;
+    const dropped = baseUnder(id, []).filter((d) => !prepared.desired.has(d));
+    const cutOff = (n) => unread.has(n) || base[n].props.truncated === true;
+    if (cutOff(id) || dropped.some(cutOff)) {
+      conflicts.push({ id, name: label(id), kind: "unread", detail: "not removed: part of its subtree could not be read; pull with a larger maxNodes" });
+      continue;
+    }
+    if (!liveNodes[id]) {
+      converged++;
+      continue;
+    }
+    const handAdded = [...liveUnder(id, new Set)].some((d) => !base[d]);
+    const changed = liveNodes[id].propsHash !== base[id].propsHash || liveNodes[id].parentId !== bp || dropped.some((d) => liveNodes[d] && (liveNodes[d].propsHash !== base[d].propsHash || liveNodes[d].parentId !== base[d].parentId));
+    if (changed || handAdded) {
+      conflicts.push({ id, name: label(id), kind: "remove", detail: handAdded ? "not removed: nodes were added inside it in Figma" : "not removed: it changed in Figma since the pull" });
+      continue;
+    }
+    operations.remove.push({ op: "remove", id, name: label(id), parentId: bp });
+    touch(id);
+    touch(bp);
+    for (const d of dropped)
+      touch(d);
+  }
+  for (const id of Object.keys(liveNodes)) {
+    if (base[id] || unread.has(id))
+      continue;
+    drift.push({ id, name: nameOf(liveProps(id), id), kind: "added", detail: `added in Figma under ${liveNodes[id].parentId}` });
+  }
+  if (errors.length)
+    failWith(errors);
+  const ordered = [...operations.create, ...operations.update, ...operations.move, ...operations.remove];
+  return {
+    operations: ordered,
+    expectedHashes: expected,
+    drift,
+    conflicts,
+    liveTruncated: !!live.truncated,
+    counts: {
+      operations: ordered.length,
+      updates: operations.update.length,
+      properties: operations.update.reduce((n, op) => n + Object.keys(op.set).length - (op.fromLive ? op.fromLive.length : 0), 0),
+      creates: operations.create.length,
+      moves: operations.move.length,
+      removes: operations.remove.length,
+      drift: drift.length,
+      conflicts: conflicts.length,
+      converged,
+      unread: unread.size,
+      liveNodes: Object.keys(liveNodes).length
+    }
+  };
+}
+function sameProps(a, b) {
+  for (const key of new Set([...Object.keys(a), ...Object.keys(b)]))
+    if (!sameValue(key, a[key], b[key]))
+      return false;
+  return true;
+}
+function diffKeys(a, b) {
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].filter((k) => !same(a[k], b[k])).sort();
+}
 
 // src/llm2figma_mcp/tools/spec.ts
 var EXPORT_TIMEOUT_MS = 120000;
+var READ_TIMEOUT_MS = 120000;
 var REPLACE_HINT = "Pass replaceEdited: true to rename the old pair to .bak files and pull fresh.";
 function refusal(spec, lock, specPath) {
   if (lock && lock.pendingApply) {
@@ -23724,6 +24398,132 @@ async function pullSpec(args2, send, options = {}) {
   }
   return result;
 }
+var PLAN_LIMITS = { maxPlans: 8, ttlMs: 30 * 60000, maxBytes: 4 * 1024 * 1024 };
+
+class PlanStore {
+  clock;
+  limits;
+  plans = new Map;
+  constructor(clock = Date.now, limits = PLAN_LIMITS) {
+    this.clock = clock;
+    this.limits = limits;
+  }
+  prune() {
+    const now = this.clock();
+    for (const [id, entry2] of this.plans)
+      if (entry2.expiresAt <= now)
+        this.plans.delete(id);
+  }
+  put(plan) {
+    const bytes = Buffer.byteLength(JSON.stringify(plan), "utf8");
+    if (bytes > this.limits.maxBytes) {
+      throw new Error(`The plan is ${Math.ceil(bytes / 1024)} KB, over the ${this.limits.maxBytes / (1024 * 1024)} MB limit. Pull a smaller subtree.`);
+    }
+    this.prune();
+    while (this.plans.size >= this.limits.maxPlans)
+      this.plans.delete(this.plans.keys().next().value);
+    const expiresAt = this.clock() + this.limits.ttlMs;
+    this.plans.set(plan.planId, { plan, expiresAt });
+    return expiresAt;
+  }
+  get(planId) {
+    const entry2 = this.plans.get(planId);
+    if (entry2 && entry2.expiresAt > this.clock())
+      return entry2.plan;
+    if (entry2)
+      this.plans.delete(planId);
+    throw new Error(`Plan ${planId} has expired or is unknown (plans last ${this.limits.ttlMs / 60000} minutes, and only the ${this.limits.maxPlans} newest are kept). Run plan_spec again.`);
+  }
+  get size() {
+    this.prune();
+    return this.plans.size;
+  }
+}
+var defaultPlanStore = new PlanStore;
+function getPlanStore(options = {}) {
+  return options.planStore ?? defaultPlanStore;
+}
+var PLAN_LIST_LIMIT = 100;
+function summarise(op) {
+  switch (op.op) {
+    case "update":
+      return { op: op.op, id: op.id, name: op.name, keys: Object.keys(op.set).filter((k) => !op.fromLive?.includes(k)) };
+    case "create":
+      return { op: op.op, path: op.path, parentId: op.parentId, index: op.index, type: op.node.type, name: op.name };
+    case "move":
+      return op.fromParentId === op.parentId ? { op: op.op, id: op.id, name: op.name, parentId: op.parentId, index: op.index } : { op: op.op, id: op.id, name: op.name, fromParentId: op.fromParentId, parentId: op.parentId, index: op.index };
+    case "remove":
+      return { op: op.op, id: op.id, name: op.name };
+  }
+}
+function planNote(plan) {
+  const notes = [];
+  if (!plan.counts.operations && !plan.counts.drift && !plan.counts.conflicts)
+    notes.push("Figma matches the Spec: nothing to apply.");
+  if (plan.counts.drift)
+    notes.push("Drift is what changed in Figma since the pull; it is kept as Figma has it. To take it into the Spec, pull_spec again (replaceEdited: true if the Spec has unapplied edits; it backs them up as .bak).");
+  if (plan.counts.conflicts)
+    notes.push("Conflicts changed on both sides, or cannot be done safely; they are listed and skipped.");
+  if (plan.counts.unread)
+    notes.push(`${plan.counts.unread} node(s) could not be read within the node budget; nothing in them is planned.`);
+  return notes.length ? notes.join(" ") : undefined;
+}
+async function planSpec(args2, send, options = {}) {
+  const env = options.env ?? process.env;
+  const paths = await resolveSpecPaths(args2.path, specBaseDir(env, options.cwd));
+  const { spec, lock } = await readSpecPair(paths);
+  if (lock.pendingApply) {
+    throw new Error(`Refusing to plan ${paths.specPath}: an apply (plan ${lock.pendingApply}) was started and did not finish, so Figma may hold part of it. Pull again (pull_spec with replaceEdited: true backs up the Spec) and redo the edits.`);
+  }
+  const pre = prepareSpec(spec, lock);
+  const live = await send("read_spec_nodes", {
+    rootId: lock.rootId,
+    expect: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId },
+    baseHashes: pre.baseHashes,
+    truncatedIds: pre.truncatedIds,
+    sizeIds: pre.sizeIds,
+    maxNodes: WALK_LIMITS.maxNodes,
+    maxDepth: WALK_LIMITS.maxDepth
+  }, READ_TIMEOUT_MS);
+  if (!live || typeof live !== "object" || !live.nodes || typeof live.nodes !== "object" || live.rootId !== lock.rootId) {
+    throw new Error("The Figma plugin returned no node read. Rebuild and re-run the plugin (bun run build) so it knows read_spec_nodes.");
+  }
+  const connectedKey = live.fileKey ?? (options.userFileKey ?? getChannelFileKey)() ?? null;
+  if (lock.fileKey && connectedKey && lock.fileKey !== connectedKey) {
+    throw new Error(`Wrong file: ${paths.specPath} is for file key ${lock.fileKey}, but the connected file's key is ${connectedKey}.`);
+  }
+  const prepared = prepareSpec(spec, lock, { layoutMode: live.rootParentLayoutMode ?? undefined });
+  const body = computePlan({ spec, lock, live, prepared });
+  const now = (options.now ?? (() => new Date))();
+  const plan = {
+    l2fPlan: 1,
+    planId: `plan-${randomUUID3()}`,
+    createdAt: now.toISOString(),
+    specPath: paths.specPath,
+    lockPath: paths.lockPath,
+    specHash: specHash(spec),
+    lockHash: specHash(lock),
+    channel: (options.channel ?? getCurrentChannel)(),
+    target: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId, rootId: lock.rootId },
+    ...body
+  };
+  const expiresAt = getPlanStore(options).put(plan);
+  const truncated = plan.operations.length > PLAN_LIST_LIMIT || plan.drift.length > PLAN_LIST_LIMIT || plan.conflicts.length > PLAN_LIST_LIMIT;
+  const summary = {
+    planId: plan.planId,
+    path: paths.specPath,
+    counts: plan.counts,
+    operations: plan.operations.slice(0, PLAN_LIST_LIMIT).map(summarise),
+    drift: plan.drift.slice(0, PLAN_LIST_LIMIT),
+    conflicts: plan.conflicts.slice(0, PLAN_LIST_LIMIT),
+    truncated,
+    expiresAt: new Date(expiresAt).toISOString()
+  };
+  const note = planNote(plan);
+  if (note)
+    summary.note = note;
+  return summary;
+}
 function registerTools27(server, sendCommandToFigma2, options = {}) {
   server.tool("pull_spec", "Write a Figma subtree to a Spec file on disk (JSON, name ending .l2f.json) so a design can be edited in place by editing the file, plus a SpecLock beside it (<name>.l2f.lock.json, never edit it) recording what Figma held at the pull. The Spec uses create_node_tree's node format (text content is `text`, colours are hex or $var:Collection/Name) and every node carries its Figma `id`; a node without an id is one to create. Values equal to create_node_tree's defaults, and values Figma derives from layout (x/y inside auto-layout, width/height on HUG or FILL axes, text height), are left out. Nodes the format cannot express (groups, ellipses, lines, boolean operations, sections, components, rotated nodes, grid frames) are OpaqueNodes {type: \"$opaque\", id, name, nodeType} with no children; an instance is a leaf with componentKey (or componentId for a local component) and flattened properties. A subtree the node budget cut off is an OpaqueNode with truncated: true. Returns only paths and counts, never the tree: read the file. Refuses to overwrite a Spec with unapplied edits, a pair whose apply did not finish, or a file that is not a Spec; replaceEdited: true renames the old pair to .bak first. Re-pulling the same root checks it is the same file (by file key when known, else by file name: a copy renamed to the original's name is not detected) and page. Paths: relative to L2F_SPEC_DIR (or the server's working directory); absolute paths must be inside it; symlinked Spec files are refused.", {
     nodeId: z2.string().min(1).describe("Root of the subtree: a frame, text, rectangle, vector or instance"),
@@ -23737,6 +24537,16 @@ function registerTools27(server, sendCommandToFigma2, options = {}) {
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     } catch (error) {
       return { isError: true, content: [{ type: "text", text: `Error pulling spec: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+  server.tool("plan_spec", "Compare a Spec (after your edits), its SpecLock (Figma at the last pull) and live Figma, property by property, and return the difference as a Plan. Writes nothing: not to Figma, not to the Spec or SpecLock. Per property: Spec changed and Figma did not -> an update; Figma changed and the Spec did not -> drift (kept as Figma has it); both changed to the same value -> nothing; both changed differently -> a conflict (skipped). Structure the same way: a node without an id -> create; a changed parent or sibling order -> move; an id deleted from the Spec -> remove (only if Figma did not change it; a subtree the node budget cut off never yields removals); a node gone from Figma -> missing; a node added in Figma by hand is left alone and reported as drift. Errors, naming the node, on a duplicate or unknown id, an id inside an instance (contains ';'), a changed node type, or an edit to an OpaqueNode other than moving or removing it. Refuses while the SpecLock records an unfinished apply. Returns {planId, counts, operations, drift, conflicts} with at most 100 entries per list (truncated: true when more; counts are complete) and the planId; the full Plan stays on the server for 30 minutes under that explicit id. Nothing applies a Plan yet.", {
+    path: z2.string().min(1).describe("The Spec file (.l2f.json) written by pull_spec, after your edits")
+  }, async (args2) => {
+    try {
+      const result = await planSpec(args2, sendCommandToFigma2, options);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: `Error planning spec: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   });
 }
@@ -25771,7 +26581,7 @@ function customFileExists(root, from) {
 }
 
 // src/llm2figma_mcp/code-map.ts
-import { createHash, randomUUID as randomUUID3 } from "crypto";
+import { createHash, randomUUID as randomUUID4 } from "crypto";
 import { constants as constants2 } from "fs";
 import { lstat as lstat2, mkdir, open as open2, realpath as realpath2, rename as rename2, unlink as unlink2 } from "fs/promises";
 import { dirname as dirname4, join as join4 } from "path";
@@ -26128,7 +26938,7 @@ function updateCodeMap(root, update, hooks = {}) {
         current = parsed;
       }
       const { map: map2, result } = update(current);
-      const temp = join4(dirname4(file), `.${CODE_MAP_FILE}.${process.pid}.${randomUUID3()}.tmp`);
+      const temp = join4(dirname4(file), `.${CODE_MAP_FILE}.${process.pid}.${randomUUID4()}.tmp`);
       try {
         const handle = await open2(temp, constants2.O_CREAT | constants2.O_EXCL | constants2.O_WRONLY | (constants2.O_NOFOLLOW ?? 0), 420);
         try {

@@ -748,7 +748,7 @@ describe("spec sync (PR 11b)", () => {
         return tools;
       };
       expect(names({})).toEqual([]);
-      expect(names({ L2F_SPEC_SYNC: "1" })).toEqual(["pull_spec"]);
+      expect(names({ L2F_SPEC_SYNC: "1" })).toEqual(["pull_spec", "plan_spec"]);
       const server = readFileSync("src/llm2figma_mcp/server.ts", "utf8");
       expect(server).toContain('registerFeature("SPEC_SYNC", registerSpecTools)');
       expect(server.match(/registerSpecTools/g)).toHaveLength(2);

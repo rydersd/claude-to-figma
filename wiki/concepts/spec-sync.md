@@ -26,6 +26,14 @@ A bound paint is exported as `$var:Collection/Name` only when `getVariableByName
 
 `getVariableByName` caches a local and a library variable index in module state. Every test file in one `bun test` run shares it, and Bun does not run files in the order they are listed: `tests/spec-sync.test.ts` ran before `tests/plugin-library.test.ts`, which asserts that it builds the index itself (`localReads === 1`, object identity). The spec tests call `resetVariableIndexesForTests()` (in `utils.ts`) before and after themselves. Any new test file that resolves `$var:` references should do the same.
 
+## Planning (PR 11c): what the comparison had to get right
+
+- **The live read must use the pull's normaliser, not a cheaper one.** `read_spec_nodes` runs the same walk as `export_spec` (`readSubtree` in the plugin's `spec.ts`) and builds entries with `lockNodesFromTree`, so an untouched node hashes exactly like its SpecLock entry. Only nodes whose hash differs send `props`; an unchanged 2,000-node design costs one hash each.
+- **The read budget is the largest, and the SpecLock's cut-off nodes are forced opaque.** Reading with the pull's budget is not stable: a node added by hand early in pre-order shifts where the budget runs out. So the plan reads with `maxNodes` 10000 and sends `truncatedIds`; the plugin treats those as truncated OpaqueNodes whatever the budget, so they hash the same as at the pull. A node the read newly cuts off makes it and its base descendants `unread`: never removed, never `missing`.
+- **"Absent from the Spec" needs a context check.** Before reading a missing key as "reset to default", the planner re-normalises the node with the base value put back. If the normaliser drops it again, Figma derives it in the new context (FILL width, x inside auto-layout) and nothing is written.
+- **Minimal moves.** Per parent, the nodes kept are the longest increasing run of positions between the two orders (both filtered to their common members); the rest are moves. A swap is one move, and which of the two is reported is arbitrary but deterministic, so tests must accept either.
+- **The other dimension needs a live value.** Normalised props drop derived sizes, so the server sends `sizeIds` (nodes whose Spec width or height changed, known before the read) and the plugin returns their live size.
+
 ## See also
 
 - [Geometry verification](geometry-verification.md): the bounded walk and plugin-side stores this builds on.

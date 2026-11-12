@@ -353,6 +353,36 @@
     const keys = Object.keys(value).filter((k) => value[k] !== void 0).sort();
     return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(value[k])).join(",") + "}";
   }
+  function hashString(text) {
+    let h1 = 3735928559;
+    let h2 = 1103547991;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ h1 >>> 16, 2246822507);
+    h1 ^= Math.imul(h2 ^ h2 >>> 13, 3266489909);
+    h2 = Math.imul(h2 ^ h2 >>> 16, 2246822507);
+    h2 ^= Math.imul(h1 ^ h1 >>> 13, 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
+  }
+  function hashProps(props) {
+    return hashString(stableStringify(props));
+  }
+  function lockNodesFromTree(tree, rootParentId) {
+    const nodes = {};
+    const visit = (node, parentId) => {
+      const { id, children, ...props } = node;
+      if (typeof id !== "string" || !id) throw new Error("Every node in a pulled Spec needs an id");
+      if (nodes[id]) throw new Error(`Duplicate node id in Spec: ${id}`);
+      const kids = Array.isArray(children) ? children : [];
+      nodes[id] = { props, propsHash: hashProps(props), parentId, children: kids.map((child) => child.id) };
+      for (const child of kids) visit(child, id);
+    };
+    visit(tree, rootParentId);
+    return nodes;
+  }
 
   // src/llm2figma_plugin/src/utils.ts
   var loadFontCached = createFontLoader((font) => figma.loadFontAsync(font));
@@ -8618,8 +8648,9 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     "assert_contained",
     "snapshot_positions",
     "diff_positions",
-    // L2F_SPEC_SYNC: reads a subtree; the Spec file is written by the server.
-    "export_spec"
+    // L2F_SPEC_SYNC: read a subtree; the Spec file is written by the server.
+    "export_spec",
+    "read_spec_nodes"
   ]);
   var COMMAND_EDITORS = {};
   function allowedEditors(command) {
@@ -8846,8 +8877,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   function countNodes(node) {
     return 1 + (Array.isArray(node.children) ? node.children.reduce((n, child) => n + countNodes(child), 0) : 0);
   }
-  async function exportSpec(params) {
+  async function readSubtree2(params, options) {
     const { nodeId, expect, maxNodes, maxDepth, commandId } = params || {};
+    const { commandType } = options;
+    const forced = options.truncatedIds ?? /* @__PURE__ */ new Set();
     if (!nodeId || typeof nodeId !== "string") throw new Error("Missing nodeId parameter");
     if (nodeId.includes(";")) throw new Error(`Cannot pull ${nodeId}: it is inside an instance. Pull a node outside the instance; instances are exported as leaves.`);
     const { node: root, page, fileKey, fileName } = await resolveSpecTarget(nodeId, expect || {});
@@ -8860,7 +8893,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const visited = [];
     const result = walkTree(root, (node) => {
       visited.push(node);
-      return opaqueReason(node) === null && node.type !== "INSTANCE";
+      return opaqueReason(node) === null && node.type !== "INSTANCE" && (node === root || !forced.has(node.id));
     }, walk);
     const cutOff = new Set(result.truncatedParents);
     if (cutOff.has(root)) throw new Error(`maxNodes/maxDepth are too small to read the children of ${nodeId}.`);
@@ -8868,13 +8901,13 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const cache = new SpecReadCache();
     let done = 0;
     let opaqueCount = 0;
-    if (commandId) await sendProgressUpdate(commandId, "export_spec", "started", 0, total, 0, `Reading ${total} nodes`);
+    if (commandId) await sendProgressUpdate(commandId, commandType, "started", 0, total, 0, `Reading ${total} nodes`);
     const build = async (node) => {
       done++;
       if (commandId && done % PROGRESS_EVERY === 0) {
-        await sendProgressUpdate(commandId, "export_spec", "in_progress", Math.round(done / total * 100), total, done, `Read ${done}/${total} nodes`);
+        await sendProgressUpdate(commandId, commandType, "in_progress", Math.round(done / total * 100), total, done, `Read ${done}/${total} nodes`);
       }
-      const truncated = cutOff.has(node);
+      const truncated = cutOff.has(node) || node !== root && forced.has(node.id);
       if (truncated || opaqueReason(node)) {
         opaqueCount++;
         return opaqueNode(node, truncated);
@@ -8893,18 +8926,69 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
     const rawTree = await build(root);
     const parent = root.parent;
-    const tree = normalizeSpecTree(rawTree, { layoutMode: parent && parent.type !== "PAGE" ? parent.layoutMode : void 0 });
-    if (commandId) await sendProgressUpdate(commandId, "export_spec", "completed", 100, total, done, `Read ${done} nodes`);
+    const rootParentLayoutMode = parent && parent.type !== "PAGE" ? parent.layoutMode : void 0;
+    const tree = normalizeSpecTree(rawTree, { layoutMode: rootParentLayoutMode });
+    if (commandId) await sendProgressUpdate(commandId, commandType, "completed", 100, total, done, `Read ${done} nodes`);
     return {
+      root,
       fileKey,
       fileName,
       pageId: page.id,
       rootId: root.id,
       rootParentId: parent ? parent.id : null,
+      rootParentLayoutMode: rootParentLayoutMode ?? null,
       tree,
-      nodeCount: countNodes(tree),
       opaqueCount,
       truncated: result.truncated
+    };
+  }
+  async function exportSpec(params) {
+    const read = await readSubtree2(params, { commandType: "export_spec" });
+    return {
+      fileKey: read.fileKey,
+      fileName: read.fileName,
+      pageId: read.pageId,
+      rootId: read.rootId,
+      rootParentId: read.rootParentId,
+      tree: read.tree,
+      nodeCount: countNodes(read.tree),
+      opaqueCount: read.opaqueCount,
+      truncated: read.truncated
+    };
+  }
+  function liveSize(node) {
+    return node && typeof node.width === "number" && typeof node.height === "number" ? { width: round2(node.width), height: round2(node.height) } : void 0;
+  }
+  async function readSpecNodes(params) {
+    const { rootId, expect, baseHashes, truncatedIds, sizeIds, maxNodes, maxDepth, commandId } = params || {};
+    if (!rootId || typeof rootId !== "string") throw new Error("Missing rootId parameter");
+    const bases = baseHashes && typeof baseHashes === "object" ? baseHashes : {};
+    const read = await readSubtree2(
+      { nodeId: rootId, expect, maxNodes, maxDepth, commandId },
+      { commandType: "read_spec_nodes", truncatedIds: new Set(Array.isArray(truncatedIds) ? truncatedIds : []) }
+    );
+    const entries = lockNodesFromTree(read.tree, read.rootParentId);
+    const nodes = {};
+    for (const [id, entry] of Object.entries(entries)) {
+      const out = { propsHash: entry.propsHash, parentId: entry.parentId, children: entry.children };
+      if (bases[id] !== entry.propsHash) out.props = entry.props;
+      nodes[id] = out;
+    }
+    for (const id of Array.isArray(sizeIds) ? sizeIds : []) {
+      if (!nodes[id]) continue;
+      const size = liveSize(id === read.rootId ? read.root : await figma.getNodeByIdAsync(id));
+      if (size) nodes[id].size = size;
+    }
+    return {
+      fileKey: read.fileKey,
+      fileName: read.fileName,
+      pageId: read.pageId,
+      rootId: read.rootId,
+      rootParentId: read.rootParentId,
+      rootParentLayoutMode: read.rootParentLayoutMode,
+      truncated: read.truncated,
+      nodeCount: Object.keys(nodes).length,
+      nodes
     };
   }
 
@@ -9186,6 +9270,8 @@ ${detail}`);
         return await diffPositions(params);
       case "export_spec":
         return await exportSpec(params);
+      case "read_spec_nodes":
+        return await readSpecNodes(params);
       case "delete_node":
         return await deleteNode(params);
       case "delete_multiple_nodes":
