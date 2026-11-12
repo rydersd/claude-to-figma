@@ -28,11 +28,13 @@ Sizes are estimated changed lines excluding tests, docs, and regenerated bundles
 | 11b | Spec sync: `pull_spec` writes a Spec file and SpecLock, plus the round-trip tests | both | `L2F_SPEC_SYNC` | ~450 | 2, 10, 11a |
 | 11c | Spec sync: `plan_spec` returns the property-level difference between Spec, SpecLock and live Figma; writes nothing | both | `L2F_SPEC_SYNC` | ~380 | 11b |
 | 11d | Spec sync: `apply_spec` carries out one Plan by node id, reads back, updates the Spec and SpecLock | both | `L2F_SPEC_SYNC` | ~420 | 11c |
+| 11e | Code map: read a CodeRepo's design-system packages, `scan_code_components`, CodeMap file read and write (`set_code_map_entries`) | backend | `L2F_CODE_MAP` | ~450 | 1 |
+| 11f | Code map: `propose_code_map`, `check_code_map`, `resolve_code_components`; instance keys, names, swaps and nested instances in the Spec export | both | `L2F_CODE_MAP` + `L2F_SPEC_SYNC` | ~550 | 1b, 11b, 11e |
 | 12 | Dev Mode: DevStatus, DevResource, Measurement | both | `L2F_DEV_MODE` | ~300 | 1 (5 for the done-when example) |
 | 13 | Slides: grid read, create, name, reorder | both | `L2F_SLIDES` | ~240 | 1 |
 | 14 | TextPath tool, then remove all flags | both | `L2F_TEXT_PATH`, removes all | ~190 | all |
 
-14 PRs rather than 22, plus the four spec-sync PRs (11a to 11d) added on 2026-11-12 after the plan was confirmed. Landing order is priority order (comments first, since design review feedback is arriving as Figma comments). PRs 5 onward are independent of each other, so a stalled one can be rebased out. Land in order, not as a batch; suggested merge milestones: A = 1 to 4, B = 5, C = 6, D = 7 to 9, E = 10 to 11, E2 = 11a to 11d, F = 12 to 14. Each milestone bumps the `version` in `plugin/.claude-plugin/plugin.json` (currently 0.2.0).
+14 PRs rather than 22, plus the four spec-sync PRs (11a to 11d) and the two code-map PRs (11e, 11f) added on 2026-11-12 after the plan was confirmed. Landing order is priority order (comments first, since design review feedback is arriving as Figma comments). PRs 5 onward are independent of each other, so a stalled one can be rebased out. Land in order, not as a batch; suggested merge milestones: A = 1 to 4, B = 5, C = 6, D = 7 to 9, E = 10 to 11, E2 = 11a to 11d, E3 = 11e to 11f, F = 12 to 14. Each milestone bumps the `version` in `plugin/.claude-plugin/plugin.json` (currently 0.2.0).
 
 ## Rules every PR follows
 
@@ -53,7 +55,7 @@ Sizes are estimated changed lines excluding tests, docs, and regenerated bundles
 Server-side env flags only. A plugin-side toggle was considered and dropped: `figma_eval` runs arbitrary code in the plugin and is ungated, so toggles would give review isolation but no protection, and cost ~45 lines of `ui.html` plus a default-off trap.
 
 - New `src/shared/flags.ts`: `FEATURES` and `isEnabled(feature, env = process.env)`, true when `L2F_<FEATURE>=1` or `L2F_ALL=1`. `L2F_ALL` **excludes** `L2F_COMMENTS_WRITE`, which must always be set on its own. `server.ts` registers a feature's tool module only when enabled. No tool parameter can turn a feature on; tests pass `env` as an argument.
-- Flags: `L2F_FILE_KEY`, `L2F_COMMENTS`, `L2F_COMMENTS_WRITE`, `L2F_FLOWS`, `L2F_VARIABLES_WRITE`, `L2F_COMPONENT_PROPERTIES`, `L2F_GRID_LAYOUT`, `L2F_VERIFY`, `L2F_SPEC_SYNC`, `L2F_DEV_MODE`, `L2F_SLIDES`, `L2F_TEXT_PATH`.
+- Flags: `L2F_FILE_KEY`, `L2F_COMMENTS`, `L2F_COMMENTS_WRITE`, `L2F_FLOWS`, `L2F_VARIABLES_WRITE`, `L2F_COMPONENT_PROPERTIES`, `L2F_GRID_LAYOUT`, `L2F_VERIFY`, `L2F_SPEC_SYNC`, `L2F_CODE_MAP`, `L2F_DEV_MODE`, `L2F_SLIDES`, `L2F_TEXT_PATH`.
 - **Launch paths.** (a) `.mcp.json` install: add `L2F_*` entries to the `env` block, written by `scripts/write-mcp-config.ts`. (b) Claude Code plugin install: add an `env` block to `mcpServers.LLM2Figma` in `plugin/.claude-plugin/plugin.json` with `"L2F_X": "${L2F_X:-}"` for each flag, so shell exports reach the bundled server. If the live test shows the desktop app does not pass them, fall back to a server-only flags file under `CLAUDE_PLUGIN_DATA`. PR 1 tests both: unit tests on `write-mcp-config` output and the `plugin.json` env keys, and a live check that setting `L2F_FLOWS=1` makes the tools appear under each install path and unsetting removes them.
 - **Existing tools that gain fields (decided per case).**
   - `get_document_info.fileKey` (PR 2): stripped server-side when `L2F_FILE_KEY` is off, so output is unchanged.
@@ -232,6 +234,74 @@ Verification: `tests/sync-mode.test.ts` and the `create_node_tree` cases in `tes
 
 **Not in v1 (candidates for a later PR).** Refreshing only the nodes the event stream says changed, instead of a full pull. Taking drift into the Spec without a full pull. Components and component sets as editable frames. Rotation, per-corner radii, multiple and non-solid paints, and non-pixel line height in the format. INSTANCE_SWAP properties (they take a component node id, not a key). A `core` tool profile that registers only these three tools plus screenshots for edit-only sessions.
 
+### Code map (PRs 11e and 11f)
+
+Added 2026-11-12 at the user's request. Revised the same day after backend and frontend review (see [Code map review](#code-map-review-2026-11-12)).
+
+**Goal.** Let Figma be a source of truth for code. A frame's library instances are translated to the components of whatever design-system packages the user's code repository installs, and the gaps are reported: instances with no code counterpart, components that still have to be built, and mappings that point at something a package no longer exports.
+
+**Nothing about any design system is built in.** The repository is a parameter on every call. No package name, registry or component list appears in this repository, its tests or its docs. Fixtures are synthetic.
+
+**Objects.**
+
+- **CodeRepo**: a directory on the user's machine, passed as `codeRepo` (absolute path) on every tool call. Never stored, never defaulted, never remembered between calls.
+- **Manifest**: the `package.json` that lists the design-system dependencies. `<codeRepo>/package.json` by default; in a workspace monorepo, the optional `manifest` parameter names another one by its path relative to the CodeRepo (`apps/web/package.json`). Package lookup starts at the Manifest's directory and walks up `node_modules` directories, stopping at the CodeRepo root, so hoisted dependencies are found while reads stay inside the CodeRepo.
+- **DesignSystemPackage**: an npm package listed in the Manifest's `dependencies`, `devDependencies` or `peerDependencies`. A CodeMap may use several (components and icons usually ship separately). When a tool needs a package and none is given, `scan_code_components` returns the dependency names and nothing else, and the caller picks.
+- **CodeComponent**: an export of a DesignSystemPackage: `{name, from, props: [names], propsState: "complete" | "partial" | "unknown"}`. Read from the package's type declarations.
+- **CodeMap**: the file `<codeRepo>/.l2f/code-map.json`, owned by the CodeRepo and committed there, not here:
+  `{l2fCodeMap: 1, packages: {<name>: <version at last write>}, components: {<figmaKey>: CodeMapEntry}, tokens: {<Collection/Name>: <code token name>}}`.
+- **CodeMapEntry**: `{figmaName, status, import?, props?, variants?, verified, note?}`.
+  - `status`: `package` (an export of a DesignSystemPackage), `custom` (a component in the CodeRepo itself; `import.from` is a path relative to the CodeRepo) or `missing` (nothing exists yet; no `import`).
+  - `import`: `{from, name}` for a JS export, where `from` is a package name or one of its subpaths (`pkg/Button`), `name` may be dotted for compound components (`Card.Header`, validated on its root identifier) and `default: true` marks a default export; or `{tag}` for a custom element or tag-based framework component.
+  - `props`: `{<figma property name>: PropRule}`. A PropRule is `{prop}` (pass the value through), `{prop, values: {<figma value>: <code value>}}`, `{values: {<figma value>: {<codeProp>: <literal>} | null}}` (each value sets its own props, `null` sets none: `State=Disabled` → `{disabled: true}`, `State=Hover` → `null`), `{children: true}` (a text property becomes the children), or `{ignore: true}`.
+  - `variants`: optional `[{when: {<figma property>: <value>}, import, props?}]`, checked in order before the entry's own `import`, for a Figma set whose variants are different code components (`Type=Icon only` → `IconButton`).
+  - `verified`: set by the tool, never by the caller. `true` when the import and every mapped prop were confirmed by a scan; `false` when the package has no readable declarations, the import is a `tag`, or the props are not `complete`. Unverified entries are written and resolved, but never reported stale.
+- **`figmaKey`**: the component set's key when the instance's main component is a variant, otherwise the component's key. Local components have keys too and are keyed the same way.
+
+**Spec export additions (made in 11f, read-only).** The code map needs four things the 11b export does not emit. 11f adds them to the instance leaf in `export_spec`, so 11f is a "both" PR with a plugin rebuild:
+
+- `componentKey` for local components as well as remote ones (11b emits only `componentId` for local), and `componentSetKey` when the main component has a parent set.
+- `mainComponentName` (the set's or component's name), since the Spec's `name` is the layer name and designers rename layers.
+- For each INSTANCE_SWAP property, `{componentKey, componentSetKey?, mainComponentName}` in place of the bare node id, and `nestedInstances: [{path, componentKey, componentSetKey?, mainComponentName, properties}]` for instances inside the leaf (depth 3, at most 50 per leaf), so a Card's Buttons and a Button's swapped icon can be resolved.
+- `textOverrides: [{path, characters}]` for text layers inside the leaf whose characters differ from the main component and that no TEXT property covers (at most 20, 500 characters each).
+
+None of these fields enters `propsHash` or the SpecLock, so existing SpecLocks show no drift, and `apply_spec` still refuses changes to them (instance internals stay out of scope for apply). A `$lib:` instance in a Spec that has not been applied yet has no key; it is reported as `unresolved: "not-applied"`.
+
+**Rules for both PRs.**
+
+- **Read-only towards the CodeRepo, except the CodeMap.** The only file ever written is `<codeRepo>/.l2f/code-map.json`. `.l2f` and the CodeMap must not be symlinks, and the realpath of `.l2f` must be inside the realpath of the CodeRepo; otherwise the write is refused. An existing file is overwritten only when it parses as a CodeMap.
+- **No lost updates.** Writes to one CodeMap path run through a per-path in-process queue. Each write reads the file, merges, writes a uniquely named temp file in `.l2f`, re-reads the original's hash, and renames only if the hash is unchanged (else retries the merge once, then fails with "the code map changed while writing").
+- **What may be read**, after resolving symlinks, and nothing else: the Manifest; `package.json` and declaration files (`.d.ts`, `.d.mts`, `.d.cts`) under each DesignSystemPackage's directory and its `@types/<package>` counterpart; the CodeMap; and, for a `custom` entry, only whether its `import.from` file exists. A resolved path outside the CodeRepo is refused, except a package directory that is a symlink into a store inside the same CodeRepo (pnpm).
+- **Never execute anything from the CodeRepo.** No `import`, `require`, script run or package-manager call. Declarations are read as text.
+- **Declaration reading is a bounded text scan, not a compiler.** Bundling the TypeScript compiler would add several megabytes to `plugin/server/server.js`, and loading the CodeRepo's own copy would execute its code.
+  - Entry resolution, in order: `exports["."]` conditions `types`, then `import.types`, then `require.types`, then `default` with its extension mapped to a declaration file; `types`; `typings`; `typesVersions` for `*`; `main` mapped to a declaration file; `index.d.ts`; `@types/<package>`. Subpath exports (`exports["./Button"]`) are scanned the same way when an entry names that subpath.
+  - Followed forms: `export * from`, `export { A, B as C } from`, `export { default as X } from`, local `export { A, B }` lists, `declare const X: …`, `export declare function`, `export declare class`, `export default`. Relative specifiers ending in `.js`/`.mjs`/`.cjs` map to the matching declaration file; a directory specifier maps to its `index.d.ts`.
+  - Only PascalCase exports are components; hooks and utilities are skipped.
+  - Props: the scanner looks for `<Name>Props` in the component's own file chain, then for the type argument of `FC<…>`, `ForwardRefExoticComponent<…>` or the first parameter. A plain interface or type literal gives `propsState: "complete"`. An `extends` clause, intersection, generic or `Omit`/`Pick` gives `"partial"` with the names it could read. Anything else gives `"unknown"` and no props. Nothing is guessed.
+  - The scan result says `noDeclarations: true` when a package has no declaration files at all, distinct from zero components found.
+  - Bounds: 400 files, 2 MB per file, 2,000 exports; exceeding one sets `truncated: true`.
+- **Package names are validated** against npm name syntax (`@scope/name` or `name`, no `..`, no backslash) before they are joined to a path; subpaths likewise.
+- **Results stay small.** No tool returns file contents. Lists are capped at 100 rows with `truncated`.
+- **Network.** These tools make no HTTP call of their own. `propose_code_map` reads the library index through `loadLibraryIndex()`, which fetches from the Figma REST API on a cold cache using PR 1b's Keychain token; when the library tools are not configured it returns their setup message and proposes nothing.
+- **Flags.** PR 11e adds `CODE_MAP` to `FEATURES` in `src/shared/flags.ts`, `L2F_CODE_MAP` to the list in [Flag mechanism](#flag-mechanism-pr-1) and to `plugin/.claude-plugin/plugin.json`, and extends `tests/flags.test.ts`. `scan_code_components`, `set_code_map_entries` and `propose_code_map` register when `CODE_MAP` is on; `check_code_map` and `resolve_code_components` read Specs and register only when `CODE_MAP` and `SPEC_SYNC` are both on.
+- New files: `src/llm2figma_mcp/code-repo.ts` (path rules, Manifest and package lookup, declaration scan), `src/llm2figma_mcp/code-map.ts` (CodeMap parse, merge, write queue), `src/llm2figma_mcp/tools/code-map.ts` (tools).
+
+#### PR 11e. CodeRepo reader and CodeMap file
+- Server only.
+- `scan_code_components {codeRepo, manifest?, package?}`: without `package`, returns `{dependencies: [names]}`. With it, returns `{package, packageVersion, noDeclarations, components: [{name, from, props, propsState}], truncated}`.
+- `set_code_map_entries {codeRepo, manifest?, entries: {<figmaKey>: CodeMapEntry | null}, tokens?: {<Collection/Name>: string | null}}`: merges into the CodeMap (`null` removes that key), creating `.l2f/` and the file when absent, and records each used package's installed version in `packages`. Validates every entry: `status` is one of the three; `package` and `custom` need an `import` (on the entry or on every `variants` item); a `package` import's package must be in the Manifest; a `custom` import's `from` must be relative, stay inside the CodeRepo and exist; PropRules must have one of the shapes above. When the package's declarations were scanned, a `package` import's name must be among its exports (else rejected) and `verified` is set from the scan; when there are none, the entry is written with `verified: false`. Returns `{path, written, removed, rejected: [{figmaKey, reason}], unverified: [figmaKeys]}`; rejected entries are not written and the rest are.
+- Verification, against synthetic CodeRepos built in a temp directory: (1) dependency listing, including from a `manifest` in a workspace package with the dependency hoisted to the root; (2) each entry-resolution step and each followed export form has a fixture, including `.d.mts`, a `.js` specifier and a directory index; (3) props from an interface, a type literal, `FC<…>` and `ForwardRefExoticComponent<…>`; `partial` for `extends` and an intersection; `unknown` when no props type is found; a hook export is skipped; (4) `noDeclarations` for a package with none; (5) each bound yields `truncated`; (6) refusals: relative `codeRepo`, a `manifest` outside the CodeRepo, missing Manifest, a package name or subpath with `..`, a package symlinked outside the CodeRepo, a declarations path resolving outside the package; the pnpm-style in-repo symlink is accepted; (7) write safety: `.l2f` symlinked outside is refused, a symlinked CodeMap is refused, a non-CodeMap file is not overwritten, two concurrent `set_code_map_entries` calls both land; (8) merge keeps untouched entries, `null` removes, versions are recorded; (9) each validation rule has a rejected case, and an entry for an undeclared package is written with `verified: false`; (10) flag off: none of the tools is registered. Size ~450.
+
+#### PR 11f. Propose, check, resolve
+- Both sides: server tools plus the Spec export additions above (plugin rebuild).
+- `LibraryComponentSet` in `tools/library.ts` gains `key` (the set's key from `/component_sets`, or the component's key for a standalone component); a test asserts the formatted output of `get_library_components` and `search_library_components` is unchanged.
+- `propose_code_map {codeRepo, manifest?, packages: [names]}`: read-only. Matches library component sets to scanned exports by normalised name (lower-case, punctuation and spaces removed, a leading path segment such as `Forms / ` dropped). Returns `{matched: [{figmaKey, figmaName, import, propMatches, propGaps}], unsure: […], unmatchedFigma: […], unmatchedCode: […]}`. `matched` needs exactly one export with the normalised name; several candidates, or a match only after dropping a suffix, go to `unsure`. Property matching is by normalised name and reported, not applied. It writes nothing: the caller passes what it accepts to `set_code_map_entries`.
+- `check_code_map {codeRepo, manifest?, specPath}`: reads a Spec (same path rules as `pull_spec`) and the CodeMap. Returns `{unmapped: [{figmaKey, mainComponentName, count}], missing: […], stale: [{figmaKey, reason}], unknownProps: [{figmaKey, property}], unknownValues: […], ambiguousProps: […], versionChanged: [{package, mapped, installed}], ok}`. `stale` applies only to verified entries: a `package` export that is gone, a mapped prop that is gone when the props are `complete`, or a `custom` file that is gone.
+- `resolve_code_components {codeRepo, manifest?, specPath}`: for each instance in the Spec, in tree order, returns `{id, figmaKey, mainComponentName, status, verified, import, props, unmappedProps}`, with property values translated through the entry and its `variants`, swapped instances and `nestedInstances` resolved the same way and returned under `slots`, and `textOverrides` passed through. A property is matched on the part of its `Name#id` key before `#` unless two properties share that name, in which case the full key is required and an unmatched one is listed under `ambiguousProps`. An instance with no usable entry returns `{id, figmaKey, mainComponentName, unresolved: "unmapped" | "missing" | "not-applied", properties, note?}` with its raw Figma properties. The result also carries `imports` (distinct, once each) and `toBuild: [{figmaKey, mainComponentName, count, propertyValues, libraryFileKey?}]`, the deduplicated list of `missing` and `unmapped` components with every property value seen, so the model can write them. The tool description says that a component's internals come from a screenshot or the library file, not from this tool.
+- Verification: (1) exact, ambiguous and suffix-only name matches land in the right list; (2) nothing is written by `propose_code_map`, `check_code_map` or `resolve_code_components`; (3) each `stale` reason, `unmapped`, `missing`, `unknownProps`, `unknownValues`, `ambiguousProps` and `versionChanged` has a fixture, and an unverified entry is never stale; (4) PropRules translate: pass-through, value map, per-value prop sets with `null`, `children`, `ignore`; `variants` pick a different import; (5) a variant resolves through `componentSetKey`, a standalone through `componentKey`, a local component through its key; (6) a swapped icon and a nested Button resolve under `slots`; (7) `toBuild` deduplicates and collects values; (8) the 100-row cap sets `truncated`; (9) cold library cache with no token gives the setup message; (10) the Spec additions: present for remote and local instances, absent from `propsHash`, an existing SpecLock shows no drift after re-pull, `apply_spec` refuses a change to them; (11) flags: `check_code_map` and `resolve_code_components` are absent with `SPEC_SYNC` off. Size ~550.
+
+**Known limits, stated in the tool descriptions.** Packages that describe components without TypeScript declarations (Vue SFCs, Angular modules, web-component manifests) scan as `noDeclarations`; they can still be mapped by hand, unverified. Name matching is a starting point the user confirms, not a mapping. Tokens are stored and `check_code_map` reports a Spec variable with no token entry, but token values are not compared in v1. Nothing here generates code: `resolve_code_components` says what to import, with which props and slots, and the model writes the code.
+
 ### PR 12. Dev Mode
 Item 9. Annotations are untouched.
 - **`set_dev_status {nodeIds, status}`**, with `status` `{type:"READY_FOR_DEV"|"COMPLETED", description?}` or `null`. A node is validated with `"devStatus" in node` (sections and the frame family; only nodes directly under a page or section qualify). A throw because an ancestor already has a status is caught per node and returned as `skipped` with the reason.
@@ -273,7 +343,9 @@ Item 10. Manifest editor types already landed in PR 1. Plugin new `slides.ts`: `
 
 Steps 1 to 3 of the feature-change workflow are done: architecture read, plan written, backend and frontend reviews folded in below. Step 4, user confirmation, is done (2026-11-12).
 
-Spec sync (PRs 11a to 11d) was added afterwards at the user's request. Its backend and frontend reviews are done and folded in (see the spec-sync tables under Review findings). The user asked for it to be added but has not yet confirmed the reviewed version; no spec-sync code is written until they do.
+Spec sync (PRs 11a to 11d) was added afterwards at the user's request. Its backend and frontend reviews are done and folded in (see the spec-sync tables under Review findings). The user confirmed the reviewed version on 2026-11-12.
+
+The code map (PRs 11e and 11f) was added the same day at the user's request, after they set its shape: the code repository is a parameter on each call, and no design system is built in.
 
 ## Review findings
 
@@ -346,6 +418,24 @@ Spec sync, frontend reviewer (2026-11-12):
 | 11 | Export cost at 2,000 nodes | Applied: per-run caches, conditional `getStyledTextSegments` |
 
 Not applied: none. One change of design beyond the findings: the comparison is per property rather than per node, which the stored base properties make possible and which keeps more hand edits.
+
+### Code map review (2026-11-12)
+
+Backend and frontend reviewers read the first draft of the code-map section against the user's goal. Acted on, all folded into the section above:
+
+- Packages the scan cannot read could not be mapped at all, since every unscanned import was rejected: unverified entries, `{tag}` imports and `noDeclarations` added.
+- The library index kept no component set key, so `propose_code_map` could not produce `figmaKey`: `key` added to `LibraryComponentSet` in 11f.
+- "No network" was untrue: `loadLibraryIndex()` fetches on a cold cache. Restated.
+- Workspace monorepos failed whichever directory was passed: `manifest` parameter and walk-up lookup added.
+- Partial prop lists were reported as complete, giving false `stale`: `propsState` added, and prop checks run only on `complete`.
+- The Spec export lacked keys for local components, main component names, swap targets and nested instances, so resolve could not produce correct code for a Card or an icon button: Spec additions moved into 11f (now "both"), kept out of `propsHash`.
+- Single-package CodeMap and one-prop-per-property rules could not express icons in a separate package, `State=Disabled` → `disabled`, text → children, or variants that are different components: `packages`, subpath and default imports, dotted names, PropRule shapes and `variants` added.
+- Write path: symlinked `.l2f` escape and lost updates from concurrent writes: refused and queued.
+- Entry resolution and export forms were underspecified: listed, with fixtures.
+- `check_code_map` and `resolve_code_components` registered with Specs disabled: now need both flags; `L2F_CODE_MAP` added to the flag list and plugin manifest.
+- `Name#id` collisions and unresolved instances with nothing to build from: `ambiguousProps`, raw properties and `toBuild` added.
+
+Not acted on: none. Vue, Angular and web-component manifests, token value comparison and code generation stay stated v1 limits.
 
 ## Decisions (2026-11-12)
 
