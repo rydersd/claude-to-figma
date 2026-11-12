@@ -19391,12 +19391,14 @@ async function figmaRequest(path3, token, opts) {
   if (opts.body !== undefined)
     headers["Content-Type"] = "application/json";
   let response;
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
     response = await (opts.fetchFn ?? globalThis.fetch)(`${FIGMA_API_BASE}${path3}`, {
       method,
       headers,
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-      signal: AbortSignal.timeout(timeoutMs)
+      signal,
+      redirect: "error"
     });
   } catch (error) {
     const why = error?.name === "TimeoutError" ? `timed out after ${timeoutMs / 1000}s` : "could not reach api.figma.com";
@@ -19410,7 +19412,8 @@ async function figmaRequest(path3, token, opts) {
   try {
     return await response.json();
   } catch {
-    throw new FigmaApiError(`Figma API ${response.status} on ${path3}: the response was not valid JSON`, response.status);
+    const why = signal.aborted ? `timed out after ${timeoutMs / 1000}s` : "the response was not valid JSON";
+    throw new FigmaApiError(`Figma API ${response.status} on ${path3}: ${why}`, response.status);
   }
 }
 
@@ -23220,7 +23223,7 @@ function resolveDeps(deps) {
   };
 }
 async function resolveCommentsFileKey(explicit, send, deps) {
-  if (explicit !== undefined) {
+  if (explicit !== undefined && explicit.trim() !== "") {
     try {
       return parseFileKey(explicit);
     } catch {

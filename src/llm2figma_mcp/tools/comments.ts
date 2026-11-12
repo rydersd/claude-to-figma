@@ -68,7 +68,7 @@ export async function resolveCommentsFileKey(
   send: SendCommandFn,
   deps: Pick<ResolvedDeps, "fileKeyEnabled" | "userFileKey">,
 ): Promise<string> {
-  if (explicit !== undefined) {
+  if (explicit !== undefined && explicit.trim() !== "") {
     try {
       return parseFileKey(explicit);
     } catch {

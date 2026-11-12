@@ -128,6 +128,28 @@ describe("figmaRequest", () => {
     expect(timeout.message).toMatch(/timed out/);
   });
 
+  test("redirects are never followed, so the token cannot go to another host", async () => {
+    let redirect: unknown;
+    const fn = (async (_url: any, init: any) => { redirect = init?.redirect; return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
+    await figmaRequest("/v1/files/x/comments", TOKEN, { hints: HINTS, fetchFn: fn });
+    expect(redirect).toBe("error");
+  });
+
+  test("a body that stalls past the timeout is reported as a timeout", async () => {
+    const stall = (async (_url: any, init: any) => {
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("{"));
+          init.signal.addEventListener("abort", () => controller.error(init.signal.reason));
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as unknown as typeof fetch;
+    const error = await figmaRequest("/v1/files/x/comments", TOKEN, { hints: HINTS, fetchFn: stall, timeoutMs: 20 }).catch((e) => e);
+    expect(error.message).toMatch(/timed out/);
+    expect(error.message).not.toMatch(/not valid JSON/);
+  });
+
   test("an unparseable 200 body is not quoted", async () => {
     const { fn } = fakeFetch(() => new Response(`not json ${BODY}`, { status: 200 }));
     const error = await figmaRequest("/v1/files/x/comments", TOKEN, { hints: HINTS, fetchFn: fn }).catch((e) => e);
@@ -148,9 +170,14 @@ describe("resolveCommentsFileKey", () => {
   });
 
   test("path tricks in an explicit key are rejected", async () => {
-    for (const bad of ["../me", "..%2F..%2Fme", `${KEY}%2Fcomments`, `${KEY}/../x`, "short", ""]) {
+    for (const bad of ["../me", "..%2F..%2Fme", `${KEY}%2Fcomments`, `${KEY}/../x`, "short"]) {
       await expect(resolveCommentsFileKey(bad, noSend, on)).rejects.toBeInstanceOf(CommentsInputError);
     }
+  });
+
+  test("an empty explicit key is treated as absent", async () => {
+    expect(await resolveCommentsFileKey("", noSend, on)).toBe(USER_KEY);
+    expect(await resolveCommentsFileKey("  ", noSend, on)).toBe(USER_KEY);
   });
 
   test("the plugin's key wins over the join_channel key", async () => {

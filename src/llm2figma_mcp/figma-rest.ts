@@ -46,13 +46,16 @@ export async function figmaRequest(path: string, token: string, opts: FigmaReque
   const headers: Record<string, string> = { "X-Figma-Token": token };
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
   let response: Response;
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
     // Looked up per call, so tests can replace globalThis.fetch.
     response = await (opts.fetchFn ?? globalThis.fetch)(`${FIGMA_API_BASE}${path}`, {
       method,
       headers,
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
+      // Never follow a redirect: the token header would go to wherever it points.
+      redirect: "error",
     });
   } catch (error: any) {
     // Fixed text only: a runtime error for a bad header quotes the header value.
@@ -76,7 +79,8 @@ export async function figmaRequest(path: string, token: string, opts: FigmaReque
   try {
     return await response.json();
   } catch {
-    // A parse error can quote the body.
-    throw new FigmaApiError(`Figma API ${response.status} on ${path}: the response was not valid JSON`, response.status);
+    // A parse error can quote the body. The timeout also covers reading the body.
+    const why = signal.aborted ? `timed out after ${timeoutMs / 1000}s` : "the response was not valid JSON";
+    throw new FigmaApiError(`Figma API ${response.status} on ${path}: ${why}`, response.status);
   }
 }
