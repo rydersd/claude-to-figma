@@ -17191,6 +17191,7 @@ import fs2 from "fs";
 import net from "net";
 import path2 from "path";
 import { execFileSync, spawn } from "child_process";
+import { randomUUID as randomUUID2 } from "crypto";
 
 // src/relay-protocol.ts
 var RELAY_PROTOCOL_VERSION = "2";
@@ -17240,15 +17241,31 @@ async function relayVersion(port) {
 }
 var relayPidFile = (dataDir, port) => path2.join(dataDir, `relay-${port}.pid`);
 var relayLockFile = (dataDir, port) => path2.join(dataDir, `relay-${port}.lock`);
+var legacyRelayPidFile = (dataDir) => path2.join(dataDir, "relay.pid");
 function isPluginRelayCommand(command, pluginRoot) {
-  const installDir = path2.dirname(path2.resolve(pluginRoot)) + path2.sep;
-  const script = path2.sep + path2.join("server", "relay.js");
-  const at = command.indexOf(installDir);
-  return at >= 0 && command.indexOf(script, at + installDir.length) > at;
+  const args = command.trim().split(/\s+/).slice(1);
+  while (args.length > 0 && args[0].startsWith("-"))
+    args.shift();
+  const script = args.join(" ");
+  if (!path2.isAbsolute(script))
+    return false;
+  const installDir = path2.dirname(path2.resolve(pluginRoot));
+  const [version, ...rest] = path2.relative(installDir, path2.resolve(script)).split(path2.sep);
+  return Boolean(version) && version !== ".." && rest.length === 2 && rest[0] === "server" && rest[1] === "relay.js";
 }
 async function stopOwnRelay(host) {
+  let legacyFile = null;
   try {
-    const pid = Number(fs2.readFileSync(relayPidFile(host.pluginData, host.port), "utf-8").trim());
+    let record2;
+    try {
+      record2 = fs2.readFileSync(relayPidFile(host.pluginData, host.port), "utf-8");
+    } catch (error) {
+      if (error?.code !== "ENOENT")
+        return false;
+      legacyFile = legacyRelayPidFile(host.pluginData);
+      record2 = fs2.readFileSync(legacyFile, "utf-8");
+    }
+    const pid = Number(record2.trim());
     if (!Number.isInteger(pid) || pid <= 1)
       return false;
     const command = host.run("ps", ["-p", String(pid), "-o", "command="]);
@@ -17263,24 +17280,61 @@ async function stopOwnRelay(host) {
   }
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
-    if (!await host.isListening())
+    if (!await host.isListening()) {
+      if (legacyFile) {
+        try {
+          fs2.renameSync(legacyFile, `${legacyFile}.migrated`);
+        } catch {}
+      }
       return true;
+    }
     await host.sleep(100);
   }
   return false;
 }
 var LOCK_STALE_MS = 1e4;
 var LOCK_WAIT_MS = 15000;
+function removeLockIf(lockPath, isMine) {
+  const aside = `${lockPath}.${randomUUID2()}`;
+  try {
+    fs2.renameSync(lockPath, aside);
+  } catch {
+    return false;
+  }
+  let mine = false;
+  try {
+    mine = isMine(aside);
+  } catch {}
+  if (!mine) {
+    try {
+      fs2.linkSync(aside, lockPath);
+    } catch {}
+  }
+  try {
+    fs2.unlinkSync(aside);
+  } catch {}
+  return mine;
+}
 async function acquireRelayLock(host) {
   const lockPath = relayLockFile(host.pluginData, host.port);
+  const token = `${process.pid}:${randomUUID2()}`;
+  const holdsLock = () => {
+    try {
+      return fs2.readFileSync(lockPath, "utf-8") === token;
+    } catch {
+      return false;
+    }
+  };
   fs2.mkdirSync(host.pluginData, { recursive: true });
   const deadline = Date.now() + LOCK_WAIT_MS;
   while (true) {
     try {
       const fd = fs2.openSync(lockPath, "wx");
-      fs2.writeSync(fd, String(process.pid));
+      fs2.writeSync(fd, token);
       fs2.closeSync(fd);
       const keepAlive = setInterval(() => {
+        if (!holdsLock())
+          return;
         try {
           const now = new Date;
           fs2.utimesSync(lockPath, now, now);
@@ -17289,17 +17343,18 @@ async function acquireRelayLock(host) {
       keepAlive.unref?.();
       return () => {
         clearInterval(keepAlive);
-        try {
-          fs2.unlinkSync(lockPath);
-        } catch {}
+        if (holdsLock())
+          removeLockIf(lockPath, (file) => fs2.readFileSync(file, "utf-8") === token);
       };
     } catch (error) {
       if (error?.code !== "EEXIST")
         throw error;
     }
     try {
-      if (Date.now() - fs2.statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-        fs2.unlinkSync(lockPath);
+      const observed = fs2.readFileSync(lockPath, "utf-8");
+      const isStale = (file) => Date.now() - fs2.statSync(file).mtimeMs > LOCK_STALE_MS;
+      if (isStale(lockPath)) {
+        removeLockIf(lockPath, (file) => fs2.readFileSync(file, "utf-8") === observed && isStale(file));
         continue;
       }
     } catch {
@@ -17403,6 +17458,15 @@ function abandonConnectingSocket(socket) {
     logger.debug(`Terminating a stalled socket failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
+var reconnectTimer = null;
+function scheduleReconnect(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOUT_MS) {
+  if (reconnectTimer)
+    return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectToFigma(port, handshakeTimeoutMs);
+  }, 2000);
+}
 function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOUT_MS) {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return;
@@ -17418,7 +17482,7 @@ function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOU
     const current = ws === socket;
     abandonConnectingSocket(socket);
     if (current)
-      setTimeout(() => connectToFigma(port, handshakeTimeoutMs), 2000);
+      scheduleReconnect(port, handshakeTimeoutMs);
   }, handshakeTimeoutMs);
   socket.on("open", () => {
     clearTimeout(handshakeTimer);
@@ -17504,7 +17568,7 @@ function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOU
       pendingRequests.delete(id);
     }
     logger.info("Attempting to reconnect in 2 seconds...");
-    setTimeout(() => connectToFigma(port, handshakeTimeoutMs), 2000);
+    scheduleReconnect(port, handshakeTimeoutMs);
   });
 }
 async function joinChannel(channelName) {
@@ -17531,8 +17595,10 @@ async function ensureConnected(timeoutMs = 5000) {
     connectToFigma();
     await new Promise((r) => setTimeout(r, 100));
   }
-  if (ws && ws.readyState === WebSocket.CONNECTING)
+  if (ws && ws.readyState === WebSocket.CONNECTING) {
     abandonConnectingSocket(ws);
+    scheduleReconnect();
+  }
   throw new Error(`Couldn't connect to the relay on port ${RELAY_PORT}.`);
 }
 function listChannels(timeoutMs = 5000) {
@@ -18880,6 +18946,8 @@ import { readFile } from "fs/promises";
 import { lookup } from "dns/promises";
 import http from "http";
 import https from "https";
+import zlib from "zlib";
+import { pipeline as pipeline2 } from "stream";
 import { isIP } from "net";
 var MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 var SCALE_MODES = ["FILL", "FIT", "CROP", "TILE"];
@@ -18977,6 +19045,13 @@ function assertPublicLiteralHost(url) {
     throw new Error(PRIVATE_NETWORK_ERROR);
 }
 var NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
+var CONTENT_DECODERS = {
+  gzip: () => zlib.createGunzip(),
+  "x-gzip": () => zlib.createGunzip(),
+  deflate: () => zlib.createInflate(),
+  br: () => zlib.createBrotliDecompress()
+};
+var MAX_CONTENT_CODINGS = 3;
 function createPinnedTransport(options = {}) {
   const resolveHost = options.resolve ?? ((hostname) => lookup(hostname, { all: true, verbatim: true }));
   const isAllowed = options.isAllowedAddress ?? ((address) => !isPrivateAddress(address));
@@ -19004,7 +19079,7 @@ function createPinnedTransport(options = {}) {
   };
   return (url, { signal }) => new Promise((resolve, reject) => {
     const client = url.protocol === "https:" ? https : http;
-    const request = client.request(url, { method: "GET", signal, lookup: pinnedLookup }, (res) => {
+    const request = client.request(url, { method: "GET", signal, lookup: pinnedLookup, headers: { "accept-encoding": "identity" } }, (res) => {
       const status = res.statusCode ?? 0;
       if (status < 200 || status > 599) {
         res.destroy();
@@ -19022,7 +19097,22 @@ function createPinnedTransport(options = {}) {
       if (NULL_BODY_STATUSES.has(status)) {
         res.resume();
       } else {
-        const chunks = res[Symbol.asyncIterator]();
+        const codings = (headers.get("content-encoding") ?? "").split(",").map((coding) => coding.trim().toLowerCase()).filter((coding) => coding && coding !== "identity");
+        const unsupported = codings.length > MAX_CONTENT_CODINGS ? codings.join(", ") : codings.find((coding) => !CONTENT_DECODERS[coding]);
+        if (unsupported) {
+          res.destroy();
+          reject(new Error(`Failed to fetch image: unsupported Content-Encoding "${unsupported}" (${url.href})`));
+          return;
+        }
+        let source = res;
+        for (const coding of codings.reverse()) {
+          source = pipeline2(source, CONTENT_DECODERS[coding](), () => {});
+        }
+        if (codings.length > 0) {
+          headers.delete("content-encoding");
+          headers.delete("content-length");
+        }
+        const chunks = source[Symbol.asyncIterator]();
         body = new ReadableStream({
           async pull(controller) {
             const { done, value } = await chunks.next();
@@ -19032,6 +19122,7 @@ function createPinnedTransport(options = {}) {
               controller.enqueue(new Uint8Array(value));
           },
           cancel() {
+            source.destroy();
             res.destroy();
           }
         });

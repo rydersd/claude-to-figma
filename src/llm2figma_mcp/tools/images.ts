@@ -4,6 +4,8 @@ import { readFile } from "fs/promises";
 import { lookup } from "dns/promises";
 import http from "node:http";
 import https from "node:https";
+import zlib from "node:zlib";
+import { pipeline, type Readable } from "node:stream";
 import { isIP } from "net";
 import type { SendCommandFn } from "../types.js";
 
@@ -121,6 +123,16 @@ export type ImageTransport = (url: URL, options: { signal: AbortSignal }) => Pro
 
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
+// Content codings the pinned transport can undo. It asks for an identity
+// body, but a server may compress anyway.
+const CONTENT_DECODERS: Record<string, () => NodeJS.ReadWriteStream> = {
+  gzip: () => zlib.createGunzip(),
+  "x-gzip": () => zlib.createGunzip(),
+  deflate: () => zlib.createInflate(),
+  br: () => zlib.createBrotliDecompress(),
+};
+const MAX_CONTENT_CODINGS = 3;
+
 /**
  * A transport that resolves the host inside the socket's own DNS lookup,
  * refuses private answers there, and connects to exactly the address it
@@ -154,7 +166,7 @@ export function createPinnedTransport(options: {
 
   return (url, { signal }) => new Promise<Response>((resolve, reject) => {
     const client = url.protocol === "https:" ? https : http;
-    const request = client.request(url, { method: "GET", signal, lookup: pinnedLookup as any }, (res) => {
+    const request = client.request(url, { method: "GET", signal, lookup: pinnedLookup as any, headers: { "accept-encoding": "identity" } }, (res) => {
       const status = res.statusCode ?? 0;
       if (status < 200 || status > 599) {
         res.destroy();
@@ -170,14 +182,33 @@ export function createPinnedTransport(options: {
       if (NULL_BODY_STATUSES.has(status)) {
         res.resume();
       } else {
-        const chunks = res[Symbol.asyncIterator]();
+        // Decode as a stream, one chunk per read, so the caller's size cap
+        // counts decoded bytes and stops a decompression bomb early.
+        const codings = (headers.get("content-encoding") ?? "").split(",")
+          .map((coding) => coding.trim().toLowerCase())
+          .filter((coding) => coding && coding !== "identity");
+        const unsupported = codings.length > MAX_CONTENT_CODINGS ? codings.join(", ") : codings.find((coding) => !CONTENT_DECODERS[coding]);
+        if (unsupported) {
+          res.destroy();
+          reject(new Error(`Failed to fetch image: unsupported Content-Encoding "${unsupported}" (${url.href})`));
+          return;
+        }
+        let source: Readable = res;
+        for (const coding of codings.reverse()) {
+          source = pipeline(source, CONTENT_DECODERS[coding](), () => {}) as unknown as Readable;
+        }
+        if (codings.length > 0) {
+          headers.delete("content-encoding");
+          headers.delete("content-length");
+        }
+        const chunks = source[Symbol.asyncIterator]();
         body = new ReadableStream<Uint8Array>({
           async pull(controller) {
             const { done, value } = await chunks.next();
             if (done) controller.close();
             else controller.enqueue(new Uint8Array(value));
           },
-          cancel() { res.destroy(); },
+          cancel() { source.destroy(); res.destroy(); },
         });
       }
       resolve(new Response(body, { status, statusText: res.statusMessage, headers }));

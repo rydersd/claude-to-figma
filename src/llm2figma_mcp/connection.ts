@@ -48,6 +48,17 @@ function abandonConnectingSocket(socket: WebSocket) {
   }
 }
 
+// One pending reconnect at most, however many paths ask for it.
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleReconnect(port: number = RELAY_PORT, handshakeTimeoutMs: number = HANDSHAKE_TIMEOUT_MS) {
+  if (reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectToFigma(port, handshakeTimeoutMs);
+  }, 2000);
+}
+
 export function connectToFigma(port: number = RELAY_PORT, handshakeTimeoutMs: number = HANDSHAKE_TIMEOUT_MS) {
   // If already connected or connecting, do nothing: a second socket would
   // replace `ws` and the first one's close handler would then null it out.
@@ -65,7 +76,7 @@ export function connectToFigma(port: number = RELAY_PORT, handshakeTimeoutMs: nu
     logger.warn(`The relay at ${wsUrl} did not complete the WebSocket handshake in ${handshakeTimeoutMs / 1000}s; retrying in 2 seconds`);
     const current = ws === socket;
     abandonConnectingSocket(socket);
-    if (current) setTimeout(() => connectToFigma(port, handshakeTimeoutMs), 2000);
+    if (current) scheduleReconnect(port, handshakeTimeoutMs);
   }, handshakeTimeoutMs);
 
   socket.on('open', () => {
@@ -205,7 +216,7 @@ export function connectToFigma(port: number = RELAY_PORT, handshakeTimeoutMs: nu
 
     // Attempt to reconnect
     logger.info('Attempting to reconnect in 2 seconds...');
-    setTimeout(() => connectToFigma(port, handshakeTimeoutMs), 2000);
+    scheduleReconnect(port, handshakeTimeoutMs);
   });
 }
 
@@ -240,8 +251,12 @@ async function ensureConnected(timeoutMs: number = 5000): Promise<void> {
     await new Promise((r) => setTimeout(r, 100));
   }
   // Don't leave a stuck CONNECTING socket behind: the next attempt would
-  // wait on it instead of dialling again.
-  if (ws && ws.readyState === WebSocket.CONNECTING) abandonConnectingSocket(ws);
+  // wait on it instead of dialling again. Abandoning it releases `ws`, so its
+  // close handler and handshake timer no longer retry; schedule that here.
+  if (ws && ws.readyState === WebSocket.CONNECTING) {
+    abandonConnectingSocket(ws);
+    scheduleReconnect();
+  }
   throw new Error(`Couldn't connect to the relay on port ${RELAY_PORT}.`);
 }
 

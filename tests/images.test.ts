@@ -6,6 +6,7 @@
 
 import { describe, test, expect } from "bun:test";
 import http from "node:http";
+import zlib from "node:zlib";
 import type { AddressInfo } from "node:net";
 import { customBase64Encode, customBase64Decode } from "../src/llm2figma_plugin/src/utils";
 import { resolveImageToBase64, isPrivateAddress, createPinnedTransport } from "../src/llm2figma_mcp/tools/images";
@@ -282,6 +283,53 @@ describe("createPinnedTransport", () => {
     }, async (port) => {
       const transport = createPinnedTransport({ resolve: async () => [{ address: "127.0.0.1", family: 4 }], isAllowedAddress: () => true });
       await expect(resolveImageToBase64({ url: httpUrl("big.invalid", port, "/a.png") }, { publicOnly: true, transport })).rejects.toThrow(/6MB limit/);
+    });
+  });
+
+  // Second review, finding #4: a compressed body must never be handed on as
+  // if it were the image.
+  describe("content encoding", () => {
+    const image = Buffer.concat([Buffer.from(png), Buffer.alloc(2048, 7)]);
+    const local = () => createPinnedTransport({ resolve: async () => [{ address: "127.0.0.1", family: 4 }], isAllowedAddress: () => true });
+    const fetchEncoded = (encoding: string, body: Buffer, seenHeaders: (string | undefined)[] = []) => {
+      let result: Promise<string>;
+      return withServer((req, res) => {
+        seenHeaders.push(req.headers["accept-encoding"] as string | undefined);
+        res.writeHead(200, { "content-type": "image/png", "content-encoding": encoding });
+        res.end(body);
+      }, async (port) => {
+        result = resolveImageToBase64({ url: httpUrl("img.invalid", port, "/a.png") }, { publicOnly: true, transport: local() });
+        await result.catch(() => {});
+      }).then(() => result);
+    };
+
+    test("asks for an identity body", async () => {
+      const seen: (string | undefined)[] = [];
+      await fetchEncoded("identity", image, seen);
+      expect(seen).toEqual(["identity"]);
+    });
+
+    test("decodes gzip, deflate and br bodies a server sends anyway", async () => {
+      for (const [encoding, body] of [
+        ["gzip", zlib.gzipSync(image)], ["x-gzip", zlib.gzipSync(image)], ["deflate", zlib.deflateSync(image)],
+        ["br", zlib.brotliCompressSync(image)], ["identity", image], ["GZIP, identity", zlib.gzipSync(image)],
+        ["deflate, gzip", zlib.gzipSync(zlib.deflateSync(image))],
+      ] as [string, Buffer][]) {
+        const b64 = await fetchEncoded(encoding, body);
+        expect([encoding, Buffer.from(b64, "base64").equals(image)]).toEqual([encoding, true]);
+      }
+    });
+
+    test("applies the size cap to the decoded bytes (decompression bomb)", async () => {
+      const bomb = zlib.gzipSync(Buffer.alloc(64 * 1024 * 1024));
+      expect(bomb.byteLength).toBeLessThan(1024 * 1024);
+      await expect(fetchEncoded("gzip", bomb)).rejects.toThrow(/6MB limit/);
+    });
+
+    test("rejects unknown encodings and corrupt bodies", async () => {
+      await expect(fetchEncoded("zstd", image)).rejects.toThrow(/Content-Encoding/);
+      await expect(fetchEncoded("gzip, zstd", image)).rejects.toThrow(/Content-Encoding/);
+      await expect(fetchEncoded("gzip", image)).rejects.toThrow();
     });
   });
 });

@@ -3,8 +3,8 @@
  * injected fakes and spare ports only; never touches the relay on 3055.
  *   bun test tests/plugin-runtime.test.ts
  */
-import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -194,7 +194,8 @@ describe("startOrReplaceRelay across processes (finding #5)", () => {
     utimesSync(lock, old, old);
     const release = await acquireRelayLock(hostFor(world));
     expect(release).not.toBeNull();
-    expect(readFileSync(lock, "utf8")).toBe(String(process.pid));
+    expect(readFileSync(lock, "utf8")).toStartWith(`${process.pid}:`);
+    expect(readdirSync(world.data)).toEqual(["relay-3998.lock"]);
 
     // Held and fresh: a second acquirer waits until it is released.
     let second: (() => void) | null = null;
@@ -206,6 +207,149 @@ describe("startOrReplaceRelay across processes (finding #5)", () => {
     expect(second).not.toBeNull();
     second!();
     expect(existsSync(lock)).toBe(false);
+  });
+});
+
+// Second review, finding #1: breaking a stale lock and releasing a lock must
+// only ever remove the lock instance that was observed or is owned.
+describe("relay lock ownership", () => {
+  function staleLock(world: World) {
+    const lock = relayLockFile(world.data, world.port);
+    writeFileSync(lock, "crashed-holder");
+    const old = new Date(Date.now() - 11_000);
+    utimesSync(lock, old, old);
+    return lock;
+  }
+
+  test("an observer of a stale lock does not remove the lock another session took meanwhile", async () => {
+    const world = makeWorld(3998);
+    const lock = staleLock(world);
+    // Session B breaks the stale lock and takes a fresh one in the gap right
+    // after session A has read the stale mtime.
+    const realStat = fs.statSync as (...args: any[]) => any;
+    let swapped = false;
+    const spy = spyOn(fs, "statSync").mockImplementation(((file: any, ...rest: any[]) => {
+      const stat = realStat(file, ...rest);
+      if (!swapped && file === lock) {
+        swapped = true;
+        rmSync(lock);
+        writeFileSync(lock, "session-b");
+      }
+      return stat;
+    }) as any);
+    try {
+      let release: (() => void) | null = null;
+      const acquiring = acquireRelayLock(hostFor(world)).then((r) => { release = r; });
+      await sleep(300);
+      expect(swapped).toBe(true);
+      expect(release).toBeNull();
+      expect(readFileSync(lock, "utf8")).toBe("session-b");
+      expect(readdirSync(world.data)).toEqual(["relay-3998.lock"]);
+      rmSync(lock); // session B releases
+      await acquiring;
+      expect(release).not.toBeNull();
+      release!();
+      expect(existsSync(lock)).toBe(false);
+    } finally { spy.mockRestore(); }
+  });
+
+  test("release leaves a lock that now belongs to another session", async () => {
+    const world = makeWorld(3998);
+    const lock = relayLockFile(world.data, 3998);
+    const release = await acquireRelayLock(hostFor(world));
+    const token = readFileSync(lock, "utf8");
+    // The holder stalled, its lock was broken and session B holds the path now.
+    rmSync(lock);
+    writeFileSync(lock, "session-b");
+    release!();
+    expect(readFileSync(lock, "utf8")).toBe("session-b");
+    expect(readdirSync(world.data)).toEqual(["relay-3998.lock"]);
+    // Every acquisition has its own owner token, even within one process.
+    rmSync(lock);
+    const again = await acquireRelayLock(hostFor(world));
+    expect(readFileSync(lock, "utf8")).not.toBe(token);
+    again!();
+    expect(existsSync(lock)).toBe(false);
+  });
+});
+
+// Second review, finding #2: the relay script must be the script argument,
+// not a substring anywhere on the command line.
+describe("stopOwnRelay script-argument check", () => {
+  test("refuses a process that only mentions the relay path in another argument", async () => {
+    const world = makeWorld(3998);
+    const relay = join(world.oldRoot, "server", "relay.js");
+    for (const command of [
+      `node /srv/unrelated-http.js --asset=${relay}`,
+      `/bin/bun /srv/unrelated-http.js ${relay}`,
+      `/bin/bun ${relay} --extra`,
+      `/bin/bun ${join(world.oldRoot, "..", "..", "other", "0.1.0", "server", "relay.js")}`,
+      `/bin/bun ${join(world.oldRoot, "nested", "server", "relay.js")}`,
+    ]) {
+      const listener = startProcess(world, command, { listen: true, version: "1" });
+      writeFileSync(relayPidFile(world.data, 3998), String(listener));
+      expect([command, await stopOwnRelay(hostFor(world))]).toEqual([command, false]);
+    }
+    expect(world.kills).toEqual([]);
+  });
+
+  test("accepts runtime flags before the script and an unnormalized script path", async () => {
+    const world = makeWorld(3998);
+    const listener = startProcess(world, `/bin/bun --smol ${world.oldRoot}/server/../server/relay.js`, { listen: true, version: "1" });
+    writeFileSync(relayPidFile(world.data, 3998), String(listener));
+    expect(await stopOwnRelay(hostFor(world))).toBe(true);
+    expect(world.kills).toEqual([listener]);
+  });
+});
+
+// Second review, finding #3: relays started before per-port pid files recorded
+// themselves in relay.pid; they must still be replaceable after an upgrade.
+describe("legacy relay.pid migration", () => {
+  const legacy = (world: World) => join(world.data, "relay.pid");
+
+  test("replaces a relay recorded only in the legacy relay.pid and moves the file aside", async () => {
+    const world = makeWorld(3998);
+    const old = oldPluginRelay(world);
+    writeFileSync(legacy(world), String(old));
+    expect(await startOrReplaceRelay(hostFor(world))).toBe(true);
+    expect(world.kills).toEqual([old]);
+    expect(world.spawns).toEqual([relayPidFile(world.data, 3998)]);
+    expect(existsSync(legacy(world))).toBe(false);
+    expect(readFileSync(`${legacy(world)}.migrated`, "utf8")).toBe(String(old));
+    // Idempotent: a second pass has nothing to migrate and stops nothing,
+    // even with no per-port record to fall back from.
+    expect(await startOrReplaceRelay(hostFor(world))).toBe(true);
+    rmSync(relayPidFile(world.data, 3998));
+    expect(await stopOwnRelay(hostFor(world))).toBe(false);
+    expect(world.kills).toEqual([old]);
+    expect(world.spawns.length).toBe(1);
+    expect(readFileSync(`${legacy(world)}.migrated`, "utf8")).toBe(String(old));
+  });
+
+  test("leaves the legacy file alone unless its pid passes the strict checks and listens on this port", async () => {
+    const world = makeWorld(3998);
+    const relay = join(world.oldRoot, "server", "relay.js");
+    // Not this plugin's relay script.
+    const stranger = startProcess(world, `node /srv/unrelated-http.js --asset=${relay}`, { listen: true, version: "1" });
+    writeFileSync(legacy(world), String(stranger));
+    expect(await stopOwnRelay(hostFor(world))).toBe(false);
+    // This plugin's relay, but serving another port.
+    const elsewhere = startProcess(world, `/bin/bun ${relay}`);
+    writeFileSync(legacy(world), String(elsewhere));
+    expect(await stopOwnRelay(hostFor(world))).toBe(false);
+    expect(world.kills).toEqual([]);
+    expect(readFileSync(legacy(world), "utf8")).toBe(String(elsewhere));
+    expect(existsSync(`${legacy(world)}.migrated`)).toBe(false);
+  });
+
+  test("prefers the per-port pid file over the legacy one", async () => {
+    const world = makeWorld(3998);
+    const old = oldPluginRelay(world);
+    writeFileSync(legacy(world), String(old));
+    writeFileSync(relayPidFile(world.data, 3998), "999999");
+    expect(await stopOwnRelay(hostFor(world))).toBe(false);
+    expect(world.kills).toEqual([]);
+    expect(existsSync(legacy(world))).toBe(true);
   });
 });
 

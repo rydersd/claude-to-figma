@@ -5,6 +5,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { logger } from "./helpers.js";
 import { RELAY_PROTOCOL_VERSION, RELAY_VERSION_HEADER } from "../relay-protocol.js";
 
@@ -79,25 +80,46 @@ export interface RelayHost {
 // ports never act on each other's relay.
 export const relayPidFile = (dataDir: string, port: number) => path.join(dataDir, `relay-${port}.pid`);
 export const relayLockFile = (dataDir: string, port: number) => path.join(dataDir, `relay-${port}.lock`);
+// Earlier versions recorded the relay in one file with no port in its name.
+const legacyRelayPidFile = (dataDir: string) => path.join(dataDir, "relay.pid");
 
 // A relay this plugin started runs <plugin cache>/<plugin>/<version>/server/relay.js.
 // The version directory changes on every plugin update and the relay being
 // replaced is usually the previous version's, so match any version of this
-// plugin, not only the running one.
+// plugin, not only the running one. The relay is launched as
+// `<runtime> <script>`, so the script must be the whole of what follows the
+// runtime and its flags: a relay path that merely appears in some other
+// argument proves nothing. `ps` does not quote, so everything after the flags
+// is taken as the script path, which also keeps paths with spaces working.
 function isPluginRelayCommand(command: string, pluginRoot: string): boolean {
-  const installDir = path.dirname(path.resolve(pluginRoot)) + path.sep;
-  const script = path.sep + path.join("server", "relay.js");
-  const at = command.indexOf(installDir);
-  return at >= 0 && command.indexOf(script, at + installDir.length) > at;
+  const args = command.trim().split(/\s+/).slice(1);
+  while (args.length > 0 && args[0].startsWith("-")) args.shift();
+  const script = args.join(" ");
+  if (!path.isAbsolute(script)) return false;
+  const installDir = path.dirname(path.resolve(pluginRoot));
+  const [version, ...rest] = path.relative(installDir, path.resolve(script)).split(path.sep);
+  return Boolean(version) && version !== ".." && rest.length === 2 && rest[0] === "server" && rest[1] === "relay.js";
 }
 
 // Stop the relay on host.port only when it provably is one this plugin
 // started: the per-port pid file names a live process running this plugin's
 // relay.js, and that same process is the one listening on the port. Anything
-// short of that proof leaves the process alone.
+// short of that proof leaves the process alone. A relay started before
+// per-port pid files is recorded in the legacy relay.pid instead; that record
+// is used only when this port has none, is held to the same proof, and is
+// moved aside once the relay it named has been stopped.
 export async function stopOwnRelay(host: RelayHost): Promise<boolean> {
+  let legacyFile: string | null = null;
   try {
-    const pid = Number(fs.readFileSync(relayPidFile(host.pluginData, host.port), "utf-8").trim());
+    let record: string;
+    try {
+      record = fs.readFileSync(relayPidFile(host.pluginData, host.port), "utf-8");
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") return false;
+      legacyFile = legacyRelayPidFile(host.pluginData);
+      record = fs.readFileSync(legacyFile, "utf-8");
+    }
+    const pid = Number(record.trim());
     if (!Number.isInteger(pid) || pid <= 1) return false;
     const command = host.run("ps", ["-p", String(pid), "-o", "command="]);
     if (!isPluginRelayCommand(command.trim(), host.pluginRoot)) return false;
@@ -110,7 +132,12 @@ export async function stopOwnRelay(host: RelayHost): Promise<boolean> {
   }
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
-    if (!(await host.isListening())) return true;
+    if (!(await host.isListening())) {
+      if (legacyFile) {
+        try { fs.renameSync(legacyFile, `${legacyFile}.migrated`); } catch {}
+      }
+      return true;
+    }
     await host.sleep(100);
   }
   return false;
@@ -119,34 +146,67 @@ export async function stopOwnRelay(host: RelayHost): Promise<boolean> {
 const LOCK_STALE_MS = 10_000;
 const LOCK_WAIT_MS = 15_000;
 
+// Remove the lock at lockPath only if it is the one the caller means. The
+// rename is atomic, so exactly one process gets a given lock file; it is
+// judged under its new, unique name, where nobody else can replace it. If it
+// turns out to be a different (live) lock, it is linked back, which fails
+// rather than overwrite a lock created in the meantime.
+function removeLockIf(lockPath: string, isMine: (file: string) => boolean): boolean {
+  const aside = `${lockPath}.${randomUUID()}`;
+  try {
+    fs.renameSync(lockPath, aside);
+  } catch {
+    return false;
+  }
+  let mine = false;
+  try { mine = isMine(aside); } catch {}
+  if (!mine) {
+    try { fs.linkSync(aside, lockPath); } catch {}
+  }
+  try { fs.unlinkSync(aside); } catch {}
+  return mine;
+}
+
 // Cross-process lock on one port's relay, so two sessions can't both decide to
 // replace it (the second would kill the first one's replacement). A lock whose
 // mtime is older than LOCK_STALE_MS belongs to a crashed holder and is broken;
-// a live holder touches it while it works. Returns the release function, or
-// null when the lock could not be taken in time.
+// a live holder touches it while it works. Each lock holds its owner's unique
+// token, and a lock is only ever removed by removeLockIf, so neither breaking
+// a stale lock nor releasing can remove a lock someone else has taken since.
+// Returns the release function, or null when the lock could not be taken in
+// time.
 export async function acquireRelayLock(host: RelayHost): Promise<(() => void) | null> {
   const lockPath = relayLockFile(host.pluginData, host.port);
+  const token = `${process.pid}:${randomUUID()}`;
+  const holdsLock = () => {
+    try { return fs.readFileSync(lockPath, "utf-8") === token; } catch { return false; }
+  };
   fs.mkdirSync(host.pluginData, { recursive: true });
   const deadline = Date.now() + LOCK_WAIT_MS;
   while (true) {
     try {
       const fd = fs.openSync(lockPath, "wx");
-      fs.writeSync(fd, String(process.pid));
+      fs.writeSync(fd, token);
       fs.closeSync(fd);
       const keepAlive = setInterval(() => {
+        if (!holdsLock()) return;
         try { const now = new Date(); fs.utimesSync(lockPath, now, now); } catch {}
       }, 2000);
       keepAlive.unref?.();
       return () => {
         clearInterval(keepAlive);
-        try { fs.unlinkSync(lockPath); } catch {}
+        if (holdsLock()) removeLockIf(lockPath, (file) => fs.readFileSync(file, "utf-8") === token);
       };
     } catch (error: any) {
       if (error?.code !== "EEXIST") throw error;
     }
     try {
-      if (Date.now() - fs.statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-        fs.unlinkSync(lockPath);
+      // Content first, then mtime: a stale mtime then belongs to the lock
+      // whose token was read, since any lock taken in between is fresh.
+      const observed = fs.readFileSync(lockPath, "utf-8");
+      const isStale = (file: string) => Date.now() - fs.statSync(file).mtimeMs > LOCK_STALE_MS;
+      if (isStale(lockPath)) {
+        removeLockIf(lockPath, (file) => fs.readFileSync(file, "utf-8") === observed && isStale(file));
         continue;
       }
     } catch {

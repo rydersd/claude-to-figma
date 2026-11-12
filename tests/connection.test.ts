@@ -75,4 +75,19 @@ describe("stalled relay handshake", () => {
       expect(snapshot.closed).toBe(snapshot.connections);
     } finally { await relay.close(); }
   }, 30_000);
+
+  // Second review, finding #5: ensureConnected giving up on a stuck socket
+  // must leave the normal reconnect scheduled, exactly once.
+  test("ensureConnected abandoning a stuck socket still schedules one reconnect", async () => {
+    const relay = await stalledServer();
+    try {
+      const { out, snapshot } = await runChild(relay.port, `
+        try { await c.listChannels(500); } catch (e) { console.log("failed", e.message); }
+        await new Promise((r) => setTimeout(r, 4500));`, relay.seen);
+      expect(out).toContain("failed Couldn't connect");
+      // The abandoned socket was closed and exactly one new one was dialled
+      // without any further caller.
+      expect(snapshot).toEqual({ connections: 2, closed: 1 });
+    } finally { await relay.close(); }
+  }, 30_000);
 });
