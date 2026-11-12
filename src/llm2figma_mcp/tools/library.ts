@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
 import { logger } from "../helpers.js";
 import { FigmaTokenError, getFigmaToken, TOKEN_SETUP_HELP } from "../keychain.js";
+import { figmaRequest, type FigmaErrorHints } from "../figma-rest.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -236,8 +237,6 @@ export function resolveLibraryRef(
 // Config + REST fetch + session cache
 // ---------------------------------------------------------------------------
 
-const FIGMA_API_BASE = "https://api.figma.com";
-
 export class LibraryConfigError extends Error {}
 
 export const CONFIG_HELP =
@@ -255,32 +254,12 @@ export function getLibraryConfig(env: NodeJS.ProcessEnv = process.env): { fileKe
   };
 }
 
-// 15s bound so a hung Figma API request can't stall the tool call indefinitely.
-async function figmaGet(path: string, token: string): Promise<any> {
-  let response: Response;
-  try {
-    response = await fetch(`${FIGMA_API_BASE}${path}`, {
-      headers: { "X-Figma-Token": token },
-      signal: AbortSignal.timeout(15000),
-    });
-  } catch (error: any) {
-    // Fixed text only: a runtime error for a bad header quotes the header value.
-    const why = error?.name === "TimeoutError" ? "timed out after 15s" : "could not reach api.figma.com";
-    throw new Error(`Figma API request for ${path} failed: ${why}`);
-  }
-  if (!response.ok) {
-    const hint =
-      response.status === 401 || response.status === 403
-        ? "check the Keychain token (re-store it with `bun run token`) and its scopes ('File content: read' + 'Library content: read')"
-        : response.status === 404
-          ? "check the file key in FIGMA_LIBRARY_FILE_KEYS (from the library file's URL)"
-          : response.status === 429
-            ? `rate limited — retry after ${response.headers.get("retry-after") || "a moment"}`
-            : "unexpected Figma API error";
-    throw new Error(`Figma API ${response.status} on ${path}: ${hint}`);
-  }
-  return response.json();
-}
+const LIBRARY_HINTS: FigmaErrorHints = {
+  auth: "check the Keychain token (re-store it with `bun run token`) and its scopes ('File content: read' + 'Library content: read')",
+  notFound: "check the file key in FIGMA_LIBRARY_FILE_KEYS (from the library file's URL)",
+};
+
+const figmaGet = (path: string, token: string): Promise<any> => figmaRequest(path, token, { hints: LIBRARY_HINTS });
 
 // Session-lifetime cache: file key → set entries. refresh:true refetches.
 const indexCache = new Map<string, LibraryComponentSet[]>();
