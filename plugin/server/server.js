@@ -17530,7 +17530,7 @@ function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOU
             if (pendingRequests.has(requestId)) {
               logger.error(`Request ${requestId} timed out after extended period of inactivity`);
               pendingRequests.delete(requestId);
-              request.reject(new Error("Request to Figma timed out"));
+              request.reject(new FigmaCommandError("Request to Figma timed out", "no_reply"));
             }
           }, 60000);
           logger.info(`Progress update for ${progressData.commandType}: ${progressData.progress}% - ${progressData.message}`);
@@ -17560,7 +17560,7 @@ function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOU
         clearTimeout(request.timeout);
         if (myResponse.error) {
           logger.error(`Error from Figma: ${myResponse.error}`);
-          request.reject(new Error(myResponse.error));
+          request.reject(new FigmaCommandError(myResponse.error, "plugin_error"));
         } else {
           request.resolve(myResponse.result);
         }
@@ -17584,7 +17584,7 @@ function connectToFigma(port = RELAY_PORT, handshakeTimeoutMs = HANDSHAKE_TIMEOU
     onDisconnect();
     for (const [id, request] of pendingRequests.entries()) {
       clearTimeout(request.timeout);
-      request.reject(new Error("Connection closed"));
+      request.reject(new FigmaCommandError("Connection closed", "no_reply"));
       pendingRequests.delete(id);
     }
     logger.info("Attempting to reconnect in 2 seconds...");
@@ -17642,6 +17642,25 @@ function listChannels(timeoutMs = 5000) {
     ws.send(JSON.stringify({ id, type: "list_channels" }));
   });
 }
+var DELIVERY = Symbol("l2f.commandDelivery");
+
+class FigmaCommandError extends Error {
+  constructor(message, delivery) {
+    super(message);
+    this[DELIVERY] = delivery;
+  }
+}
+function commandDelivery(error) {
+  return error && typeof error === "object" ? error[DELIVERY] : undefined;
+}
+function notSent(error) {
+  if (!(error instanceof Error))
+    return new FigmaCommandError(String(error), "not_sent");
+  if (commandDelivery(error) && commandDelivery(error) !== "not_sent")
+    return new FigmaCommandError(error.message, "not_sent");
+  Object.defineProperty(error, DELIVERY, { value: "not_sent", configurable: true });
+  return error;
+}
 
 class ChannelSelectionError extends Error {
 }
@@ -17674,15 +17693,19 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 30000) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       if (!isPluginInstall) {
         connectToFigma();
-        reject(new Error("Not connected to the relay. Start it with `bun socket` in the llm2figma repo."));
+        reject(new FigmaCommandError("Not connected to the relay. Start it with `bun socket` in the llm2figma repo.", "not_sent"));
         return;
       }
-      ensureConnected().then(() => sendCommandToFigma(command, params, timeoutMs)).then(resolve, reject);
+      ensureConnected().catch((error) => {
+        throw notSent(error);
+      }).then(() => sendCommandToFigma(command, params, timeoutMs)).then(resolve, reject);
       return;
     }
     const requiresChannel = command !== "join";
     if (requiresChannel && !currentChannel) {
-      autoJoinChannel().then(() => sendCommandToFigma(command, params, timeoutMs)).then(resolve, reject);
+      autoJoinChannel().catch((error) => {
+        throw notSent(error);
+      }).then(() => sendCommandToFigma(command, params, timeoutMs)).then(resolve, reject);
       return;
     }
     const id = v4_default();
@@ -17703,7 +17726,7 @@ function sendCommandToFigma(command, params = {}, timeoutMs = 30000) {
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
         logger.error(`Request ${id} to Figma timed out after ${timeoutMs / 1000} seconds`);
-        reject(new Error("Request to Figma timed out"));
+        reject(new FigmaCommandError("Request to Figma timed out", "no_reply"));
       }
     }, timeoutMs);
     pendingRequests.set(id, {
@@ -25058,37 +25081,50 @@ async function applySpec(args2, send, options = {}) {
     const now = (options.now ?? (() => new Date))();
     await writeFileAtomic(plan.lockPath, JSON.stringify({ ...lock, pendingApply: planId }, null, 2) + `
 `);
-    const result = await send("apply_spec_ops", {
-      rootId: lock.rootId,
-      expect: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId },
-      operations: request.operations,
-      expectedHashes: request.expectedHashes,
-      orders: request.orders,
-      allowRemovals,
-      truncated,
-      supersededFrameId: lock.supersededFrameId ?? null,
-      date: isoDay(now),
-      maxNodes: WALK_LIMITS.maxNodes,
-      maxDepth: WALK_LIMITS.maxDepth
-    }, APPLY_TIMEOUT_MS);
-    if (result && typeof result === "object" && typeof result.refused === "string") {
-      await writeFileAtomic(plan.lockPath, JSON.stringify(lock, null, 2) + `
+    const unmark = () => writeFileAtomic(plan.lockPath, JSON.stringify(lock, null, 2) + `
 `);
+    let result;
+    try {
+      result = await send("apply_spec_ops", {
+        rootId: lock.rootId,
+        expect: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId },
+        operations: request.operations,
+        expectedHashes: request.expectedHashes,
+        orders: request.orders,
+        allowRemovals,
+        truncated,
+        supersededFrameId: lock.supersededFrameId ?? null,
+        date: isoDay(now),
+        maxNodes: WALK_LIMITS.maxNodes,
+        maxDepth: WALK_LIMITS.maxDepth
+      }, APPLY_TIMEOUT_MS);
+    } catch (error) {
+      const delivery = commandDelivery(error);
+      if (delivery === "not_sent" || delivery === "plugin_error") {
+        await unmark();
+        throw new Error(`${error instanceof Error ? error.message : String(error)} Nothing was written to Figma.`);
+      }
+      throw error;
+    }
+    if (result && typeof result === "object" && typeof result.refused === "string") {
+      await unmark();
       throw new Error(`Refusing to apply: ${result.refused}`);
     }
-    if (!result || typeof result !== "object" || !result.readBack || !result.readBack.nodes) {
-      throw new Error("The Figma plugin returned no apply result. Rebuild and re-run the plugin (bun run build) so it knows apply_spec_ops. The SpecLock keeps pendingApply; pull again before planning.");
+    const created = result && Array.isArray(result.created) ? result.created : [];
+    const createdNote = created.length ? ` Created in Figma: ${showList(created.map((c) => `${c.id} at tree.children[${c.path.join("].children[")}]`))}. Do not re-apply these edits from a .bak copy of the Spec: the nodes would be created twice; pull (it reads them) and redo only the other edits.` : "";
+    if (!result || typeof result !== "object" || typeof result.writeError === "string" || !result.readBack || !result.readBack.nodes) {
+      const why = result && typeof result.writeError === "string" ? `The apply stopped part-way: ${result.writeError}.` : "The Figma plugin returned no apply result (rebuild and re-run the plugin with bun run build so it knows apply_spec_ops).";
+      throw new Error(`${why} Figma may hold part of the plan, so the SpecLock keeps pendingApply; pull again before planning.${createdNote}`);
     }
     const { spec: current } = await readSpecPair(paths);
     if (specHash(current) !== plan.specHash) {
-      throw new Error(`${plan.specPath} was edited while the apply ran, so the Spec and SpecLock were not updated and the SpecLock keeps pendingApply. Figma holds the applied plan. Pull again (pull_spec with replaceEdited: true backs up your edits) and redo them.`);
+      throw new Error(`${plan.specPath} was edited while the apply ran, so the Spec and SpecLock were not updated and the SpecLock keeps pendingApply. Figma holds the applied plan. Pull again (pull_spec with replaceEdited: true backs up your edits) and redo them.${createdNote}`);
     }
-    const created = Array.isArray(result.created) ? result.created : [];
     const failed = Array.isArray(result.failed) ? result.failed : [];
     const readBack = result.readBack;
     const nextSpec = created.length ? withCreatedIds(spec, created) : spec;
     const nextLock = relock(lock, nextSpec, readBack, result.supersededFrameId ?? lock.supersededFrameId ?? null, specHash(nextSpec));
-    const partial = findPartial(request.operations, failed, created, readBack, nextSpec);
+    const partial = [...Array.isArray(result.partial) ? result.partial : [], ...findPartial(request.operations, failed, created, readBack, nextSpec)];
     if (nextSpec !== spec)
       await writeFileAtomic(plan.specPath, JSON.stringify(nextSpec, null, 2) + `
 `);

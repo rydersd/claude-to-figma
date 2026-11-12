@@ -16,7 +16,8 @@ import { exportSpec, readSpecNodes } from "../src/llm2figma_plugin/src/spec";
 import { applySpecOps, SUPERSEDED_NAME } from "../src/llm2figma_plugin/src/spec-apply";
 import { createNodeTree } from "../src/llm2figma_plugin/src/node-tree";
 import { resetVariableIndexesForTests } from "../src/llm2figma_plugin/src/utils";
-import { allowedEditors } from "../src/llm2figma_plugin/src/editor-gate";
+import { allowedEditors, assertEditorAllowed } from "../src/llm2figma_plugin/src/editor-gate";
+import { FigmaCommandError } from "../src/llm2figma_mcp/connection";
 import { APPLY_TIMEOUT_MS, PlanStore, applySpec, planSpec, pullSpec, registerTools as registerSpecTools } from "../src/llm2figma_mcp/tools/spec";
 import { registerWhenEnabled } from "../src/shared/flags";
 
@@ -64,7 +65,7 @@ function makeNode(type: string, extra: any = {}, parent: any = null): any {
   };
   Object.defineProperty(node, "x", { enumerable: true, configurable: true, get() { return this.rel[0][2]; }, set(v: number) { this.rel = [[this.rel[0][0], this.rel[0][1], v], this.rel[1]]; } });
   Object.defineProperty(node, "y", { enumerable: true, configurable: true, get() { return this.rel[1][2]; }, set(v: number) { this.rel = [this.rel[0], [this.rel[1][0], this.rel[1][1], v]]; } });
-  Object.defineProperty(node, "relativeTransform", { enumerable: false, configurable: true, get() { return this.rel; }, set(m: M) { this.rel = [[...m[0]], [...m[1]]] as M; } });
+  Object.defineProperty(node, "relativeTransform", { enumerable: false, configurable: true, get() { return this.rel; }, set(m: M) { if (!this.lockTransform) this.rel = [[...m[0]], [...m[1]]] as M; } });
   Object.defineProperty(node, "absoluteTransform", {
     enumerable: false, configurable: true,
     get() { return this.parent && this.parent.type !== "PAGE" ? mul(this.parent.absoluteTransform, this.rel) : this.rel; },
@@ -468,11 +469,122 @@ describe("spec sync apply (PR 11d)", () => {
     await pull(root);
     editSpec((_s, find) => { find("Title").text = "Lost"; });
     const planned = await plan();
-    hook = async command => { if (command === "apply_spec_ops") throw new Error("Request to Figma timed out"); };
+    hook = async command => { if (command === "apply_spec_ops") throw new FigmaCommandError("Request to Figma timed out", "no_reply"); };
     await expect(apply(planned.planId)).rejects.toThrow(/timed out/);
     expect(readJson(lockPath()).pendingApply).toBe(planned.planId);
     hook = null;
     await expect(plan()).rejects.toThrow(/did not finish/);
+  });
+
+  describe("a rejection where Figma was never written clears pendingApply (review M1)", () => {
+    const cases: Array<[string, () => never]> = [
+      ["the Dev Mode editor gate", () => {
+        try { assertEditorAllowed("apply_spec_ops", "dev", {}); } catch (error: any) { throw new FigmaCommandError(error.message, "plugin_error"); }
+        throw new Error("the gate let apply_spec_ops through in Dev Mode");
+      }],
+      ["no relay connection", () => { throw new FigmaCommandError("Not connected to the relay. Start it with `bun socket` in the llm2figma repo.", "not_sent"); }],
+      ["an old plugin without the command", () => { throw new FigmaCommandError("Unknown command: apply_spec_ops", "plugin_error"); }],
+    ];
+    for (const [label, fail] of cases) {
+      test(label, async () => {
+        const { root } = await seed();
+        await pull(root);
+        editSpec((_s, find) => { find("Title").text = "X"; });
+        const planned = await plan();
+        hook = async command => { if (command === "apply_spec_ops") fail(); };
+        const before = snapshot();
+        await expect(apply(planned.planId)).rejects.toThrow(/Nothing was written/);
+        expect(snapshot()).toEqual(before);
+        expect(readJson(lockPath()).pendingApply).toBeNull();
+        hook = null;
+        expect((await plan()).counts.updates).toBe(1);
+      });
+    }
+  });
+
+  test("FILL on a frame reparented into an auto-layout parent is written against the new parent (review M2)", async () => {
+    const { root } = await seed();
+    const plain = makeNode("FRAME", { name: "Plain" }, root);
+    const inner = makeNode("FRAME", { name: "Inner", width: 50, height: 30 }, plain);
+    await pull(root);
+    editSpec((spec, find) => {
+      const kids = find("Plain").children;
+      const [moved] = kids.splice(kids.findIndex((c: any) => c.name === "Inner"), 1);
+      moved.layoutSizingHorizontal = "FILL";
+      delete moved.x; delete moved.y; delete moved.width;
+      spec.tree.children.unshift(moved);
+    });
+    const result = await apply((await plan()).planId);
+    expect(result.failed).toEqual([]);
+    expect(result.partial).toEqual([]);
+    expect(inner.parent).toBe(root);
+    expect(inner.layoutSizingHorizontal).toBe("FILL");
+    expect((await plan()).counts).toMatchObject({ operations: 0, conflicts: 0 });
+  });
+
+  test("a recorded holder with auto-layout is left alone; a fresh hidden one is made (review M3)", async () => {
+    const { root, byName } = await seed();
+    const box = makeNode("FRAME", { name: "Box", x: 7, y: 9, layoutPositioning: "ABSOLUTE" }, root);
+    await pull(root);
+    const users = makeNode("FRAME", { name: SUPERSEDED_NAME, layoutMode: "VERTICAL" }, page);
+    const lock = readJson(lockPath());
+    writeFileSync(lockPath(), JSON.stringify({ ...lock, supersededFrameId: users.id }));
+    editSpec(spec => { spec.tree.children = spec.tree.children.filter((c: any) => c.name !== "Box"); });
+    const result = await apply((await plan()).planId, { allowRemovals: true });
+    expect(result.applied.removed).toEqual([box.id]);
+    expect(box.parent).not.toBe(users);
+    expect(box.parent.name).toBe(`${SUPERSEDED_NAME} 2`);
+    expect(box.parent.layoutMode).toBe("NONE");
+    expect(users.children).toEqual([]);
+    expect(users.layoutMode).toBe("VERTICAL");
+    expect(readJson(lockPath()).supersededFrameId).toBe(box.parent.id);
+    expect(byName("Title")).toBeDefined();
+  });
+
+  test("a move or removal whose position check fails after the node moved is partial, not failed (review L1)", async () => {
+    const { root, byName } = await seed();
+    const box = makeNode("FRAME", { name: "Box", x: 7, y: 9, layoutPositioning: "ABSOLUTE" }, root);
+    const target = makeNode("FRAME", { name: "Target", x: 30, y: 40, layoutPositioning: "ABSOLUTE" }, root);
+    const stuck = makeNode("RECTANGLE", { name: "Stuck", x: 5, y: 5, lockTransform: true }, box);
+    await pull(root);
+    box.lockTransform = true;
+    // Stuck moves out of Box into Target (a reparent that keeps the absolute
+    // position) and Box is removed; Figma refuses both transforms.
+    editSpec((spec, find) => {
+      const stuckSpec = find("Box").children[0];
+      spec.tree.children = spec.tree.children.filter((c: any) => c.name !== "Box");
+      find("Target").children = [stuckSpec];
+    });
+    const planned = await plan();
+    const result = await apply(planned.planId, { allowRemovals: true });
+    expect(stuck.parent).toBe(target);
+    expect(box.parent.name).toBe(SUPERSEDED_NAME);
+    expect(result.failed).toEqual([]);
+    expect(result.applied.moved).toEqual([stuck.id]);
+    expect(result.applied.removed).toEqual([box.id]);
+    expect(result.partial).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: stuck.id, keys: ["parent"], detail: expect.stringContaining("absolute position not kept") }),
+      expect.objectContaining({ id: box.id, keys: ["position"], detail: expect.stringContaining("absolute position not kept") }),
+    ]));
+    expect(byName("Title")).toBeDefined();
+    expect(readJson(lockPath()).nodes[stuck.id].parentId).toBe(target.id);
+  });
+
+  test("a Spec edited while the apply ran names the created ids and warns against re-applying from the .bak (review L2)", async () => {
+    const { root } = await seed();
+    await pull(root);
+    editSpec(spec => { spec.tree.children.push({ type: "rectangle", name: "Fresh", width: 5, height: 5 }); });
+    const planned = await plan();
+    hook = async (command, params) => {
+      if (command !== "apply_spec_ops") return undefined;
+      const out = await applySpecOps(params);
+      editSpec((_s, find) => { find("Body").text = "Typed meanwhile"; });
+      return out;
+    };
+    const fresh = () => [...nodes.values()].find(n => n.name === "Fresh");
+    await expect(apply(planned.planId)).rejects.toThrow(/edited while the apply ran.*Created in Figma: \d+:1 at tree\.children\[5\].*\.bak/s);
+    expect(fresh()).toBeDefined();
+    expect(String(await apply(planned.planId).catch(e => e.message))).toContain("did not finish");
   });
 
   test("a Spec edited while the apply ran stops before writing the Spec or SpecLock", async () => {

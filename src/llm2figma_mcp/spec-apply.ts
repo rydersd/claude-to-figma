@@ -197,6 +197,8 @@ export interface ReadBack {
 export interface PartialEntry {
   id: string;
   keys: string[];
+  // What happened, when a move or removal did move the node but not all as asked.
+  detail?: string;
 }
 
 // A key's value for comparison: absent means the type's default.

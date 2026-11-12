@@ -2,9 +2,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SendCommandFn } from "../types.js";
 import { randomUUID } from "node:crypto";
-import { getChannelFileKey, getCurrentChannel } from "../connection.js";
+import { commandDelivery, getChannelFileKey, getCurrentChannel } from "../connection.js";
 import {
-  SPEC_LOCK_VERSION, SPEC_VERSION, clip, lockNodesFromTree, specHash, type SpecFile, type SpecLockFile,
+  SPEC_LOCK_VERSION, SPEC_VERSION, clip, lockNodesFromTree, showList, specHash, type SpecFile, type SpecLockFile,
 } from "../../shared/spec.js";
 import { WALK_LIMITS } from "../../shared/walk.js";
 import { backUp, readExistingPair, readSpecPair, resolveSpecPaths, specBaseDir, writeFileAtomic, type SpecPaths } from "../spec-files.js";
@@ -355,31 +355,50 @@ export async function applySpec(args: ApplyArgs, send: SendCommandFn, options: S
 
     // Marked before sending: if the run never reports back, Figma may hold part of it.
     await writeFileAtomic(plan.lockPath, JSON.stringify({ ...lock, pendingApply: planId }, null, 2) + "\n");
-    const result: any = await send("apply_spec_ops", {
-      rootId: lock.rootId, expect: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId },
-      operations: request.operations, expectedHashes: request.expectedHashes, orders: request.orders,
-      allowRemovals, truncated, supersededFrameId: lock.supersededFrameId ?? null, date: isoDay(now),
-      maxNodes: WALK_LIMITS.maxNodes, maxDepth: WALK_LIMITS.maxDepth,
-    }, APPLY_TIMEOUT_MS);
+    const unmark = () => writeFileAtomic(plan.lockPath, JSON.stringify(lock, null, 2) + "\n");
+    let result: any;
+    try {
+      result = await send("apply_spec_ops", {
+        rootId: lock.rootId, expect: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId },
+        operations: request.operations, expectedHashes: request.expectedHashes, orders: request.orders,
+        allowRemovals, truncated, supersededFrameId: lock.supersededFrameId ?? null, date: isoDay(now),
+        maxNodes: WALK_LIMITS.maxNodes, maxDepth: WALK_LIMITS.maxDepth,
+      }, APPLY_TIMEOUT_MS);
+    } catch (error) {
+      // Never sent (no relay, no channel), or the plugin threw: apply_spec_ops
+      // only throws before its first write (the editor gate, an unknown command
+      // from an old plugin, bad parameters), so Figma is untouched. Only a
+      // timeout or a connection lost after sending may have written.
+      const delivery = commandDelivery(error);
+      if (delivery === "not_sent" || delivery === "plugin_error") {
+        await unmark();
+        throw new Error(`${error instanceof Error ? error.message : String(error)} Nothing was written to Figma.`);
+      }
+      throw error;
+    }
     if (result && typeof result === "object" && typeof result.refused === "string") {
       // Refused before any write: nothing to record.
-      await writeFileAtomic(plan.lockPath, JSON.stringify(lock, null, 2) + "\n");
+      await unmark();
       throw new Error(`Refusing to apply: ${result.refused}`);
     }
-    if (!result || typeof result !== "object" || !result.readBack || !result.readBack.nodes) {
-      throw new Error("The Figma plugin returned no apply result. Rebuild and re-run the plugin (bun run build) so it knows apply_spec_ops. The SpecLock keeps pendingApply; pull again before planning.");
+    const created: Array<{ path: number[]; id: string; failed?: boolean }> = result && Array.isArray(result.created) ? result.created : [];
+    const createdNote = created.length
+      ? ` Created in Figma: ${showList(created.map(c => `${c.id} at tree.children[${c.path.join("].children[")}]`))}. Do not re-apply these edits from a .bak copy of the Spec: the nodes would be created twice; pull (it reads them) and redo only the other edits.`
+      : "";
+    if (!result || typeof result !== "object" || typeof result.writeError === "string" || !result.readBack || !result.readBack.nodes) {
+      const why = result && typeof result.writeError === "string" ? `The apply stopped part-way: ${result.writeError}.` : "The Figma plugin returned no apply result (rebuild and re-run the plugin with bun run build so it knows apply_spec_ops).";
+      throw new Error(`${why} Figma may hold part of the plan, so the SpecLock keeps pendingApply; pull again before planning.${createdNote}`);
     }
 
     const { spec: current } = await readSpecPair(paths);
     if (specHash(current) !== plan.specHash) {
-      throw new Error(`${plan.specPath} was edited while the apply ran, so the Spec and SpecLock were not updated and the SpecLock keeps pendingApply. Figma holds the applied plan. Pull again (pull_spec with replaceEdited: true backs up your edits) and redo them.`);
+      throw new Error(`${plan.specPath} was edited while the apply ran, so the Spec and SpecLock were not updated and the SpecLock keeps pendingApply. Figma holds the applied plan. Pull again (pull_spec with replaceEdited: true backs up your edits) and redo them.${createdNote}`);
     }
-    const created: Array<{ path: number[]; id: string; failed?: boolean }> = Array.isArray(result.created) ? result.created : [];
     const failed: Array<Record<string, unknown>> = Array.isArray(result.failed) ? result.failed : [];
     const readBack = result.readBack as ReadBack;
     const nextSpec = created.length ? withCreatedIds(spec, created) : spec;
     const nextLock = relock(lock, nextSpec, readBack, result.supersededFrameId ?? lock.supersededFrameId ?? null, specHash(nextSpec));
-    const partial = findPartial(request.operations, failed as any, created, readBack, nextSpec);
+    const partial: PartialEntry[] = [...(Array.isArray(result.partial) ? result.partial : []), ...findPartial(request.operations, failed as any, created, readBack, nextSpec)];
     // Spec first, then SpecLock: a crash between leaves pendingApply set.
     if (nextSpec !== spec) await writeFileAtomic(plan.specPath, JSON.stringify(nextSpec, null, 2) + "\n");
     await writeFileAtomic(plan.lockPath, JSON.stringify(nextLock, null, 2) + "\n");

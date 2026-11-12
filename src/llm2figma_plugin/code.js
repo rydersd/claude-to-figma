@@ -9456,6 +9456,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const moved = [];
     const removed = [];
     const failed = [];
+    const partial = [];
     const total = operations.length;
     let done = 0;
     const step = async () => {
@@ -9466,144 +9467,204 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
     const message = (error) => error instanceof Error ? error.message : String(error);
     if (commandId) await sendProgressUpdate(commandId, COMMAND, "started", 0, total, 0, `Applying ${total} operations`);
-    if (typeof figma.commitUndo === "function") figma.commitUndo();
-    const creates = operations.filter((op) => op.op === "create");
-    const createdTop = /* @__PURE__ */ new Map();
-    const ctx = createNodeTreeContext({ totalNodes: creates.length, firstOnTop: true, commandId, progressLabel: COMMAND, progressEvery: PROGRESS_EVERY2 });
-    for (const op of creates) {
-      const spec = withCreateDefaults(op.node);
-      const before = ctx.errors.length;
-      try {
-        const made = await createNode(spec, op.parentId, 1, ctx, { onBindFailure: "keep", path: op.path });
-        for (const entry of made) {
-          created.push(entry);
-          if (pathKey(entry.path) === pathKey(op.path)) createdTop.set(pathKey(op.path), entry.id);
-          const source = specAt(op.node, entry.path.slice(op.path.length));
-          if (source && source.type === "text" && source.name === void 0) {
-            const node = await figma.getNodeByIdAsync(entry.id);
-            if (node && "autoRename" in node) node.autoRename = true;
-          }
-        }
-      } catch (error) {
-        failed.push({ op: "create", path: op.path, error: message(error) });
-      }
-      for (const error of ctx.errors.slice(before)) failed.push({ op: "create", path: error.path, error: error.error });
-      await step();
-    }
-    const reparented = new Set(operations.filter((op) => op.op === "move" && op.fromParentId !== op.parentId).map((op) => op.id));
-    const afterMove = /* @__PURE__ */ new Map();
-    for (const op of operations.filter((o) => o.op === "update")) {
-      const unread = liveUnread.get(op.id) || /* @__PURE__ */ new Set();
-      const set = {};
-      for (const [key, value] of Object.entries(op.set || {})) if (key !== UNREAD_KEY && !unread.has(key)) set[key] = value;
-      if (reparented.has(op.id)) {
-        const xy = {};
-        for (const key of ["x", "y"]) if (key in set) {
-          xy[key] = set[key];
-          delete set[key];
-        }
-        if (Object.keys(xy).length) afterMove.set(op.id, xy);
-      }
-      const keys = Object.keys(set);
-      if (keys.length) {
-        try {
-          const node = await figma.getNodeByIdAsync(op.id);
-          if (!node) throw new Error("node not found");
-          const written = await writeProps(node, set);
-          if (written.length) failed.push({ op: "update", id: op.id, keys: written, error: "not written for this node type" });
-          updated.push({ id: op.id, keys: keys.filter((k) => !written.includes(k)) });
-        } catch (error) {
-          failed.push({ op: "update", id: op.id, keys, error: message(error) });
-        }
-      }
-      await step();
-    }
-    const toPlace = /* @__PURE__ */ new Map();
-    const place = (parentId, id) => {
-      if (!toPlace.has(parentId)) toPlace.set(parentId, /* @__PURE__ */ new Set());
-      toPlace.get(parentId).add(id);
-    };
-    for (const op of operations) {
-      if (op.op === "move") place(op.parentId, op.id);
-      if (op.op === "create" && createdTop.has(pathKey(op.path))) place(op.parentId, createdTop.get(pathKey(op.path)));
-    }
-    const moveOps = new Map(operations.filter((op) => op.op === "move").map((op) => [op.id, op]));
-    for (const order of Array.isArray(orders) ? orders : []) {
-      const wanted = toPlace.get(order.parentId);
-      if (!wanted) continue;
-      const ids = order.children.map((entry) => typeof entry === "string" ? entry : createdTop.get(pathKey(entry)) ?? null);
-      const inOrder = new Set(ids.filter((id) => !!id));
-      let previous = null;
-      for (const id of ids) {
-        if (!id) continue;
-        const node = await figma.getNodeByIdAsync(id);
-        if (!node) continue;
-        if (!wanted.has(id)) {
-          if (node.parent && node.parent.id === order.parentId) previous = node;
-          continue;
-        }
-        try {
-          const parent = await figma.getNodeByIdAsync(order.parentId);
-          if (!parent || !Array.isArray(parent.children)) throw new Error(`parent ${order.parentId} not found`);
-          const isReparent = !node.parent || node.parent.id !== parent.id;
-          const absolute = isReparent ? absoluteOf(node) : null;
-          const siblings = parent.children.filter((child) => child.id !== id);
-          const first = siblings.findIndex((child) => inOrder.has(child.id));
-          const target = previous ? siblings.indexOf(previous) + 1 : first >= 0 ? first : siblings.length;
-          if (isReparent || parent.children.indexOf(node) !== target) {
-            await appendOrInsertChild(node, parent.id, target);
-            let at = parent.children.indexOf(node);
-            if (at !== target && at >= 0) {
-              parent.insertChild(at < target ? target + 1 : target, node);
-              at = parent.children.indexOf(node);
-            }
-            if (at !== target) throw new Error(`placed at index ${at}, expected ${target}`);
-            if (absolute && (!autoLayout(parent) || node.layoutPositioning === "ABSOLUTE")) keepAbsolute(node, absolute);
-          }
-          const xy = afterMove.get(id);
-          if (xy) await writeProps(node, xy);
-          if (moveOps.has(id)) moved.push(id);
-          previous = node;
-        } catch (error) {
-          failed.push({ op: moveOps.has(id) ? "move" : "create", id, error: message(error) });
-        }
-        if (moveOps.has(id)) await step();
-      }
-    }
     let holderId = typeof supersededFrameId === "string" ? supersededFrameId : null;
-    const removals = operations.filter((op) => op.op === "remove");
-    if (allowRemovals === true && removals.length) {
-      let holder = holderId ? await figma.getNodeByIdAsync(holderId) : null;
-      if (!holder || holder.type !== "FRAME" || holder.removed || holder.parent !== page) {
-        holder = figma.createFrame();
-        page.appendChild(holder);
-        holder.name = SUPERSEDED_NAME;
-        if (holder.layoutMode !== "NONE") holder.layoutMode = "NONE";
-        holder.clipsContent = false;
-        holder.fills = [];
-        holder.resize(1, 1);
-        holder.visible = false;
-      }
-      holderId = holder.id;
-      for (const op of removals) {
+    let writeError = null;
+    if (typeof figma.commitUndo === "function") figma.commitUndo();
+    try {
+      const creates = operations.filter((op) => op.op === "create");
+      const createdTop = /* @__PURE__ */ new Map();
+      const ctx = createNodeTreeContext({ totalNodes: creates.length, firstOnTop: true, commandId, progressLabel: COMMAND, progressEvery: PROGRESS_EVERY2 });
+      for (const op of creates) {
+        const spec = withCreateDefaults(op.node);
+        const before = ctx.errors.length;
         try {
-          const node = await figma.getNodeByIdAsync(op.id);
-          if (!node) throw new Error("node not found");
-          const absolute = absoluteOf(node);
-          holder.appendChild(node);
-          keepAbsolute(node, absolute);
-          node.name = `${node.name} (superseded ${typeof date === "string" ? date : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)})`;
-          removed.push(op.id);
+          const made = await createNode(spec, op.parentId, 1, ctx, { onBindFailure: "keep", path: op.path });
+          for (const entry of made) {
+            created.push(entry);
+            if (pathKey(entry.path) === pathKey(op.path)) createdTop.set(pathKey(op.path), entry.id);
+            const source = specAt(op.node, entry.path.slice(op.path.length));
+            if (source && source.type === "text" && source.name === void 0) {
+              const node = await figma.getNodeByIdAsync(entry.id);
+              if (node && "autoRename" in node) node.autoRename = true;
+            }
+          }
         } catch (error) {
-          failed.push({ op: "remove", id: op.id, error: message(error) });
+          failed.push({ op: "create", path: op.path, error: message(error) });
+        }
+        for (const error of ctx.errors.slice(before)) failed.push({ op: "create", path: error.path, error: error.error });
+        await step();
+      }
+      const moving = new Set(operations.filter((op) => op.op === "move").map((op) => op.id));
+      const afterMove = /* @__PURE__ */ new Map();
+      for (const op of operations.filter((o) => o.op === "update")) {
+        const unread = liveUnread.get(op.id) || /* @__PURE__ */ new Set();
+        const set = {};
+        for (const [key, value] of Object.entries(op.set || {})) if (key !== UNREAD_KEY && !unread.has(key)) set[key] = value;
+        if (moving.has(op.id)) {
+          const later = {};
+          for (const key of PARENT_DEPENDENT) if (key in set) {
+            later[key] = set[key];
+            delete set[key];
+          }
+          if (Object.keys(later).length) afterMove.set(op.id, later);
+        }
+        const keys = Object.keys(set);
+        if (keys.length) {
+          try {
+            const node = await figma.getNodeByIdAsync(op.id);
+            if (!node) throw new Error("node not found");
+            const unwritten = await writeProps(node, set);
+            if (unwritten.length) failed.push({ op: "update", id: op.id, keys: unwritten, error: "not written for this node type" });
+            updated.push({ id: op.id, keys: keys.filter((k) => !unwritten.includes(k)) });
+          } catch (error) {
+            failed.push({ op: "update", id: op.id, keys, error: message(error) });
+          }
         }
         await step();
       }
+      const toPlace = /* @__PURE__ */ new Map();
+      const place = (parentId, id) => {
+        if (!toPlace.has(parentId)) toPlace.set(parentId, /* @__PURE__ */ new Set());
+        toPlace.get(parentId).add(id);
+      };
+      for (const op of operations) {
+        if (op.op === "move") place(op.parentId, op.id);
+        if (op.op === "create" && createdTop.has(pathKey(op.path))) place(op.parentId, createdTop.get(pathKey(op.path)));
+      }
+      const moveOps = new Map(operations.filter((op) => op.op === "move").map((op) => [op.id, op]));
+      for (const order of Array.isArray(orders) ? orders : []) {
+        const wanted = toPlace.get(order.parentId);
+        if (!wanted) continue;
+        const ids = order.children.map((entry) => typeof entry === "string" ? entry : createdTop.get(pathKey(entry)) ?? null);
+        const inOrder = new Set(ids.filter((id) => !!id));
+        let previous = null;
+        for (const id of ids) {
+          if (!id) continue;
+          const node = await figma.getNodeByIdAsync(id);
+          if (!node) continue;
+          if (!wanted.has(id)) {
+            if (node.parent && node.parent.id === order.parentId) previous = node;
+            continue;
+          }
+          const op = moveOps.has(id) ? "move" : "create";
+          let arrived = false;
+          try {
+            const parent = await figma.getNodeByIdAsync(order.parentId);
+            if (!parent || !Array.isArray(parent.children)) throw new Error(`parent ${order.parentId} not found`);
+            const isReparent = !node.parent || node.parent.id !== parent.id;
+            const absolute = isReparent ? absoluteOf(node) : null;
+            const siblings = parent.children.filter((child) => child.id !== id);
+            const first = siblings.findIndex((child) => inOrder.has(child.id));
+            const target = previous ? siblings.indexOf(previous) + 1 : first >= 0 ? first : siblings.length;
+            if (isReparent || parent.children.indexOf(node) !== target) {
+              await appendOrInsertChild(node, parent.id, target);
+              arrived = true;
+              let at = parent.children.indexOf(node);
+              if (at !== target && at >= 0) {
+                parent.insertChild(at < target ? target + 1 : target, node);
+                at = parent.children.indexOf(node);
+              }
+              if (at !== target) throw new Error(`placed at index ${at}, expected ${target}`);
+              if (absolute && (!autoLayout(parent) || node.layoutPositioning === "ABSOLUTE")) keepAbsolute(node, absolute);
+            }
+            arrived = true;
+            if (moveOps.has(id)) moved.push(id);
+            previous = node;
+          } catch (error) {
+            if (arrived && node.parent && node.parent.id === order.parentId) {
+              partial.push({ id, keys: ["parent"], detail: `moved into ${order.parentId}, but ${message(error)}` });
+              if (moveOps.has(id)) moved.push(id);
+              previous = node;
+            } else {
+              failed.push({ op, id, error: message(error) });
+            }
+          }
+          const later = afterMove.get(id);
+          if (later) {
+            afterMove.delete(id);
+            if (node.parent && node.parent.id === order.parentId) {
+              try {
+                const unwritten = await writeProps(node, later);
+                if (unwritten.length) failed.push({ op: "update", id, keys: unwritten, error: "not written for this node type" });
+                const done2 = Object.keys(later).filter((k) => !unwritten.includes(k));
+                const entry = updated.find((u) => u.id === id);
+                if (entry) entry.keys.push(...done2);
+                else updated.push({ id, keys: done2 });
+              } catch (error) {
+                failed.push({ op: "update", id, keys: Object.keys(later), error: message(error) });
+              }
+            } else {
+              failed.push({ op: "update", id, keys: Object.keys(later), error: "not written: the move to its new parent failed" });
+            }
+          }
+          if (moveOps.has(id)) await step();
+        }
+      }
+      for (const [id, later] of afterMove) failed.push({ op: "update", id, keys: Object.keys(later), error: "not written: the node was not moved" });
+      const removals = operations.filter((op) => op.op === "remove");
+      if (allowRemovals === true && removals.length) {
+        const holder = await supersededHolder(page, holderId);
+        holderId = holder.id;
+        for (const op of removals) {
+          const node = await figma.getNodeByIdAsync(op.id);
+          if (!node) {
+            failed.push({ op: "remove", id: op.id, error: "node not found" });
+            await step();
+            continue;
+          }
+          const name = `${node.name} (superseded ${typeof date === "string" ? date : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)})`;
+          let arrived = false;
+          try {
+            const absolute = absoluteOf(node);
+            holder.appendChild(node);
+            arrived = node.parent === holder;
+            node.name = name;
+            keepAbsolute(node, absolute);
+            removed.push(op.id);
+          } catch (error) {
+            if (arrived || node.parent === holder) {
+              if (node.name !== name) node.name = name;
+              removed.push(op.id);
+              partial.push({ id: op.id, keys: ["position"], detail: `moved into ${SUPERSEDED_NAME}, but ${message(error)}` });
+            } else {
+              failed.push({ op: "remove", id: op.id, error: message(error) });
+            }
+          }
+          await step();
+        }
+      }
+    } catch (error) {
+      writeError = message(error);
     }
     if (typeof figma.commitUndo === "function") figma.commitUndo();
-    const readBack = await readLiveLock({ rootId, expect, truncated, maxNodes, maxDepth, commandId }, COMMAND);
-    if (commandId) await sendProgressUpdate(commandId, COMMAND, "completed", 100, total, done, `Applied ${done} operations`);
-    return { created, updated, moved, removed, failed, supersededFrameId: holderId, readBack };
+    const outcome = { created, updated, moved, removed, failed, partial, supersededFrameId: holderId };
+    if (writeError) return { ...outcome, writeError };
+    try {
+      const readBack = await readLiveLock({ rootId, expect, truncated, maxNodes, maxDepth, commandId }, COMMAND);
+      if (commandId) await sendProgressUpdate(commandId, COMMAND, "completed", 100, total, done, `Applied ${done} operations`);
+      return { ...outcome, readBack };
+    } catch (error) {
+      return { ...outcome, writeError: `the read-back failed: ${message(error)}` };
+    }
+  }
+  var PARENT_DEPENDENT = ["x", "y", "layoutPositioning", "layoutSizingHorizontal", "layoutSizingVertical", "layoutGrow", "layoutAlign", "constraints"];
+  async function supersededHolder(page, recordedId) {
+    const recorded = recordedId ? await figma.getNodeByIdAsync(recordedId) : null;
+    if (recorded && recorded.type === "FRAME" && !recorded.removed && recorded.parent === page && (!recorded.layoutMode || recorded.layoutMode === "NONE")) {
+      return recorded;
+    }
+    const taken = new Set((page.children || []).map((child) => child.name));
+    let name = SUPERSEDED_NAME;
+    for (let n = 2; taken.has(name); n++) name = `${SUPERSEDED_NAME} ${n}`;
+    const holder = figma.createFrame();
+    page.appendChild(holder);
+    holder.name = name;
+    if (holder.layoutMode !== "NONE") holder.layoutMode = "NONE";
+    holder.clipsContent = false;
+    holder.fills = [];
+    holder.resize(1, 1);
+    holder.visible = false;
+    return holder;
   }
   async function writeProps(node, set) {
     const only = new Set(Object.keys(set));

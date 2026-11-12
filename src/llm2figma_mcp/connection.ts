@@ -158,7 +158,7 @@ export function connectToFigma(port: number = RELAY_PORT, handshakeTimeoutMs: nu
             if (pendingRequests.has(requestId)) {
               logger.error(`Request ${requestId} timed out after extended period of inactivity`);
               pendingRequests.delete(requestId);
-              request.reject(new Error('Request to Figma timed out'));
+              request.reject(new FigmaCommandError('Request to Figma timed out', "no_reply"));
             }
           }, 60000); // 60 second timeout for inactivity
 
@@ -209,7 +209,7 @@ export function connectToFigma(port: number = RELAY_PORT, handshakeTimeoutMs: nu
 
         if (myResponse.error) {
           logger.error(`Error from Figma: ${myResponse.error}`);
-          request.reject(new Error(myResponse.error));
+          request.reject(new FigmaCommandError(myResponse.error, "plugin_error"));
         } else {
           request.resolve(myResponse.result);
         }
@@ -241,7 +241,7 @@ export function connectToFigma(port: number = RELAY_PORT, handshakeTimeoutMs: nu
     // Reject all pending requests
     for (const [id, request] of pendingRequests.entries()) {
       clearTimeout(request.timeout);
-      request.reject(new Error("Connection closed"));
+      request.reject(new FigmaCommandError("Connection closed", "no_reply"));
       pendingRequests.delete(id);
     }
 
@@ -320,6 +320,34 @@ export function listChannels(timeoutMs: number = 5000): Promise<{ name: string; 
   });
 }
 
+// How far a failed command got, for callers that must know whether the plugin
+// may have run it: "not_sent" (no relay, no channel: never sent),
+// "plugin_error" (the plugin answered with an error: it ran and threw), or
+// "no_reply" (sent, then a timeout or a lost connection: it may have run).
+export type CommandDelivery = "not_sent" | "plugin_error" | "no_reply";
+const DELIVERY = Symbol("l2f.commandDelivery");
+
+export class FigmaCommandError extends Error {
+  constructor(message: string, delivery: CommandDelivery) {
+    super(message);
+    (this as any)[DELIVERY] = delivery;
+  }
+}
+
+// The delivery stage a sendCommandToFigma rejection carries, if any.
+export function commandDelivery(error: unknown): CommandDelivery | undefined {
+  return error && typeof error === "object" ? (error as any)[DELIVERY] : undefined;
+}
+
+// A failure before this command was sent (connecting, choosing a channel) is
+// "not_sent", even when it came from another command (the join) timing out.
+function notSent(error: unknown): Error {
+  if (!(error instanceof Error)) return new FigmaCommandError(String(error), "not_sent");
+  if (commandDelivery(error) && commandDelivery(error) !== "not_sent") return new FigmaCommandError(error.message, "not_sent");
+  Object.defineProperty(error, DELIVERY, { value: "not_sent", configurable: true });
+  return error;
+}
+
 // Errors that retrying cannot fix: the user has to open, close or pick a file.
 export class ChannelSelectionError extends Error {}
 
@@ -362,10 +390,11 @@ export function sendCommandToFigma(
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       if (!isPluginInstall) {
         connectToFigma();
-        reject(new Error("Not connected to the relay. Start it with `bun socket` in the llm2figma repo."));
+        reject(new FigmaCommandError("Not connected to the relay. Start it with `bun socket` in the llm2figma repo.", "not_sent"));
         return;
       }
       ensureConnected()
+        .catch((error) => { throw notSent(error); })
         .then(() => sendCommandToFigma(command, params, timeoutMs))
         .then(resolve, reject);
       return;
@@ -375,6 +404,7 @@ export function sendCommandToFigma(
     const requiresChannel = command !== "join";
     if (requiresChannel && !currentChannel) {
       autoJoinChannel()
+        .catch((error) => { throw notSent(error); })
         .then(() => sendCommandToFigma(command, params, timeoutMs))
         .then(resolve, reject);
       return;
@@ -402,7 +432,7 @@ export function sendCommandToFigma(
       if (pendingRequests.has(id)) {
         pendingRequests.delete(id);
         logger.error(`Request ${id} to Figma timed out after ${timeoutMs / 1000} seconds`);
-        reject(new Error('Request to Figma timed out'));
+        reject(new FigmaCommandError('Request to Figma timed out', "no_reply"));
       }
     }, timeoutMs);
 
