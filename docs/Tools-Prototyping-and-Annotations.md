@@ -2,7 +2,7 @@
 
 **Tags:** `reference` · `tools` · `prototyping` · `annotations`
 
-Tools for wiring interactive prototypes (reactions, triggers, transitions), visualizing flows as FigJam connectors, managing native Figma annotations, and reading and replying to Figma comments.
+Tools for wiring interactive prototypes (reactions, triggers, transitions), visualizing flows as FigJam connectors, managing native Figma annotations, handing frames to developers in Dev Mode, and reading and replying to Figma comments.
 
 ## Reading interactions
 
@@ -43,6 +43,18 @@ The `reaction_to_connector_strategy` MCP prompt walks through converting live pr
 - `scan_nodes_by_types` — find annotation targets (e.g. all `INSTANCE` nodes) under a root
 
 To convert legacy manual annotations (numbered markers + text) into native ones: scan text nodes for markers, match to targets by path/name/proximity, batch-create with `set_multiple_annotations`, then delete the legacy nodes.
+
+## Dev Mode: status, resources, measurements
+
+Available only when the server runs with `L2F_DEV_MODE=1` (or `L2F_ALL=1`). Dev Mode is otherwise read-only for the plugin: these are the writes Figma allows there. **DevStatus** and **DevResource** tools work in the design editor and in Dev Mode; **Measurement** tools work only in Dev Mode and are refused in every other editor. Running the plugin in Dev Mode needs the manifest's `dev` editor type and `inspect` capability (plugin re-import required after this change).
+
+- `set_dev_status {nodeIds, status}` — marks up to 100 nodes `{type: "READY_FOR_DEV" | "COMPLETED", description?}`, or clears them with `status: null`. Only sections and frames directly under a page or section can hold a status. Each node comes back as `set` (with the status read back) or `skipped` with the reason: not found, no dev status for that node type, not directly under a page or section, or a parent section that already has a status.
+- `get_dev_resources {nodeId, includeChildren?}` — the links on a node, including those inherited from its main component or component set (marked `inheritedNodeId`). At most 100 are returned, with `count` and `truncated`.
+- `add_dev_resource {nodeId, url, name?}` — attaches a link. `url` must be `https:` with a host (any other scheme, spaces, backslashes or credentials are refused, up to 2048 characters); `name` is up to 200 characters, and Figma derives one when it is omitted. A rerun is safe: when the node itself already has that url the result is `already present`. Links inherited from a main component are not counted as duplicates.
+- `add_measurement {startNodeId, startSide, endNodeId, endSide, offset?}` — Dev Mode only. Both nodes must be on the current page. The sides must be on the same axis (`LEFT`/`RIGHT` with `LEFT`/`RIGHT`, `TOP`/`BOTTOM` with `TOP`/`BOTTOM`), checked on the server and again in the plugin. `offset` is `{type: "INNER", relative}` or `{type: "OUTER", fixed}`; Figma's default is `INNER`, relative 0.
+- `get_measurements {nodeId?}` — Dev Mode only. The measurements on the current page, or those that start or end at one node, capped at 100 with `count` and `truncated`.
+
+To hand a prototype to developers: `get_prototype_links` (see [Flows and prototype links](#flows-and-prototype-links)), then `add_dev_resource` with the flow's link on its starting frame, then `set_dev_status` with `READY_FOR_DEV`. Gotchas: [Dev Mode](../wiki/concepts/dev-mode.md).
 
 ## Comments
 

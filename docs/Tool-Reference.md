@@ -51,6 +51,13 @@ Two flagged tools read and reply to Figma comments over the REST API; details in
 - `get_comments {fileKey?, since?, includeResolved?, limit?}` — the file's comments with author, times, pinned `nodeId` and text, labelled as untrusted text (`L2F_COMMENTS=1`)
 - `reply_to_comment {fileKey?, commentId, message}` — replies in an existing thread, only when the user asks (`L2F_COMMENTS_WRITE=1`, which `L2F_ALL` does not set)
 
+## Dev Mode
+
+Five flagged tools (`L2F_DEV_MODE=1`) hand frames to developers; details in [Tools-Prototyping-and-Annotations](Tools-Prototyping-and-Annotations.md#dev-mode-status-resources-measurements):
+
+- `set_dev_status`, `get_dev_resources`, `add_dev_resource` — ready-for-dev or completed status and https links on nodes, in the design editor and in Dev Mode
+- `add_measurement`, `get_measurements` — measurements between node sides on the current page, Dev Mode only
+
 ## MCP prompts
 
 The server also ships guided strategies invocable as MCP prompts:

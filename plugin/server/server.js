@@ -25864,6 +25864,95 @@ function registerTools28(server) {
   });
 }
 
+// src/llm2figma_mcp/tools/dev-mode.ts
+var MAX_NODES = 100;
+var MAX_URL_LENGTH = 2048;
+var MAX_NAME_LENGTH = 200;
+var HTTPS_URL = /^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?([/?#][^\s\\]*)?$/i;
+function isHttpsUrl(value) {
+  if (value.length > MAX_URL_LENGTH || !HTTPS_URL.test(value))
+    return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.length > 0 && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+var DevStatusSchema = z2.object({
+  type: z2.enum(["READY_FOR_DEV", "COMPLETED"]),
+  description: z2.string().max(1000).optional().describe("Optional note shown with the status")
+}).nullable().describe('{ type: "READY_FOR_DEV" | "COMPLETED", description? }, or null to clear the status');
+var HttpsUrlSchema = z2.string().max(MAX_URL_LENGTH).refine(isHttpsUrl, "url must be an https link with a host (no other scheme, no spaces, no credentials)").describe(`The link to attach: https only, up to ${MAX_URL_LENGTH} characters`);
+var SideSchema = z2.enum(["TOP", "RIGHT", "BOTTOM", "LEFT"]);
+var HORIZONTAL = ["LEFT", "RIGHT"];
+var MeasurementSidesSchema = z2.object({ startSide: SideSchema, endSide: SideSchema }).refine(({ startSide, endSide }) => HORIZONTAL.includes(startSide) === HORIZONTAL.includes(endSide), "startSide and endSide must be on the same axis: LEFT/RIGHT with LEFT/RIGHT, or TOP/BOTTOM with TOP/BOTTOM");
+var MeasurementOffsetSchema = z2.discriminatedUnion("type", [
+  z2.object({ type: z2.literal("INNER"), relative: z2.number().finite() }),
+  z2.object({ type: z2.literal("OUTER"), fixed: z2.number().finite() })
+]).describe('Where the measurement line sits: { type: "INNER", relative } or { type: "OUTER", fixed }. Figma defaults to INNER, relative 0');
+var text3 = (value) => ({ content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }] });
+var message2 = (error) => error instanceof Error ? error.message : String(error);
+function registerTools29(server, sendCommandToFigma2) {
+  server.tool("set_dev_status", `Mark nodes ready for dev or completed, or clear their status with null. Works in the design editor and in Dev Mode. Only sections and frames directly under a page or section can hold a status; any other node, and a node inside one that already has a status, is skipped with the reason. Returns one result per node: set (with the status read back) or skipped. Up to ${MAX_NODES} nodes per call.`, {
+    nodeIds: z2.array(z2.string().min(1)).min(1).max(MAX_NODES).describe("The nodes to mark"),
+    status: DevStatusSchema
+  }, async ({ nodeIds, status }) => {
+    try {
+      return text3(await sendCommandToFigma2("set_dev_status", { nodeIds, status }));
+    } catch (error) {
+      return text3(`Error setting dev status: ${message2(error)}`);
+    }
+  });
+  server.tool("get_dev_resources", `List the dev resources (links) on a node, including those inherited from its main component or component set (those carry inheritedNodeId). Works in the design editor and in Dev Mode. At most ${MAX_NODES} are returned; count is the full number and truncated says whether some were left out.`, {
+    nodeId: z2.string().min(1).describe("The node to read"),
+    includeChildren: z2.boolean().optional().describe("Also list the resources on the node's descendants (default false)")
+  }, async ({ nodeId, includeChildren }) => {
+    try {
+      return text3(await sendCommandToFigma2("get_dev_resources", includeChildren === undefined ? { nodeId } : { nodeId, includeChildren }));
+    } catch (error) {
+      return text3(`Error getting dev resources: ${message2(error)}`);
+    }
+  });
+  server.tool("add_dev_resource", 'Attach a link to a node as a dev resource, for example the link from get_prototype_links or a code or ticket URL. Works in the design editor and in Dev Mode. https links only. Running it again is safe: when the node itself already has that url the result is "already present" and nothing changes (links inherited from a main component do not count).', {
+    nodeId: z2.string().min(1).describe("The node to attach the link to"),
+    url: HttpsUrlSchema,
+    name: z2.string().trim().min(1).max(MAX_NAME_LENGTH).optional().describe("Link label; Figma derives one from the url when omitted")
+  }, async ({ nodeId, url, name }) => {
+    try {
+      return text3(await sendCommandToFigma2("add_dev_resource", name === undefined ? { nodeId, url } : { nodeId, url, name }));
+    } catch (error) {
+      return text3(`Error adding dev resource: ${message2(error)}`);
+    }
+  });
+  server.tool("add_measurement", "Add a Dev Mode measurement between one side of a start node and one side of an end node. Dev Mode only: refused in every other editor. Both nodes must be on the current page. The sides must be on the same axis (LEFT/RIGHT with LEFT/RIGHT, TOP/BOTTOM with TOP/BOTTOM).", {
+    startNodeId: z2.string().min(1).describe("The node the measurement starts from (on the current page)"),
+    startSide: SideSchema.describe("The side of the start node"),
+    endNodeId: z2.string().min(1).describe("The node the measurement ends at (on the current page)"),
+    endSide: SideSchema.describe("The side of the end node, on the same axis as startSide"),
+    offset: MeasurementOffsetSchema.optional()
+  }, async ({ startNodeId, startSide, endNodeId, endSide, offset }) => {
+    const sides = MeasurementSidesSchema.safeParse({ startSide, endSide });
+    if (!sides.success)
+      return text3(`Error adding measurement: ${sides.error.issues.map((issue) => issue.message).join("; ")}`);
+    try {
+      const params = { startNodeId, startSide, endNodeId, endSide, ...offset ? { offset } : {} };
+      return text3(await sendCommandToFigma2("add_measurement", params));
+    } catch (error) {
+      return text3(`Error adding measurement: ${message2(error)}`);
+    }
+  });
+  server.tool("get_measurements", `List the Dev Mode measurements on the current page, or only those that start or end at one node. Dev Mode only. At most ${MAX_NODES} are returned; count is the full number and truncated says whether some were left out.`, {
+    nodeId: z2.string().min(1).optional().describe("Only measurements starting or ending at this node (on the current page)")
+  }, async ({ nodeId }) => {
+    try {
+      return text3(await sendCommandToFigma2("get_measurements", nodeId === undefined ? {} : { nodeId }));
+    } catch (error) {
+      return text3(`Error getting measurements: ${message2(error)}`);
+    }
+  });
+}
+
 // src/llm2figma_mcp/server.ts
 var server = new McpServer({
   name: "llm2figma",
@@ -25902,6 +25991,7 @@ registerTools27(server);
 registerSetupTools(server);
 registerFeature("FLOWS", registerFlowTools);
 registerFeature("CODE_MAP", (s) => registerTools28(s));
+registerFeature("DEV_MODE", registerTools29);
 registerPrompts(server);
 async function main() {
   installFigmaPluginFiles();

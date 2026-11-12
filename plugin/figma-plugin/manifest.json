@@ -8,7 +8,11 @@
     "figma",
     "figjam",
     "slides",
-    "buzz"
+    "buzz",
+    "dev"
+  ],
+  "capabilities": [
+    "inspect"
   ],
   "enablePrivatePluginApi": true,
   "permissions": [

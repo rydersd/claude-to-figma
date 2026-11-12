@@ -162,7 +162,12 @@ export type FigmaCommand =
   | "place_image"
   | "assert_contained"
   | "snapshot_positions"
-  | "diff_positions";
+  | "diff_positions"
+  | "set_dev_status"
+  | "get_dev_resources"
+  | "add_dev_resource"
+  | "add_measurement"
+  | "get_measurements";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -526,6 +531,20 @@ export type CommandParams = {
     snapshotId: string;
     tolerance?: number;
   };
+  set_dev_status: {
+    nodeIds: string[];
+    status: { type: "READY_FOR_DEV" | "COMPLETED"; description?: string } | null;
+  };
+  get_dev_resources: { nodeId: string; includeChildren?: boolean };
+  add_dev_resource: { nodeId: string; url: string; name?: string };
+  add_measurement: {
+    startNodeId: string;
+    startSide: "TOP" | "RIGHT" | "BOTTOM" | "LEFT";
+    endNodeId: string;
+    endSide: "TOP" | "RIGHT" | "BOTTOM" | "LEFT";
+    offset?: { type: "INNER"; relative: number } | { type: "OUTER"; fixed: number };
+  };
+  get_measurements: { nodeId?: string };
   scan_node_styles: {
     nodeId: string;
     maxDepth?: number;

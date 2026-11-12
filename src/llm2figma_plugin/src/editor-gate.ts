@@ -1,5 +1,6 @@
 // Editor-type gate: the one place commands declare which Figma editors they run in.
-// Dev Mode is read-only, so every command that changes the document is refused there.
+// Dev Mode is read-only, so every command that changes the document is refused there,
+// except the Dev Mode writes declared in COMMAND_EDITORS.
 
 type EditorType = "figma" | "figjam" | "slides" | "buzz" | "dev";
 
@@ -24,7 +25,16 @@ const READ_ONLY = new Set([
 
 // Per-command overrides. Later commands that need a narrower set (for example
 // slide-only commands) declare it here.
-export const COMMAND_EDITORS: Record<string, EditorType[]> = {};
+export const COMMAND_EDITORS: Record<string, EditorType[]> = {
+  // L2F_DEV_MODE. Figma lets Dev Mode set dev status, add dev resources and add
+  // measurements even though it is otherwise read-only. Status and resources also work
+  // in the design editor; measurements (addMeasurement) only exist in Dev Mode.
+  set_dev_status: ["figma", "dev"],
+  get_dev_resources: ["figma", "dev"],
+  add_dev_resource: ["figma", "dev"],
+  add_measurement: ["dev"],
+  get_measurements: ["dev"],
+};
 
 export function allowedEditors(command: string): EditorType[] {
   return COMMAND_EDITORS[command] || (READ_ONLY.has(command) ? ALL_EDITORS : EDIT_EDITORS);

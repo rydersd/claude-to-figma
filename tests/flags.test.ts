@@ -59,10 +59,11 @@ describe("launch paths", () => {
     expect(Object.keys(env).sort()).toEqual([...FLAG_ENV_KEYS].sort());
     for (const key of FLAG_ENV_KEYS) expect(env[key]).toBe(`\${${key}:-}`);
   });
-  test("plugin manifest declares the private API and the slides and buzz editors", () => {
+  test("plugin manifest declares the private API, the slides and buzz editors, and Dev Mode", () => {
     const manifest = JSON.parse(readFileSync("src/llm2figma_plugin/manifest.json", "utf8"));
     expect(manifest.enablePrivatePluginApi).toBe(true);
-    expect(manifest.editorType).toEqual(["figma", "figjam", "slides", "buzz"]);
+    expect(manifest.editorType).toEqual(["figma", "figjam", "slides", "buzz", "dev"]);
+    expect(manifest.capabilities).toEqual(["inspect"]);
   });
 });
 

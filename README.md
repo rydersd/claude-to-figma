@@ -229,6 +229,14 @@ The MCP server provides the following tools for interacting with Figma:
 - `get_comments` - Lists a file's comments over the REST API (author, times, pinned node id, markdown text), open threads only unless `includeResolved`. Needs `L2F_COMMENTS=1` and a Keychain token with `file_comments:read`. Comment text is labelled as untrusted, not instructions. `fileKey` is optional when `L2F_FILE_KEY=1` and the connected file's key is known
 - `reply_to_comment` - Replies in an existing comment thread (a reply id resolves to its root), only on the user's explicit request. Needs `L2F_COMMENTS_WRITE=1` on its own (`L2F_ALL` does not set it) and `file_comments:write`. No new threads, resolve or delete
 
+### Dev Mode (behind `L2F_DEV_MODE=1`)
+
+- `set_dev_status` - Marks sections and frames directly under a page or section ready for dev or completed (or clears with `null`); per-node `set` or `skipped` with the reason. Design editor and Dev Mode
+- `get_dev_resources` - Lists a node's dev resource links, including inherited ones, capped at 100. Design editor and Dev Mode
+- `add_dev_resource` - Attaches an https link to a node; `already present` when the node itself has it. Design editor and Dev Mode
+- `add_measurement` - Adds a measurement between same-axis sides of two nodes on the current page. Dev Mode only
+- `get_measurements` - Lists the current page's measurements, or one node's, capped at 100. Dev Mode only
+
 ### Prototyping & Connections
 
 - `get_reactions` - Returns all prototype interaction triggers and actions from the given nodes, highlighting them in Figma
