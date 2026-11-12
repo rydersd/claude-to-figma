@@ -162,6 +162,7 @@ export type FigmaCommand =
   | "place_image"
   | "assert_contained"
   | "snapshot_positions"
+  | "export_spec"
   | "diff_positions";
 
 export type CommandParams = {
@@ -525,6 +526,12 @@ export type CommandParams = {
   diff_positions: {
     snapshotId: string;
     tolerance?: number;
+  };
+  export_spec: {
+    nodeId: string;
+    expect?: { fileKey?: string | null; fileName?: string | null; pageId?: string | null };
+    maxNodes?: number;
+    maxDepth?: number;
   };
   scan_node_styles: {
     nodeId: string;

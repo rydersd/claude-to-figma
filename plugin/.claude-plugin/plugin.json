@@ -21,10 +21,12 @@
         "L2F_COMPONENT_PROPERTIES": "${L2F_COMPONENT_PROPERTIES:-}",
         "L2F_GRID_LAYOUT": "${L2F_GRID_LAYOUT:-}",
         "L2F_VERIFY": "${L2F_VERIFY:-}",
+        "L2F_SPEC_SYNC": "${L2F_SPEC_SYNC:-}",
         "L2F_CODE_MAP": "${L2F_CODE_MAP:-}",
         "L2F_DEV_MODE": "${L2F_DEV_MODE:-}",
         "L2F_SLIDES": "${L2F_SLIDES:-}",
-        "L2F_TEXT_PATH": "${L2F_TEXT_PATH:-}"
+        "L2F_TEXT_PATH": "${L2F_TEXT_PATH:-}",
+        "L2F_SPEC_DIR": "${L2F_SPEC_DIR:-}"
       }
     }
   }
