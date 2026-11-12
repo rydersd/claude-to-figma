@@ -326,7 +326,7 @@ describe("spec sync plan (PR 11c)", () => {
       makeNode("RECTANGLE", { name: "Added" }, byName("Row"));
       const result = await plan();
       expect(result.operations).toEqual([]);
-      expect(result.conflicts[0]).toMatchObject({ id: byName("Row").id, kind: "remove", detail: "not removed: nodes were added inside it in Figma" });
+      expect(result.conflicts[0]).toMatchObject({ id: byName("Row").id, kind: "remove", detail: expect.stringContaining("which would be lost: Added (") });
     });
 
     test("id deleted from the Spec, already gone from Figma: converged", async () => {
@@ -679,8 +679,9 @@ describe("spec sync plan (PR 11c)", () => {
       };
       const spec = clone(base);
       spec.children[0].properties.Size = "Small";
+      // Only the changed key is written (setProperties takes a subset).
       expect(threeWay(base, spec).operations).toEqual([
-        expect.objectContaining({ op: "update", id: "4:1", nodeType: "instance", set: { properties: { Size: "Small", "Label#4:1": "Pay" } } }),
+        expect.objectContaining({ op: "update", id: "4:1", nodeType: "instance", set: { properties: { Size: "Small" } } }),
       ]);
       delete spec.children[0].componentSetKey;
       expect(() => threeWay(base, spec)).toThrow("(4:1): componentSetKey cannot be removed");
@@ -894,6 +895,263 @@ describe("spec sync plan (PR 11c)", () => {
       result = await plan("screen.l2f.json");
       expect(result.counts).toMatchObject({ operations: 2, updates: 2, properties: 2, drift: 0, conflicts: 0 });
       expect(result.operations.map(o => [o.name, o.keys])).toEqual([["Fill 3", ["fillColor"]], ["T7.2", ["text"]]]);
+    });
+  });
+
+  describe("review fixes (spec stack review)", () => {
+    const pullTo = (node: any, path: string, extra: any = {}) => pullSpec({ nodeId: node.id, path, ...extra }, send as any, opts());
+    const zero = { operations: 0, drift: 0, conflicts: 0 };
+
+    describe("H1: a removal never takes a node the Spec does not also drop", () => {
+      test("M1: Figma moved a kept node into the node the Spec removes: conflict naming it, nothing removed", async () => {
+        const f = makeNode("FRAME", { name: "F" }, page);
+        const a = makeNode("FRAME", { name: "A" }, f);
+        const b = makeNode("RECTANGLE", { name: "B" }, f);
+        const { path } = await pullTo(f, "m1.l2f.json");
+        a.appendChild(b);
+        editSpec(path, spec => { spec.tree.children = spec.tree.children.filter((c: any) => c.name !== "A"); });
+        const result = await plan("m1.l2f.json");
+        expect(result.operations).toEqual([]);
+        expect(result.conflicts).toEqual([{ id: a.id, name: "A", kind: "remove", detail: expect.stringContaining(`which would be lost: B (${b.id})`) }]);
+        expect(result.drift).toEqual([expect.objectContaining({ id: b.id, kind: "structure" })]);
+      });
+
+      test("M2: the Spec moves B out of A and removes A; a skipped move of B means A is not removed", async () => {
+        for (const order of [["B", "C"], ["C", "B"]]) {
+          freshFigma();
+          const f = makeNode("FRAME", { name: "F" }, page);
+          const a = makeNode("FRAME", { name: "A" }, f);
+          for (const name of order) makeNode("RECTANGLE", { name }, a);
+          const b = a.children.find((c: any) => c.name === "B");
+          const path = `m2-${order.join("")}.l2f.json`;
+          await pullTo(f, path);
+          a.children.reverse();
+          editSpec(join(dir, path), spec => { spec.tree.children = [spec.tree.children[0].children.find((c: any) => c.name === "B")]; });
+          const stored: any = store.get((await plan(path)).planId);
+          const ops = stored.operations.map((o: any) => `${o.op}:${o.name}`);
+          if (ops.includes("move:B")) {
+            // B leaves A first (moves run before removals), so nothing is lost.
+            expect(ops).toEqual(["move:B", "remove:A"]);
+          } else {
+            expect(ops).toEqual([]);
+            expect(stored.conflicts).toEqual(expect.arrayContaining([
+              expect.objectContaining({ id: b.id, kind: "structure" }),
+              expect.objectContaining({ id: a.id, kind: "remove", detail: expect.stringContaining(`B (${b.id})`) }),
+            ]));
+          }
+        }
+      });
+
+      test("the Spec moves B out and removes A, Figma untouched: one move, then the removal", async () => {
+        const f = makeNode("FRAME", { name: "F" }, page);
+        const a = makeNode("FRAME", { name: "A" }, f);
+        makeNode("RECTANGLE", { name: "B" }, a);
+        makeNode("RECTANGLE", { name: "C" }, a);
+        const { path } = await pullTo(f, "out.l2f.json");
+        editSpec(path, spec => { spec.tree.children = [spec.tree.children[0].children[0]]; });
+        const result = await plan("out.l2f.json");
+        expect(result.operations.map(o => `${o.op}:${o.name}`)).toEqual(["move:B", "remove:A"]);
+        expect(result.counts).toMatchObject({ conflicts: 0, drift: 0 });
+      });
+
+      test("an OpaqueNode or a truncated node moved into a removed subtree: conflict naming it", async () => {
+        const f = makeNode("FRAME", { name: "F" }, page);
+        const a = makeNode("FRAME", { name: "A" }, f);
+        const group = makeNode("GROUP", { name: "Logo" }, f);
+        makeNode("RECTANGLE", { name: "LogoPart" }, group);
+        const deep = makeNode("FRAME", { name: "Deep" }, f);
+        const x = makeNode("RECTANGLE", { name: "X" }, deep);
+        // maxDepth 1: X is a truncated placeholder in the Spec and the SpecLock.
+        const { path } = await pullTo(f, "opaque.l2f.json", { maxDepth: 1 });
+        expect(readJson(path).tree.children[2].children[0]).toMatchObject({ id: x.id, type: "$opaque", truncated: true });
+        a.appendChild(group);
+        a.appendChild(x);
+        editSpec(path, spec => { spec.tree.children = spec.tree.children.filter((c: any) => c.name !== "A"); });
+        const result = await plan("opaque.l2f.json");
+        expect(result.counts.removes).toBe(0);
+        const conflict = result.conflicts.find(c => c.id === a.id)!;
+        expect(conflict).toMatchObject({ kind: "remove" });
+        expect(conflict.detail).toContain(`Logo (${group.id})`);
+        expect(conflict.detail).toContain(`X (${x.id})`);
+      });
+    });
+
+    describe("H2: a value Figma holds that the Spec cannot express is $unread, never its default", () => {
+      // One node per unreadable case, each next to a readable one.
+      function unreadableDesign() {
+        const mixed = (globalThis as any).figma.mixed;
+        const f = makeNode("FRAME", { name: "F", fills: solid(1, 1, 1) }, page);
+        const cases: Record<string, string[]> = {};
+        const add = (keys: string[], type: string, extra: any) => { makeNode(type, extra, f); cases[extra.name] = keys; };
+        add(["fillColor"], "RECTANGLE", { name: "Gradient", fills: [{ type: "GRADIENT_LINEAR", gradientStops: [] }] });
+        add(["fillColor"], "RECTANGLE", { name: "TwoPaints", fills: [...solid(1, 0, 0), ...solid(0, 1, 0)] });
+        add(["fillColor"], "RECTANGLE", { name: "Unresolved", fills: [{ ...solid(1, 0, 0)[0], boundVariables: { color: { type: "VARIABLE_ALIAS", id: "gone" } } }] });
+        add(["strokeColor", "strokeWeight"], "RECTANGLE", { name: "Strokes", strokes: [{ type: "GRADIENT_RADIAL", gradientStops: [] }], strokeWeight: mixed });
+        add(["cornerRadius"], "FRAME", { name: "Corners", cornerRadius: mixed });
+        add(["effects"], "RECTANGLE", { name: "Noise", effects: [{ type: "NOISE" }] });
+        add(["fontSize"], "TEXT", { name: "Fractional", characters: "a", fontSize: 14.5 });
+        add(["letterSpacing"], "TEXT", { name: "Percent", characters: "b", letterSpacing: { unit: "PERCENT", value: 5 } });
+        add(["lineHeight"], "TEXT", { name: "LinePct", characters: "c", lineHeight: { unit: "PERCENT", value: 150 } });
+        add(["fontColor"], "TEXT", { name: "TextGrad", characters: "d", fills: [{ type: "GRADIENT_LINEAR", gradientStops: [] }] });
+        add(["pathData", "strokeCap"], "VECTOR", {
+          name: "Paths", vectorPaths: [{ windingRule: "NONZERO", data: "M 0 0 L 1 1" }, { windingRule: "NONZERO", data: "M 2 2 L 3 3" }],
+          vectorNetwork: { vertices: [{ strokeCap: "ROUND" }, { strokeCap: "NONE" }] },
+        });
+        add([], "TEXT", { name: "AutoLine", characters: "e", lineHeight: { unit: "AUTO" } });
+        return { f, cases };
+      }
+
+      test("each unreadable case is listed, sorted, in its node's $unread, in the Spec and the SpecLock (and its hash)", async () => {
+        const { cases } = unreadableDesign();
+        const { path, lockPath } = await pullTo(nodes.get("2:1"), "unread.l2f.json");
+        const spec = readJson(path);
+        const lock = readJson(lockPath);
+        for (const [name, keys] of Object.entries(cases)) {
+          const node = spec.tree.children.find((c: any) => c.name === name);
+          expect([name, node.$unread]).toEqual([name, keys.length ? keys : undefined]);
+          for (const key of keys) expect(node[key]).toBeUndefined();
+          expect(lock.nodes[node.id].props.$unread).toEqual(node.$unread);
+          const { id: _id, children: _c, ...props } = node;
+          expect(lock.nodes[node.id].propsHash).toBe(hashProps(props));
+        }
+      });
+
+      test("zero-op: pulled and planned untouched, every unreadable case gives 0 operations, 0 drift, 0 conflicts", async () => {
+        const { f } = unreadableDesign();
+        await pullTo(f, "zero.l2f.json");
+        expect((await plan("zero.l2f.json")).counts).toMatchObject(zero);
+      });
+
+      test("an unrelated edit on each unreadable node plans only that edit", async () => {
+        const { f, cases } = unreadableDesign();
+        const { path } = await pullTo(f, "rename.l2f.json");
+        editSpec(path, spec => { for (const c of spec.tree.children) c.opacity = 0.5; });
+        const result = await plan("rename.l2f.json");
+        expect(result.counts).toMatchObject({ updates: Object.keys(cases).length, properties: Object.keys(cases).length, drift: 0, conflicts: 0 });
+        for (const op of store.get(result.planId).operations as any[]) expect(op.set).toEqual({ opacity: 0.5 });
+      });
+
+      test("E3: setting an unread key, even to its default value, is a conflict, never an update", async () => {
+        const { f } = unreadableDesign();
+        const { path } = await pullTo(f, "e3.l2f.json");
+        editSpec(path, (_s, find) => {
+          find("Gradient").fillColor = "#D9D9D9";
+          find("Strokes").strokeWeight = 1;
+          find("Fractional").fontSize = 14;
+          find("Percent").letterSpacing = 0;
+          find("Corners").cornerRadius = 0;
+        });
+        const result = await plan("e3.l2f.json");
+        expect(result.counts).toMatchObject({ operations: 0, drift: 0, conflicts: 5 });
+        const byNode = Object.fromEntries(result.conflicts.map(c => [c.name, c.keys]));
+        expect(byNode).toEqual({ Gradient: ["fillColor"], Strokes: ["strokeWeight"], Fractional: ["fontSize"], Percent: ["letterSpacing"], Corners: ["cornerRadius"] });
+        for (const c of result.conflicts) expect(c.detail).toContain("Figma holds a value the Spec cannot express");
+      });
+
+      test("E2: Figma turns a white fill into a gradient: drift; a Spec fill edit then is a conflict, not an update", async () => {
+        const f = makeNode("FRAME", { name: "F", fills: solid(1, 1, 1) }, page);
+        const { path } = await pullTo(f, "e2.l2f.json");
+        expect(readJson(path).tree.$unread).toBeUndefined();
+        f.fills = [{ type: "GRADIENT_LINEAR", gradientStops: [] }];
+        let result = await plan("e2.l2f.json");
+        expect(result.operations).toEqual([]);
+        expect(result.drift).toEqual([{ id: f.id, name: "F", kind: "property", keys: ["fillColor"] }]);
+        editSpec(path, spec => { spec.tree.fillColor = "#FF0000"; });
+        result = await plan("e2.l2f.json");
+        expect(result.counts).toMatchObject({ operations: 0, updates: 0, conflicts: 1 });
+        expect(result.conflicts).toEqual([{ id: f.id, name: "F", kind: "property", keys: ["fillColor"] }]);
+      });
+
+      test("a key leaving the live $unread (gradient back to a solid) is drift on that key", async () => {
+        const f = makeNode("FRAME", { name: "F", fills: [{ type: "GRADIENT_LINEAR", gradientStops: [] }] }, page);
+        await pullTo(f, "back.l2f.json");
+        f.fills = solid(0, 0, 1);
+        const result = await plan("back.l2f.json");
+        expect(result.operations).toEqual([]);
+        expect(result.drift).toEqual([{ id: f.id, name: "F", kind: "property", keys: ["fillColor"] }]);
+      });
+
+      test("a Spec that edits or removes $unread, or gives one to a new node, is an error", async () => {
+        const f = makeNode("FRAME", { name: "F", fills: [{ type: "GRADIENT_LINEAR", gradientStops: [] }] }, page);
+        const { path } = await pullTo(f, "edit.l2f.json");
+        editSpec(path, spec => { delete spec.tree.$unread; });
+        await expect(plan("edit.l2f.json")).rejects.toThrow(`(${f.id}): $unread cannot be edited or removed`);
+        editSpec(path, spec => { spec.tree.$unread = ["fillColor", "strokeColor"]; });
+        await expect(plan("edit.l2f.json")).rejects.toThrow("$unread cannot be edited or removed");
+        editSpec(path, spec => { spec.tree.$unread = "fillColor"; });
+        await expect(plan("edit.l2f.json")).rejects.toThrow("must be the list of keys the pull recorded");
+        editSpec(path, spec => { spec.tree.$unread = ["fillColor"]; spec.tree.children = [{ type: "rectangle", $unread: ["fillColor"] }]; });
+        await expect(plan("edit.l2f.json")).rejects.toThrow("a new node cannot carry $unread");
+        expect(sent.filter(m => m.command === "read_spec_nodes")).toEqual([]);
+      });
+    });
+
+    describe("M: errors stay small", () => {
+      test("values, key lists, type strings and ids in errors are clipped; lists stop at 10 with a count", async () => {
+        const f = makeNode("FRAME", { name: "F" }, page);
+        const { path } = await pullTo(f, "big.l2f.json");
+        editSpec(path, spec => { for (let k = 0; k < 2000; k++) spec.tree["stray" + "x".repeat(200) + k] = 1; });
+        let message = await plan("big.l2f.json").then(() => "", (e: Error) => e.message);
+        expect(message).toContain("and 1990 more cannot be written on a frame node");
+        expect(message.length).toBeLessThan(1200);
+        editSpec(path, spec => {
+          for (const key of Object.keys(spec.tree)) if (key.startsWith("stray")) delete spec.tree[key];
+          spec.tree.children = [{ type: "y".repeat(300000) }, { id: "z".repeat(100000), type: "rectangle" }, { type: "rectangle", fillColor: { g: "q".repeat(100000) } }];
+          spec.fileName = "w".repeat(100000);
+        });
+        message = await plan("big.l2f.json").then(() => "", (e: Error) => e.message);
+        expect(message).toContain("Unknown Spec node type");
+        expect(message).toContain("the SpecLock does not know this id");
+        expect(message).toContain("is not a colour");
+        expect(message.length).toBeLessThan(1200);
+      });
+    });
+
+    describe("lows", () => {
+      const instance = (props: Record<string, any>) => {
+        const set = { type: "COMPONENT_SET", id: "set1", key: "setkey" };
+        return makeNode("INSTANCE", {
+          name: "I", main: { id: "v1", key: "k", remote: true, type: "COMPONENT", parent: set },
+          componentProperties: Object.fromEntries(Object.entries(props).map(([k, v]) => [k, { type: k.includes("#") ? "TEXT" : "VARIANT", value: v }])),
+        }, page);
+      };
+
+      test("E4: deleting properties, or one key of it, is an error 'cannot be removed'", async () => {
+        const i = instance({ State: "On", "Label#1:2": "Go" });
+        const { path } = await pullTo(i, "e4.l2f.json");
+        editSpec(path, spec => { delete spec.tree.properties; });
+        await expect(plan("e4.l2f.json")).rejects.toThrow(`(${i.id}): properties cannot be removed`);
+        editSpec(path, spec => { spec.tree.properties = { State: "On" }; });
+        await expect(plan("e4.l2f.json")).rejects.toThrow('properties key "Label#1:2" cannot be removed');
+      });
+
+      test("E6: properties compare key by key: a Spec edit to A and a Figma edit to B are one update and one drift", async () => {
+        const i = instance({ "A#1": "a", "B#2": "b" });
+        const { path } = await pullTo(i, "e6.l2f.json");
+        i.componentProperties["B#2"].value = "changed in Figma";
+        editSpec(path, spec => { spec.tree.properties["A#1"] = "edited"; });
+        const result = await plan("e6.l2f.json");
+        expect(result.counts).toMatchObject({ operations: 1, updates: 1, drift: 1, conflicts: 0 });
+        expect(store.get(result.planId).operations).toEqual([expect.objectContaining({ id: i.id, set: { properties: { "A#1": "edited" } } })]);
+        expect(result.drift).toEqual([{ id: i.id, name: "I", kind: "property", keys: ["properties.B#2"] }]);
+        editSpec(path, spec => { spec.tree.properties["B#2"] = "mine"; });
+        expect((await plan("e6.l2f.json")).conflicts).toEqual([{ id: i.id, name: "I", kind: "property", keys: ["properties.B#2"] }]);
+      });
+
+      test("deleting a key whose base value is its default plans nothing", async () => {
+        const f = makeNode("FRAME", { name: "F" }, page);
+        const r = makeNode("RECTANGLE", { name: "R", x: 0, y: 0, width: 100, height: 100 }, f);
+        const s2 = makeNode("RECTANGLE", { name: "S", x: 30, y: 0, width: 100, height: 100 }, f);
+        const { path } = await pullTo(f, "dflt.l2f.json");
+        expect(readJson(path).tree.children[0]).toMatchObject({ x: 0, y: 0, width: 100, height: 100 });
+        editSpec(path, (_s, find) => { const n = find("R"); delete n.x; delete n.y; delete n.width; delete n.height; });
+        expect((await plan("dflt.l2f.json")).counts).toMatchObject(zero);
+        // A non-default value deleted still resets to the default.
+        editSpec(path, (_s, find) => { delete find("S").x; });
+        const result = await plan("dflt.l2f.json");
+        expect(store.get(result.planId).operations).toEqual([expect.objectContaining({ id: s2.id, set: { x: 0 } })]);
+        expect(r.x).toBe(0);
+      });
     });
   });
 });

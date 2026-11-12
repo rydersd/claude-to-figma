@@ -3,13 +3,15 @@
 // property here is in SPEC_VOCABULARY, which both can write back. What cannot
 // be read faithfully is left out here (figma.mixed values, paint lists with
 // more than one visible paint or a non-solid paint, ambiguous variables,
-// non-pixel line height and letter spacing, disagreeing stroke caps, multi-path
-// vectors); text with more than one style is an OpaqueNode. The shared
-// normaliser (src/shared/spec.ts) then drops derived values and defaults.
+// non-pixel line height and letter spacing, fractional font sizes, disagreeing
+// stroke caps, multi-path vectors) and its key listed in the node's `$unread`,
+// so an absent key is never mistaken for its default; text with more than one
+// style is an OpaqueNode. The shared normaliser (src/shared/spec.ts) then drops
+// derived values and defaults.
 // `figma` is a global provided by the Figma plugin runtime.
 
 import { WALK_LIMITS } from "../../shared/walk";
-import { NO_PAINT, OPAQUE_TYPE, colorToHex, lockNodesFromTree, normalizeNode, round2, type ParentLayout, type SpecType } from "../../shared/spec";
+import { NO_PAINT, OPAQUE_TYPE, UNREAD_KEY, colorToHex, lockNodesFromTree, normalizeNode, round2, type ParentLayout, type SpecType } from "../../shared/spec";
 import { getVariableByName, sendProgressUpdate } from "./utils";
 
 const SPEC_TYPE_OF: Record<string, SpecType> = {
@@ -180,11 +182,19 @@ function common(node: any, type: SpecType): Record<string, unknown> {
   };
 }
 
-async function paintedProps(node: any, cache: SpecReadCache): Promise<Record<string, unknown>> {
+// Records a key whose Figma value the format cannot express: `value` is
+// undefined because it could not be read, not because it is absent.
+type Unread = (key: string, value: unknown) => unknown;
+function unreadList(): { unread: string[]; mark: Unread } {
+  const unread: string[] = [];
+  return { unread, mark: (key, value) => { if (value === undefined) unread.push(key); return value; } };
+}
+
+async function paintedProps(node: any, cache: SpecReadCache, mark: Unread): Promise<Record<string, unknown>> {
   return {
     width: node.width, height: node.height,
-    fillColor: await solidColor(node.fills, cache), strokeColor: await solidColor(node.strokes, cache),
-    strokeWeight: notMixed(node.strokeWeight), strokeAlign: node.strokeAlign, effects: readEffects(node.effects),
+    fillColor: mark("fillColor", await solidColor(node.fills, cache)), strokeColor: mark("strokeColor", await solidColor(node.strokes, cache)),
+    strokeWeight: mark("strokeWeight", notMixed(node.strokeWeight)), strokeAlign: node.strokeAlign, effects: mark("effects", readEffects(node.effects)),
   };
 }
 
@@ -222,48 +232,66 @@ function flatProperties(node: any): Record<string, unknown> {
 export type SpecRead = { props: Record<string, unknown> } | { opaque: string };
 
 // A node's properties in Spec vocabulary, before normalisation, or the reason
-// it is an OpaqueNode.
+// it is an OpaqueNode. Keys left out because their value cannot be expressed
+// are listed, sorted, in `$unread`.
 export async function readSpecNode(node: any, cache: SpecReadCache): Promise<SpecRead> {
+  const read = await readSpecValues(node, cache);
+  if ("props" in read && read.unread.length) read.props[UNREAD_KEY] = [...read.unread].sort();
+  return "props" in read ? { props: read.props } : read;
+}
+
+async function readSpecValues(node: any, cache: SpecReadCache): Promise<{ props: Record<string, unknown>; unread: string[] } | { opaque: string }> {
   const reason = opaqueReason(node);
   if (reason) return { opaque: reason };
   const type = SPEC_TYPE_OF[node.type];
+  const { unread, mark } = unreadList();
+  const props = await readByType(node, type, cache, mark);
+  return props ? { props, unread } : { opaque: "main component missing" };
+}
+
+async function readByType(node: any, type: SpecType, cache: SpecReadCache, mark: Unread): Promise<Record<string, unknown> | null> {
   switch (type) {
     case "frame":
-      return { props: {
-        ...common(node, type), ...(await paintedProps(node, cache)),
-        cornerRadius: notMixed(node.cornerRadius), clipsContent: node.clipsContent, layoutMode: node.layoutMode,
+      return {
+        ...common(node, type), ...(await paintedProps(node, cache, mark)),
+        cornerRadius: mark("cornerRadius", notMixed(node.cornerRadius)), clipsContent: node.clipsContent, layoutMode: node.layoutMode,
         layoutWrap: node.layoutWrap, paddingTop: node.paddingTop, paddingRight: node.paddingRight,
         paddingBottom: node.paddingBottom, paddingLeft: node.paddingLeft, primaryAxisAlignItems: node.primaryAxisAlignItems,
         counterAxisAlignItems: node.counterAxisAlignItems, itemSpacing: node.itemSpacing,
         counterAxisSpacing: node.counterAxisSpacing, itemReverseZIndex: node.itemReverseZIndex,
-      } };
+      };
     case "rectangle":
-      return { props: { ...common(node, type), ...(await paintedProps(node, cache)), cornerRadius: notMixed(node.cornerRadius) } };
+      return { ...common(node, type), ...(await paintedProps(node, cache, mark)), cornerRadius: mark("cornerRadius", notMixed(node.cornerRadius)) };
     case "vector":
-      return { props: { ...common(node, type), ...(await paintedProps(node, cache)), strokeCap: sharedStrokeCap(node), pathData: singlePath(node) } };
+      return {
+        ...common(node, type), ...(await paintedProps(node, cache, mark)),
+        strokeCap: mark("strokeCap", sharedStrokeCap(node)), pathData: mark("pathData", singlePath(node)),
+      };
     case "text": {
       const letterSpacing = node.letterSpacing && node.letterSpacing.unit === "PERCENT" && node.letterSpacing.value === 0
         ? 0 : pixels(node.letterSpacing);
-      return { props: {
+      // AUTO line height is the absent default; any other non-pixel value is unread.
+      const lineHeight = node.lineHeight && node.lineHeight.unit === "AUTO" ? undefined : mark("lineHeight", pixels(node.lineHeight));
+      // The write path is whole pixels only.
+      const fontSize = typeof node.fontSize === "number" && Number.isInteger(round2(node.fontSize)) ? node.fontSize : mark("fontSize", undefined);
+      return {
         ...common(node, type),
         // An auto-renamed layer follows its characters: its name is not its own.
         name: node.autoRename === true ? undefined : node.name,
         text: node.characters, textAlignHorizontal: node.textAlignHorizontal, textAutoResize: node.textAutoResize,
-        width: node.width, height: node.height, effects: readEffects(node.effects),
+        width: node.width, height: node.height, effects: mark("effects", readEffects(node.effects)),
         fontFamily: node.fontName && node.fontName.family, fontStyle: node.fontName && node.fontName.style,
-        fontSize: node.fontSize, fontColor: await solidColor(node.fills, cache), lineHeight: pixels(node.lineHeight),
-        letterSpacing, textCase: node.textCase,
-      } };
+        fontSize, fontColor: mark("fontColor", await solidColor(node.fills, cache)), lineHeight,
+        letterSpacing: mark("letterSpacing", letterSpacing), textCase: node.textCase,
+      };
     }
     case "instance": {
       const main: any = await cache.mainComponent(node);
-      if (!main) return { opaque: "main component missing" };
-      return { props: {
+      if (!main) return null;
+      return {
         ...common(node, type), ...cache.componentSource(main), properties: flatProperties(node), width: node.width, height: node.height,
-      } };
+      };
     }
-    default:
-      return { opaque: "unsupported type" };
   }
 }
 

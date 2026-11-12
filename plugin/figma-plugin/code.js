@@ -63,6 +63,7 @@
   // src/shared/spec.ts
   var SPEC_TYPES = ["frame", "text", "rectangle", "vector", "instance"];
   var OPAQUE_TYPE = "$opaque";
+  var UNREAD_KEY = "$unread";
   var NO_PAINT = "#00000000";
   var COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning"];
   var SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
@@ -223,8 +224,27 @@
     "textAutoResize",
     "pathData",
     "pathHash",
-    "properties"
+    "properties",
+    UNREAD_KEY
   ];
+  var MAX_SHOWN_CHARS = 80;
+  var MAX_SHOWN_ITEMS = 10;
+  function clip(text, max = MAX_SHOWN_CHARS) {
+    return text.length > max ? text.slice(0, max - 3) + "..." : text;
+  }
+  function showValue(value) {
+    let text;
+    try {
+      text = JSON.stringify(value) ?? String(value);
+    } catch {
+      text = String(value);
+    }
+    return clip(text);
+  }
+  function showList(items) {
+    const shown = items.slice(0, MAX_SHOWN_ITEMS).map((item) => clip(String(item))).join(", ");
+    return items.length > MAX_SHOWN_ITEMS ? `${shown} and ${items.length - MAX_SHOWN_ITEMS} more` : shown;
+  }
   function fontWeightToStyle(weight) {
     switch (weight) {
       case 100:
@@ -321,6 +341,43 @@
     if (key === "properties") return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : void 0;
     return value;
   }
+  var STRUCTURAL_KEYS = /* @__PURE__ */ new Set(["id", "type", "children", UNREAD_KEY]);
+  var SHORTHANDS = { text: ["fontWeight"] };
+  var OPAQUE_KEYS = /* @__PURE__ */ new Set(["id", "type", "name", "nodeType", "truncated", "reason", "children"]);
+  function strictProblem(node) {
+    const type = node.type;
+    if (type === OPAQUE_TYPE) {
+      const stray2 = Object.keys(node).filter((k) => !OPAQUE_KEYS.has(k));
+      return stray2.length ? `${showList(stray2)} cannot be written on a ${OPAQUE_TYPE} node` : null;
+    }
+    if (!SPEC_TYPES.includes(type)) return `Unknown Spec node type: ${showValue(type)}`;
+    const allowed = /* @__PURE__ */ new Set([...SPEC_VOCABULARY[type], ...SHORTHANDS[type] ?? []]);
+    const stray = Object.keys(node).filter((k) => !STRUCTURAL_KEYS.has(k) && !allowed.has(k));
+    if (stray.length) return `${showList(stray)} cannot be written on a ${type} node`;
+    const bad = [];
+    const unread = node[UNREAD_KEY];
+    if (unread !== void 0 && (!Array.isArray(unread) || unread.some((k) => typeof k !== "string"))) {
+      bad.push(`${UNREAD_KEY} ${showValue(unread)} must be the list of keys the pull recorded`);
+    }
+    for (const key of SPEC_VOCABULARY[type]) {
+      const value = node[key];
+      if (value === void 0) continue;
+      if (value === null) {
+        bad.push(`${key} is null (delete the key to mean its default)`);
+        continue;
+      }
+      if (COLOR_KEYS.has(key) && typeof value === "object" && !isVarPaint(value) && !("r" in value)) {
+        bad.push(`${key} ${showValue(value)} is not a colour`);
+      } else if (canonicalValue(key, value) === void 0) {
+        bad.push(`${key} ${showValue(value)} cannot be written`);
+      } else if (key === "fontSize" && !Number.isInteger(canonicalValue(key, value))) {
+        bad.push(`fontSize ${showValue(value)} must be a whole number of pixels`);
+      }
+    }
+    if (!bad.length) return null;
+    const more = bad.length > MAX_SHOWN_ITEMS ? `; and ${bad.length - MAX_SHOWN_ITEMS} more` : "";
+    return bad.slice(0, MAX_SHOWN_ITEMS).join("; ") + more;
+  }
   var isAutoLayout = (layoutMode) => typeof layoutMode === "string" && layoutMode !== "NONE";
   function orderKeys(props) {
     const out = {};
@@ -328,7 +385,11 @@
     for (const key of Object.keys(props).sort()) if (!(key in out) && props[key] !== void 0) out[key] = props[key];
     return out;
   }
-  function normalizeNode(node, parent = {}) {
+  function normalizeNode(node, parent = {}, options = {}) {
+    if (options.strict) {
+      const problem = strictProblem(node);
+      if (problem) throw new Error(problem);
+    }
     if (node.type === OPAQUE_TYPE) {
       return orderKeys({
         type: OPAQUE_TYPE,
@@ -339,7 +400,7 @@
       });
     }
     const type = node.type;
-    if (!SPEC_TYPES.includes(type)) throw new Error(`Unknown Spec node type: ${JSON.stringify(node.type)}`);
+    if (!SPEC_TYPES.includes(type)) throw new Error(`Unknown Spec node type: ${showValue(node.type)}`);
     const src = { ...node };
     if (type === "text") {
       if (src.fontStyle === void 0 && src.fontWeight !== void 0) src.fontStyle = fontWeightToStyle(Number(src.fontWeight));
@@ -355,6 +416,8 @@
       const value = canonicalValue(key, src[key]);
       if (value !== void 0) out[key] = value;
     }
+    const unread = Array.isArray(src[UNREAD_KEY]) ? [...new Set(src[UNREAD_KEY].filter((k) => typeof k === "string"))].sort() : [];
+    if (unread.length) out[UNREAD_KEY] = unread;
     if (isAutoLayout(parent.layoutMode) && out.layoutPositioning !== "ABSOLUTE") {
       delete out.x;
       delete out.y;
@@ -374,7 +437,7 @@
     if (typeof out.fontSize === "number" && !Number.isInteger(out.fontSize)) delete out.fontSize;
     const defaults = SPEC_DEFAULTS[type];
     for (const key of Object.keys(out)) {
-      if (key === "type" || NEVER_DROPPED.has(key) || !(key in defaults)) continue;
+      if (key === "type" || NEVER_DROPPED.has(key) || !(key in defaults) || unread.includes(key)) continue;
       if (stableStringify(out[key]) === stableStringify(defaults[key])) delete out[key];
     }
     return orderKeys(out);
@@ -8935,15 +8998,22 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       layoutSizingVertical: node.layoutSizingVertical
     };
   }
-  async function paintedProps(node, cache) {
+  function unreadList() {
+    const unread = [];
+    return { unread, mark: (key, value) => {
+      if (value === void 0) unread.push(key);
+      return value;
+    } };
+  }
+  async function paintedProps(node, cache, mark) {
     return {
       width: node.width,
       height: node.height,
-      fillColor: await solidColor(node.fills, cache),
-      strokeColor: await solidColor(node.strokes, cache),
-      strokeWeight: notMixed(node.strokeWeight),
+      fillColor: mark("fillColor", await solidColor(node.fills, cache)),
+      strokeColor: mark("strokeColor", await solidColor(node.strokes, cache)),
+      strokeWeight: mark("strokeWeight", notMixed(node.strokeWeight)),
       strokeAlign: node.strokeAlign,
-      effects: readEffects(node.effects)
+      effects: mark("effects", readEffects(node.effects))
     };
   }
   function sharedStrokeCap(node) {
@@ -8971,15 +9041,25 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     return out;
   }
   async function readSpecNode(node, cache) {
+    const read = await readSpecValues(node, cache);
+    if ("props" in read && read.unread.length) read.props[UNREAD_KEY] = [...read.unread].sort();
+    return "props" in read ? { props: read.props } : read;
+  }
+  async function readSpecValues(node, cache) {
     const reason = opaqueReason(node);
     if (reason) return { opaque: reason };
     const type = SPEC_TYPE_OF[node.type];
+    const { unread, mark } = unreadList();
+    const props = await readByType(node, type, cache, mark);
+    return props ? { props, unread } : { opaque: "main component missing" };
+  }
+  async function readByType(node, type, cache, mark) {
     switch (type) {
       case "frame":
-        return { props: {
+        return {
           ...common(node, type),
-          ...await paintedProps(node, cache),
-          cornerRadius: notMixed(node.cornerRadius),
+          ...await paintedProps(node, cache, mark),
+          cornerRadius: mark("cornerRadius", notMixed(node.cornerRadius)),
           clipsContent: node.clipsContent,
           layoutMode: node.layoutMode,
           layoutWrap: node.layoutWrap,
@@ -8992,14 +9072,21 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           itemSpacing: node.itemSpacing,
           counterAxisSpacing: node.counterAxisSpacing,
           itemReverseZIndex: node.itemReverseZIndex
-        } };
+        };
       case "rectangle":
-        return { props: { ...common(node, type), ...await paintedProps(node, cache), cornerRadius: notMixed(node.cornerRadius) } };
+        return { ...common(node, type), ...await paintedProps(node, cache, mark), cornerRadius: mark("cornerRadius", notMixed(node.cornerRadius)) };
       case "vector":
-        return { props: { ...common(node, type), ...await paintedProps(node, cache), strokeCap: sharedStrokeCap(node), pathData: singlePath(node) } };
+        return {
+          ...common(node, type),
+          ...await paintedProps(node, cache, mark),
+          strokeCap: mark("strokeCap", sharedStrokeCap(node)),
+          pathData: mark("pathData", singlePath(node))
+        };
       case "text": {
         const letterSpacing = node.letterSpacing && node.letterSpacing.unit === "PERCENT" && node.letterSpacing.value === 0 ? 0 : pixels(node.letterSpacing);
-        return { props: {
+        const lineHeight = node.lineHeight && node.lineHeight.unit === "AUTO" ? void 0 : mark("lineHeight", pixels(node.lineHeight));
+        const fontSize = typeof node.fontSize === "number" && Number.isInteger(round2(node.fontSize)) ? node.fontSize : mark("fontSize", void 0);
+        return {
           ...common(node, type),
           // An auto-renamed layer follows its characters: its name is not its own.
           name: node.autoRename === true ? void 0 : node.name,
@@ -9008,29 +9095,27 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           textAutoResize: node.textAutoResize,
           width: node.width,
           height: node.height,
-          effects: readEffects(node.effects),
+          effects: mark("effects", readEffects(node.effects)),
           fontFamily: node.fontName && node.fontName.family,
           fontStyle: node.fontName && node.fontName.style,
-          fontSize: node.fontSize,
-          fontColor: await solidColor(node.fills, cache),
-          lineHeight: pixels(node.lineHeight),
-          letterSpacing,
+          fontSize,
+          fontColor: mark("fontColor", await solidColor(node.fills, cache)),
+          lineHeight,
+          letterSpacing: mark("letterSpacing", letterSpacing),
           textCase: node.textCase
-        } };
+        };
       }
       case "instance": {
         const main = await cache.mainComponent(node);
-        if (!main) return { opaque: "main component missing" };
-        return { props: {
+        if (!main) return null;
+        return {
           ...common(node, type),
           ...cache.componentSource(main),
           properties: flatProperties(node),
           width: node.width,
           height: node.height
-        } };
+        };
       }
-      default:
-        return { opaque: "unsupported type" };
     }
   }
   function opaqueNode(node, reason, truncated = false) {

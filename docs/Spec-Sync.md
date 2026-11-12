@@ -11,6 +11,7 @@ Off unless the server is started with `L2F_SPEC_SYNC=1` (or `L2F_ALL=1`). Set th
 - **Spec**: `<name>.l2f.json`. Header `{l2fSpec: 1, fileKey, fileName, pageId, rootId}` and a `tree` in [create_node_tree](Create-Node-Tree.md) node format: text content is `text`, colours are `fillColor` / `strokeColor` / `fontColor` as hex or `$var:Collection/Name`. Every node pulled from Figma carries its `id`; a node without an `id` is one to create.
 - **SpecLock**: `<name>.l2f.lock.json`, beside the Spec. Do not edit it. It records what Figma held at the pull: `{l2fLock: 1, fileKey, fileName, pageId, rootId, pulledAt, specHash, supersededFrameId, pendingApply, nodes}`, where `nodes` maps each id to `{props, propsHash, parentId, children}`. `props` is the node as it appears in the Spec, without `id` and `children`, except that a vector's `pathData` is stored as `pathHash` (a hash of the canonical path) to keep the lock small; `propsHash` is the hash of that stored form (`hashProps(lockProps(props))` in `src/shared/spec.ts`). Child order is kept in `children`, not in `propsHash`.
 - **OpaqueNode**: a node the format cannot express, written as `{type: "$opaque", id, name, nodeType, reason}` with no children. Groups, ellipses, lines, stars, polygons, boolean operations, sections, components and component sets (`reason: "unsupported type"`), rotated nodes (`"rotated"`), grid-layout frames (`"grid layout"`), text whose characters carry more than one style (`"mixed-style text"`) and instances whose main component is gone (`"main component missing"`) are OpaqueNodes.
+- **`$unread`**: on an editable node, `"$unread": ["fillColor", "strokeWeight"]` (sorted) lists the keys whose Figma value the format cannot express (see [Not synced](#not-synced)), so the export left them out. An absent key listed there does **not** mean its default: Figma holds something the Spec cannot show. It is written by the pull only, and is part of the node's props, its SpecLock entry and its `propsHash`.
 - **Truncated OpaqueNode**: a node the export did not read because a budget ran out, `{type: "$opaque", id, name, nodeType, truncated: true, reason}` with `reason` one of `"node budget"`, `"depth limit"`, `"byte budget"`. It sits in its parent's `children` in its place, so every child list in a Spec is complete and a node that was not read never looks removed.
 
 ## `pull_spec`
@@ -84,7 +85,7 @@ What is left out as derived, never compared:
 
 ### Not synced
 
-Values the write path cannot reproduce are left out of an otherwise editable node: anything `figma.mixed` (unequal corner radii, individual stroke weights); `lineHeight` that is not in pixels, letter spacing in percent (other than 0) and fractional `fontSize`; paint lists with more than one paint, or a hidden, blended or non-solid paint; a colour bound to a variable whose `Collection/Name` does not resolve back to that variable; `strokeCap` unless every vertex agrees; `pathData` unless the vector has exactly one NONZERO path (it is written as Figma reads it back); effects with bound variables, progressive blur, "show shadow behind node" or a type other than drop shadow, inner shadow, layer blur and background blur. Not in the format at all: rotation, per-corner radii, constraints, min/max size, text decoration and other text styles outside the table, instance-swap properties, a vector's full network (several paths, per-vertex caps that differ), and anything inside an instance.
+Values the write path cannot reproduce are left out of an otherwise editable node, and their keys listed in the node's `$unread`: anything `figma.mixed` (unequal corner radii, individual stroke weights); `lineHeight` that is not in pixels, letter spacing in percent (other than 0) and fractional `fontSize`; paint lists with more than one paint, or a hidden, blended or non-solid paint; a colour bound to a variable whose `Collection/Name` does not resolve back to that variable; `strokeCap` unless every vertex agrees; `pathData` unless the vector has exactly one NONZERO path (it is written as Figma reads it back); effects with bound variables, progressive blur, "show shadow behind node" or a type other than drop shadow, inner shadow, layer blur and background blur. A line height of `AUTO` is the default and simply absent, not unread. Not in the format at all (and not listed in `$unread`): rotation, per-corner radii, constraints, min/max size, text decoration and other text styles outside the table, instance-swap properties, a vector's full network (several paths, per-vertex caps that differ), and anything inside an instance.
 
 ### Files and paths
 
@@ -135,16 +136,20 @@ Structure (parent and child order) is compared the same three ways:
 | Both moved it, to different places | `conflict` |
 | Id deleted from the Spec, unchanged in Figma | `remove` (the topmost node only; descendants travel with it) |
 | Id deleted from the Spec, and it is an OpaqueNode or holds one | `conflict` (`kind: "remove"`): its contents were never read; delete it in Figma |
-| Id deleted from the Spec, changed in Figma (itself, a descendant, or a node added inside it) | `conflict` |
+| Id deleted from the Spec, and Figma now has a node inside it the Spec does not also remove (added by hand, moved in from elsewhere, a node the Spec keeps, an OpaqueNode, a node the read cut off) | `conflict` (`kind: "remove"`) naming the nodes that would be lost. A node the plan moves out first (with its subtree) does not count |
+| Id deleted from the Spec, changed in Figma (itself or a descendant) | `conflict` |
 | Id deleted from the Spec, already gone from Figma | converged |
-| Id in the Spec, gone from the live subtree | `missing` (a conflict) |
+| Id in the Spec, gone from the live subtree | `missing` (a conflict), even when the Spec did not touch the node: deleting it in Figma is not taken as drift. Delete it from the Spec too (converged), or pull |
 | Node added in Figma by hand | left alone, reported as `drift` (`kind: "added"`) |
 
 Order changes are minimal: when siblings are reordered, only the nodes that left the longest run in the original order are moved (swapping two siblings is one move, and no update on the parent). A hand-added sibling does not count as a reorder of the others.
 
 Details:
 
-- **Absent means default.** A property you delete from a Spec node is set back to its `SPEC_DEFAULTS` value (a frame's fill to `#FFFFFF`, a rectangle's to `#D9D9D9`, `visible` to true), if the SpecLock had a value for it. A property left out because Figma derives it in its new context (a `width` after you set `layoutSizingHorizontal: "FILL"`, `x`/`y` after a move into auto-layout) is not reset. Deleting a property with no default (`name` on text that has a name, `componentKey`, `pathData`) is an error.
+- **Absent means default.** A property you delete from a Spec node is set back to its `SPEC_DEFAULTS` value (a frame's fill to `#FFFFFF`, a rectangle's to `#D9D9D9`, `visible` to true), if the SpecLock had a value for it. Deleting one whose SpecLock value already is the default (`x: 0`, a FIXED `width: 100`) plans nothing. A property left out because Figma derives it in its new context (a `width` after you set `layoutSizingHorizontal: "FILL"`, `x`/`y` after a move into auto-layout) is not reset. Deleting a property with no default (`name` on text that has a name, `componentKey`, `pathData`, an instance's `properties` or one of its keys) is an error.
+- **Unread values (`$unread`).** A key listed in a node's `$unread` is never written: setting it in the Spec, even to its default, is a conflict ("Figma holds a value the Spec cannot express"), never an update. A key entering or leaving the live `$unread` (Figma turns a solid fill into a gradient, or back) is drift on that key. Removing or editing `$unread` itself, or giving it to a new node, is an error.
+- **Instance `properties` key by key.** Each component property is compared on its own: a Spec edit to `A#1` and a Figma edit to `B#2` are one update (setting `A#1` only) and one drift (`properties.B#2`), not a conflict. An update's `properties` holds only the keys to write.
+- **Turning auto-layout off.** When the Spec sets `layoutMode` to `NONE` (or deletes it), the children's `x`/`y` absent from the Spec mean "keep": Figma leaves each child where auto-layout put it, and the plan writes no position. Set `x`/`y` on a child to place it.
 - **Turning auto-layout on.** When the Spec sets `layoutMode` (or `layoutWrap: "WRAP"`) and leaves padding, `itemSpacing`, `counterAxisSpacing` or `itemReverseZIndex` out, the update writes create's defaults (padding 10, `itemReverseZIndex` true), because Figma would keep padding 0. Geometry (`x`, `y`, `width`, `height`) that becomes required in a new context is never implied; Figma keeps the node where it is.
 - **Width and height travel together.** An update that changes only one of them carries the other at its live value, because Figma resizes both at once.
 - **Value forms.** Every value goes through the same normaliser as the pull (`canonicalValue` in `src/shared/spec.ts`): a bound colour at full opacity can be written as `"$var:Collection/Name"` or `{"$var": "Collection/Name", "opacity": 1}` and both compare equal; below full opacity the object form is kept. A value the normaliser cannot write (a colour that is not one, `null`, a fractional `fontSize`) is an error, not a silent reset to the default. The SpecLock stores a vector's path as `pathHash` (`lockProps`), so the Spec's `pathData` is compared by the same hash, and an update carries the `pathData`.
@@ -159,9 +164,12 @@ Details:
 - has an `id` containing `;` (a node inside an instance);
 - changes the root's `id`, a node's `type`, or the header (`fileKey`, `fileName`, `pageId`, `rootId`);
 - edits an OpaqueNode other than moving it, or gives children to anything but a frame;
-- has a key the node's type cannot write per `SPEC_VOCABULARY` (for example `fontSize` on a rectangle), or a value it cannot write;
+- has a key the node's type cannot write per `SPEC_VOCABULARY` (for example `fontSize` on a rectangle), or a value it cannot write (the Spec is normalised in strict mode, `normalizeNode(node, parent, {strict: true})`, which refuses instead of dropping);
+- removes or edits a node's `$unread`, or gives one to a new node;
 - places an existing node under a new one (apply the new parent first, pull, then move into it);
-- deletes a property that has no default (for example an instance's `componentKey`).
+- deletes a property that has no default (for example an instance's `componentKey`, its `properties`, or one key of them).
+
+Every value, key list and type string quoted in an error is clipped to about 80 characters, and lists stop at 10 items with a count of the rest.
 
 It also refuses when the SpecLock records an unfinished apply (`pendingApply`; pull again), when the Spec or SpecLock is missing, a symlink or not valid JSON, and when the connected file or page is not the Spec's (as for [Refusals](#refusals)).
 
@@ -197,3 +205,7 @@ Rules for its caller, from the plan's contract:
 
 - An update that sets `layoutSizingHorizontal` or `layoutSizingVertical` to FILL on a frame must also call `applyDeferredFill(node, spec, only, {checkParent: true})`: `updateNodeProperties` defers FILL on frames, and only that call writes it (the vocabulary parity test relies on it).
 - Before writing, recompute each touched node's `propsHash`, parent and children in the same plugin run and refuse on any difference from `expectedHashes`.
+- Normalise any Spec input with `normalizeNode(node, parent, {strict: true})` (or `normalizeSpecTree(tree, parent, {strict: true})`), never the default mode: the default mode silently drops keys and values it cannot write, which would read as "deleted" and reset them to their defaults. The default mode is for reads from Figma only.
+- Never write a key listed in a node's `$unread`; the Plan never lists one, and apply must not derive one either.
+- An update's `properties` is a subset: pass it to `setProperties` as is, never merged with the Spec's full `properties`.
+- Write the new SpecLock from the plugin's re-read after the run, never from the Spec. Values Figma derives differ from what the Spec said (a HUG width that becomes FIXED records the width Figma computed; a `$unread` set can change), and a SpecLock built from the Spec would report them as drift, or hide real drift, on the next plan.

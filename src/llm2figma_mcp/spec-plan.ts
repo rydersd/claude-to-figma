@@ -9,7 +9,7 @@
 // docs/Spec-Sync.md and the plan's "Spec sync" section for the tables.
 
 import {
-  OPAQUE_TYPE, SPEC_DEFAULTS, SPEC_TYPES, SPEC_VOCABULARY, canonicalValue, isVarPaint, lockProps, normalizeNode, normalizeSpecTree,
+  OPAQUE_TYPE, SPEC_DEFAULTS, UNREAD_KEY, clip, lockProps, normalizeNode, normalizeSpecTree, showList, showValue,
   stableStringify, type ParentLayout, type SpecFile, type SpecLockFile, type SpecType,
 } from "../shared/spec.js";
 
@@ -142,48 +142,19 @@ const GEOMETRY = new Set(["x", "y", "width", "height"]);
 // Every value on both sides has been through normalizeNode (canonicalValue), so
 // "$var:Name" and {"$var": "Name", "opacity": 1} are already one form.
 const same = (a: unknown, b: unknown) => stableStringify(a) === stableStringify(b);
-const COLOR_KEYS = new Set(["fillColor", "strokeColor", "fontColor"]);
-
-// Keys a Spec node may carry besides its type's writable vocabulary.
-const STRUCTURAL_KEYS = new Set(["id", "type", "children"]);
-// create_node_tree shorthands the normaliser resolves (fontWeight -> fontStyle).
-const SHORTHANDS: Partial<Record<SpecType, readonly string[]>> = { text: ["fontWeight"] };
-const OPAQUE_KEYS = new Set(["id", "type", "name", "nodeType", "truncated", "reason", "children"]);
-
-// Keys in a raw Spec node that its type cannot write: a plan error, never a
-// silent no-op.
-function unknownKeys(raw: Record<string, any>): string[] {
-  if (raw.type === OPAQUE_TYPE) return Object.keys(raw).filter(k => !OPAQUE_KEYS.has(k));
-  if (!SPEC_TYPES.includes(raw.type)) return [];
-  const allowed = new Set([...SPEC_VOCABULARY[raw.type as SpecType], ...(SHORTHANDS[raw.type as SpecType] ?? [])]);
-  return Object.keys(raw).filter(k => !STRUCTURAL_KEYS.has(k) && !allowed.has(k));
-}
-
-// Values normalizeNode would drop as unwritable, which would otherwise read as
-// "deleted" and reset the property to its default: a plan error instead.
-function unwritableValues(raw: Record<string, any>): string[] {
-  if (!SPEC_TYPES.includes(raw.type)) return [];
-  const bad: string[] = [];
-  for (const key of SPEC_VOCABULARY[raw.type as SpecType]) {
-    const value = raw[key];
-    if (value === undefined) continue;
-    if (value === null) { bad.push(`${key} is null (delete the key to mean its default)`); continue; }
-    if (COLOR_KEYS.has(key) && typeof value === "object" && !isVarPaint(value) && !("r" in (value as object))) {
-      bad.push(`${key} ${JSON.stringify(value)} is not a colour`);
-    } else if (canonicalValue(key, value) === undefined) {
-      bad.push(`${key} ${JSON.stringify(value)} cannot be written`);
-    } else if (key === "fontSize" && !Number.isInteger(canonicalValue(key, value))) {
-      bad.push(`fontSize ${JSON.stringify(value)} must be a whole number of pixels`);
-    }
-  }
-  return bad;
-}
+// Stands for a value Figma holds that the format cannot express (a key in the
+// node's $unread): equal only to itself.
+const UNREADABLE = { $unreadable: true } as const;
+const STRICT = { strict: true };
+const unreadKeys = (props: Record<string, unknown>): Set<string> =>
+  new Set(Array.isArray(props[UNREAD_KEY]) ? (props[UNREAD_KEY] as string[]) : []);
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const layoutOf = (raw: Record<string, any>): ParentLayout => ({ layoutMode: typeof raw.layoutMode === "string" ? raw.layoutMode : "NONE" });
 const where = (path: number[]) => (path.length ? `tree.children[${path.join("].children[")}]` : "tree");
 
 function nameOf(props: Record<string, unknown> | undefined, fallback: string): string {
-  const name = props && typeof props.name === "string" ? props.name : fallback;
-  return name.length > 80 ? name.slice(0, 77) + "..." : name;
+  return clip(props && typeof props.name === "string" ? props.name : fallback);
 }
 
 function failWith(errors: string[]): never {
@@ -202,10 +173,10 @@ export function prepareSpec(spec: SpecFile, lock: SpecLockFile, rootParentLayout
   const errors: string[] = [];
   for (const key of ["fileKey", "fileName", "pageId", "rootId"] as const) {
     if ((spec[key] ?? null) !== (lock[key] ?? null)) {
-      errors.push(`header ${key} is ${JSON.stringify(spec[key])} but the SpecLock has ${JSON.stringify(lock[key])}; the header is not editable`);
+      errors.push(`header ${key} is ${showValue(spec[key])} but the SpecLock has ${showValue(lock[key])}; the header is not editable`);
     }
   }
-  if (spec.tree.id !== lock.rootId) errors.push(`tree: the root must keep id ${lock.rootId} (found ${JSON.stringify(spec.tree.id)})`);
+  if (spec.tree.id !== lock.rootId) errors.push(`tree: the root must keep id ${clip(String(lock.rootId))} (found ${showValue(spec.tree.id)})`);
 
   const desired = new Map<string, DesiredNode>();
   const desiredChildren = new Map<string, string[]>();
@@ -217,52 +188,48 @@ export function prepareSpec(spec: SpecFile, lock: SpecLockFile, rootParentLayout
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) { errors.push(`${at}: not a node object`); return; }
     const id = raw.id;
     if (id !== undefined && (typeof id !== "string" || !id)) { errors.push(`${at}: id must be a non-empty string`); return; }
-    const stray = unknownKeys(raw);
-    if (stray.length) {
-      errors.push(`${at}${id ? ` (${id})` : ""}: ${stray.join(", ")} cannot be written on a ${String(raw.type)} node`);
-      return;
-    }
-    const unwritable = unwritableValues(raw);
-    if (unwritable.length) {
-      errors.push(`${at}${id ? ` (${id})` : ""}: ${unwritable.join("; ")}`);
-      return;
-    }
+    const named = `${at}${id ? ` (${clip(id)})` : ""}`;
+    // Strict: a key the type cannot write, or a value the write path cannot
+    // take, is an error, never a silent reset to the default.
     let props: Record<string, unknown>;
     try {
-      props = normalizeNode(raw, parentLayout);
+      props = normalizeNode(raw, parentLayout, STRICT);
     } catch (error) {
-      errors.push(`${at}${id ? ` (${id})` : ""}: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`${named}: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
     const kids = raw.children;
     if (kids !== undefined && !Array.isArray(kids)) errors.push(`${at}: children must be an array`);
     const childList: any[] = Array.isArray(kids) ? kids : [];
     if (childList.length && props.type !== "frame") {
-      errors.push(`${at}${id ? ` (${id})` : ""}: only a frame can have children (this node is ${String(props.type)}${props.type === OPAQUE_TYPE ? "; an OpaqueNode's subtree is never in the Spec" : ""})`);
+      errors.push(`${named}: only a frame can have children (this node is ${String(props.type)}${props.type === OPAQUE_TYPE ? "; an OpaqueNode's subtree is never in the Spec" : ""})`);
     }
 
     if (id !== undefined) {
-      if (id.includes(";")) errors.push(`${at} (${id}): nodes inside an instance cannot be edited, moved or removed; instances are leaves`);
-      else if (seen.has(id)) errors.push(`${at} (${id}): duplicate id`);
-      else if (!lock.nodes[id]) errors.push(`${at} (${id}): the SpecLock does not know this id; a new node has no id`);
-      else if (underNew) errors.push(`${at} (${id}): an existing node cannot be placed under a new node in one plan; apply the new parent first, pull, then move this node into it`);
+      if (id.includes(";")) errors.push(`${named}: nodes inside an instance cannot be edited, moved or removed; instances are leaves`);
+      else if (seen.has(id)) errors.push(`${named}: duplicate id`);
+      else if (!lock.nodes[id]) errors.push(`${named}: the SpecLock does not know this id; a new node has no id`);
+      else if (underNew) errors.push(`${named}: an existing node cannot be placed under a new node in one plan; apply the new parent first, pull, then move this node into it`);
       else {
         const base = lock.nodes[id];
         if (base.props.type !== props.type) {
-          errors.push(`${at} (${id}): type changed from ${String(base.props.type)} to ${String(props.type)}; delete the node and add a new one without an id instead`);
+          errors.push(`${named}: type changed from ${clip(String(base.props.type))} to ${clip(String(props.type))}; delete the node and add a new one without an id instead`);
         } else if (props.type === OPAQUE_TYPE && !same(props, base.props)) {
-          errors.push(`${at} (${id}): "${nameOf(base.props, id)}" is an OpaqueNode; it can only be moved or reordered, not edited`);
+          errors.push(`${named}: "${nameOf(base.props, id)}" is an OpaqueNode; it can only be moved or reordered, not edited`);
+        } else if (!same(props[UNREAD_KEY], base.props[UNREAD_KEY])) {
+          errors.push(`${named}: ${UNREAD_KEY} cannot be edited or removed (the SpecLock has ${showValue(base.props[UNREAD_KEY] ?? [])}); it lists what Figma holds that the Spec cannot express. Restore it; to change one of those properties, set its key`);
         }
       }
       seen.add(id);
       desired.set(id, { id, props, compare: lockProps(props), parentId, parentLayout, path, raw });
     } else {
       if (props.type === OPAQUE_TYPE) errors.push(`${at}: an OpaqueNode cannot be created`);
+      if (props[UNREAD_KEY] !== undefined) errors.push(`${at}: a new node cannot carry ${UNREAD_KEY}; only a pull writes it`);
       if (!underNew && parentId !== null) {
         const siblings = desiredChildren.get(parentId) ?? [];
         creates.push({
           op: "create", path, parentId, index: path[path.length - 1], after: siblings.length ? siblings[siblings.length - 1] : null,
-          name: nameOf(props, String(props.type)), node: stripIds(normalizeSpecTree(raw, parentLayout)),
+          name: nameOf(props, String(props.type)), node: stripIds(normalizeSpecTree(raw, parentLayout, STRICT)),
         });
       }
     }
@@ -412,8 +379,16 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
     const set: Record<string, unknown> = {};
     const drifted: string[] = [];
     const conflicted: string[] = [];
-    const keys = new Set([...Object.keys(was.props), ...Object.keys(wanted), ...Object.keys(now)]);
+    // Keys Figma holds a value for that the Spec cannot express: setting one
+    // is a conflict, never an update (the Spec never saw what it replaces).
+    const unexpressed: string[] = [];
+    const baseUnread = unreadKeys(was.props);
+    const liveUnread = unreadKeys(now);
+    const keys = new Set([...Object.keys(was.props), ...Object.keys(wanted), ...Object.keys(now), ...baseUnread, ...liveUnread]);
     keys.delete("type");
+    // Compared through its members: a key entering or leaving the live $unread
+    // is drift on that key. prepareSpec refuses any edit to it.
+    keys.delete(UNREAD_KEY);
     // Auto-layout keys absent from base, Spec and Figma that the Spec's new
     // context requires (turning layoutMode on, or layoutWrap to WRAP): absent
     // means the create default (padding 10, itemReverseZIndex true), while
@@ -425,32 +400,48 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
       keys.add(key);
     }
     for (const key of [...keys].sort()) {
-      const b = was.props[key];
-      const d = key in implied ? implied[key] : wanted[key];
-      const l = now[key];
+      if (key === "properties") {
+        const result = compareProperties(was.props.properties, wanted.properties, now.properties);
+        if (result.removed) {
+          errors.push(`${where(want.path)} (${clip(id)}): ${result.removed} cannot be removed; set the value you want instead`);
+          continue;
+        }
+        if (result.set) set.properties = result.set;
+        drifted.push(...result.drifted);
+        conflicted.push(...result.conflicted);
+        converged += result.converged;
+        continue;
+      }
+      const b = baseUnread.has(key) ? UNREADABLE : was.props[key];
+      const l = liveUnread.has(key) ? UNREADABLE : now[key];
+      // A Spec that leaves an unread key out says nothing about it.
+      let d = key in implied ? implied[key] : wanted[key];
+      if (d === undefined && b === UNREADABLE) d = UNREADABLE;
       // Left out of the Spec because Figma derives it there: not a reset. A
       // vector's path is compared as pathHash and always applicable.
-      if (d === undefined && b !== undefined && key !== "pathHash" && !applicable(want.props, key, b, want.parentLayout)) continue;
-      const desiredChanged = !same(d, b);
+      if (d === undefined && b !== undefined && b !== UNREADABLE && key !== "pathHash" && !applicable(want.props, key, b, want.parentLayout)) continue;
+      // A key deleted from the Spec means its default: deleting one whose base
+      // value already is the default (x: 0, a FIXED width of 100) changes nothing.
+      const fallback = SPEC_DEFAULTS[type][key];
+      const deleted = d === undefined && b !== undefined;
+      const value = deleted && fallback !== undefined ? fallback : d;
+      const desiredChanged = !same(value, b);
       const liveChanged = !same(l, b);
       if (!desiredChanged && !liveChanged) continue;
       if (desiredChanged && !liveChanged) {
-        let value = d;
+        if (b === UNREADABLE) { unexpressed.push(key); continue; }
         if (value === undefined) {
-          value = SPEC_DEFAULTS[type][key];
-          if (value === undefined) {
-            const shown = key === "pathHash" ? "pathData" : key;
-            const hint = type === "text" && key === "name" ? " (a text node is named by its text only while Figma's auto-rename is on; rename it in Figma)" : "";
-            errors.push(`${where(want.path)} (${id}): ${shown} cannot be removed; set the value you want instead${hint}`);
-            continue;
-          }
+          const shown = key === "pathHash" ? "pathData" : key;
+          const hint = type === "text" && key === "name" ? " (a text node is named by its text only while Figma's auto-rename is on; rename it in Figma)" : "";
+          errors.push(`${where(want.path)} (${clip(id)}): ${shown} cannot be removed; set the value you want instead${hint}`);
+          continue;
         }
         // A path compared by hash is written as the Spec's pathData.
         if (key === "pathHash") set.pathData = want.props.pathData;
         else set[key] = value;
       } else if (!desiredChanged) {
         drifted.push(key);
-      } else if (same(d, l)) {
+      } else if (same(value, l) || (d === undefined && l === undefined)) {
         converged++;
       } else {
         conflicted.push(key);
@@ -458,6 +449,12 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
     }
     if (drifted.length) drift.push({ id, name: label(id), kind: "property", keys: drifted });
     if (conflicted.length) conflicts.push({ id, name: label(id), kind: "property", keys: conflicted });
+    if (unexpressed.length) {
+      conflicts.push({
+        id, name: label(id), kind: "property", keys: unexpressed,
+        detail: `Figma holds a value the Spec cannot express (listed in ${UNREAD_KEY}), so it is not overwritten; change it in Figma, or remove it there and pull`,
+      });
+    }
     if (Object.keys(set).length) {
       const op: Extract<PlanOperation, { op: "update" }> = { op: "update", id, name: label(id), nodeType: type, set };
       if (RESIZABLE.has(type) && ("width" in set) !== ("height" in set)) {
@@ -533,10 +530,7 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
   }
 
   // --- Removals: ids the Spec dropped, topmost only ---
-  const liveUnder = (id: string, out: Set<string>) => {
-    for (const child of liveKids(id)) { out.add(child); liveUnder(child, out); }
-    return out;
-  };
+  const movedOut = new Set(operations.move.map(op => (op as Extract<PlanOperation, { op: "move" }>).id));
   const baseUnder = (id: string, out: string[]) => {
     for (const child of baseKids(id)) { out.push(child); baseUnder(child, out); }
     return out;
@@ -562,11 +556,31 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
       continue;
     }
     if (!liveNodes[id]) { converged++; continue; }
-    const handAdded = [...liveUnder(id, new Set())].some(d => !base[d]);
+    // Every live node a removal would take with it must be one the Spec drops
+    // too. Anything else (added by hand, moved in from elsewhere, a kept node,
+    // an OpaqueNode or a node the read cut off) would be lost. A node a planned
+    // move takes out first, with its subtree, is not lost.
+    const goes = new Set([id, ...dropped]);
+    const lost: string[] = [];
+    const walk = (n: string) => {
+      for (const child of liveKids(n)) {
+        if (movedOut.has(child)) continue;
+        if (!goes.has(child) || unread.has(child)) lost.push(child);
+        walk(child);
+      }
+    };
+    walk(id);
+    if (lost.length) {
+      conflicts.push({
+        id, name: label(id), kind: "remove",
+        detail: `not removed: it now holds ${lost.length} node(s) the Spec does not remove (added, moved in or unread in Figma), which would be lost: ${showList(lost.map(n => `${nameOf(liveProps(n) ?? base[n]?.props, n)} (${n})`))}`,
+      });
+      continue;
+    }
     const changed = liveNodes[id].propsHash !== base[id].propsHash || liveNodes[id].parentId !== bp
       || dropped.some(d => liveNodes[d] && (liveNodes[d].propsHash !== base[d].propsHash || liveNodes[d].parentId !== base[d].parentId));
-    if (changed || handAdded) {
-      conflicts.push({ id, name: label(id), kind: "remove", detail: handAdded ? "not removed: nodes were added inside it in Figma" : "not removed: it changed in Figma since the pull" });
+    if (changed) {
+      conflicts.push({ id, name: label(id), kind: "remove", detail: "not removed: it changed in Figma since the pull" });
       continue;
     }
     operations.remove.push({ op: "remove", id, name: label(id), parentId: bp! });
@@ -602,6 +616,36 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
       liveNodes: Object.keys(liveNodes).length,
     },
   };
+}
+
+// An instance's component properties, compared key by key: a Spec edit to one
+// and a Figma edit to another are an update and a drift, not a conflict. `set`
+// holds only the keys to write (setProperties takes a subset), so a value that
+// drifted in Figma is never written back. Removing `properties`, or one of its
+// keys, has no meaning for setProperties: `removed` names it for an error.
+function compareProperties(base: unknown, desired: unknown, live: unknown) {
+  const b = record(base);
+  const l = record(live);
+  const out = { set: undefined as Record<string, unknown> | undefined, drifted: [] as string[], conflicted: [] as string[], converged: 0, removed: "" };
+  if (desired === undefined) {
+    if (Object.keys(b).length) out.removed = "properties";
+    return out;
+  }
+  const d = record(desired);
+  const gone = Object.keys(b).filter(k => !(k in d)).sort();
+  if (gone.length) { out.removed = `properties key ${showList(gone.map(k => JSON.stringify(k)))}`; return out; }
+  const set: Record<string, unknown> = {};
+  for (const key of [...new Set([...Object.keys(b), ...Object.keys(d), ...Object.keys(l)])].sort()) {
+    const desiredChanged = !same(d[key], b[key]);
+    const liveChanged = !same(l[key], b[key]);
+    if (!desiredChanged && !liveChanged) continue;
+    if (desiredChanged && !liveChanged) set[key] = d[key];
+    else if (!desiredChanged) out.drifted.push(`properties.${key}`);
+    else if (same(d[key], l[key])) out.converged++;
+    else out.conflicted.push(`properties.${key}`);
+  }
+  if (Object.keys(set).length) out.set = set;
+  return out;
 }
 
 function sameProps(a: Record<string, unknown>, b: Record<string, unknown>): boolean {

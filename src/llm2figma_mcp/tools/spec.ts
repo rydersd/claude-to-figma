@@ -4,7 +4,7 @@ import type { SendCommandFn } from "../types.js";
 import { randomUUID } from "node:crypto";
 import { getChannelFileKey, getCurrentChannel } from "../connection.js";
 import {
-  SPEC_LOCK_VERSION, SPEC_VERSION, lockNodesFromTree, specHash, type SpecFile, type SpecLockFile,
+  SPEC_LOCK_VERSION, SPEC_VERSION, clip, lockNodesFromTree, specHash, type SpecFile, type SpecLockFile,
 } from "../../shared/spec.js";
 import { WALK_LIMITS } from "../../shared/walk.js";
 import { backUp, readExistingPair, readSpecPair, resolveSpecPaths, specBaseDir, writeFileAtomic, type SpecPaths } from "../spec-files.js";
@@ -54,7 +54,7 @@ const REPLACE_HINT = "Pass replaceEdited: true to rename the old pair to .bak fi
 // Why an existing pair must not be overwritten, or null when it may be.
 function refusal(spec: SpecFile | null, lock: SpecLockFile | null, specPath: string): string | null {
   if (lock && lock.pendingApply) {
-    return `Refusing to pull over ${specPath}: an apply (plan ${lock.pendingApply}) was started and did not finish, so Figma may hold part of it. ${REPLACE_HINT}`;
+    return `Refusing to pull over ${specPath}: an apply (plan ${clip(String(lock.pendingApply))}) was started and did not finish, so Figma may hold part of it. ${REPLACE_HINT}`;
   }
   if (!spec) return null;
   if (!lock) return `Refusing to pull over ${specPath}: it has no SpecLock beside it, so unapplied edits cannot be ruled out. ${REPLACE_HINT}`;
@@ -117,10 +117,10 @@ async function pullLocked(args: PullArgs, paths: SpecPaths, send: SendCommandFn,
   const userKey = (options.userFileKey ?? getChannelFileKey)();
   const fileKey: string | null = exported.fileKey ?? userKey ?? null;
   if (previous && previous.fileKey && fileKey && previous.fileKey !== fileKey) {
-    throw new Error(`Wrong file: ${paths.specPath} is for file key ${previous.fileKey}, but the connected file's key is ${fileKey}.`);
+    throw new Error(`Wrong file: ${paths.specPath} is for file key ${clip(String(previous.fileKey))}, but the connected file's key is ${clip(String(fileKey))}.`);
   }
   if (keyOnly && !fileKey) {
-    throw new Error(`Cannot confirm the connected file is the one ${paths.specPath} was pulled from (file key ${previous!.fileKey}): it has no file key. Rejoin the channel with the file key, or pull to a new path.`);
+    throw new Error(`Cannot confirm the connected file is the one ${paths.specPath} was pulled from (file key ${clip(String(previous!.fileKey))}): it has no file key. Rejoin the channel with the file key, or pull to a new path.`);
   }
 
   const spec: SpecFile = {
@@ -247,7 +247,7 @@ export async function planSpec(args: { path: string }, send: SendCommandFn, opti
   // Under the pull's path lock, so a pull in progress never pairs one Spec with another's SpecLock.
   const { spec, lock } = await withPathLock(paths.specPath, () => readSpecPair(paths));
   if (lock.pendingApply) {
-    throw new Error(`Refusing to plan ${paths.specPath}: an apply (plan ${lock.pendingApply}) was started and did not finish, so Figma may hold part of it. Pull again (pull_spec with replaceEdited: true backs up the Spec) and redo the edits.`);
+    throw new Error(`Refusing to plan ${paths.specPath}: an apply (plan ${clip(String(lock.pendingApply))}) was started and did not finish, so Figma may hold part of it. Pull again (pull_spec with replaceEdited: true backs up the Spec) and redo the edits.`);
   }
   // Validate before asking Figma: a bad Spec costs no round trip.
   const pre = prepareSpec(spec, lock);
@@ -262,7 +262,7 @@ export async function planSpec(args: { path: string }, send: SendCommandFn, opti
   }
   const connectedKey = live.fileKey ?? (options.userFileKey ?? getChannelFileKey)() ?? null;
   if (lock.fileKey && connectedKey && lock.fileKey !== connectedKey) {
-    throw new Error(`Wrong file: ${paths.specPath} is for file key ${lock.fileKey}, but the connected file's key is ${connectedKey}.`);
+    throw new Error(`Wrong file: ${paths.specPath} is for file key ${clip(String(lock.fileKey))}, but the connected file's key is ${clip(String(connectedKey))}.`);
   }
 
   // Normalise again with the root's real parent layout (it decides the root's x/y).
