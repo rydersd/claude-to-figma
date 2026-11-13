@@ -24,6 +24,18 @@ describe("server instructions", () => {
     expect(text).toContain("join_channel");
   });
 
+  test("auto layout, components and issue filing are always in the instructions", () => {
+    for (const env of [{}, { L2F_ALL: "1" }]) {
+      const text = serverInstructions(env);
+      expect(text).toContain("auto layout");
+      expect(text).toContain("layoutWarnings");
+      expect(text).toContain("get_local_components");
+      expect(text).toContain("three times");
+      expect(text).toContain("gh issue create -R rydersd/claude-to-figma --label l2f-feedback");
+      expect(text).toContain("The repository is public");
+    }
+  });
+
   test("each flag adds only its own guidance", () => {
     expect(serverInstructions({ L2F_SPEC_SYNC: "1" })).toContain("pull_spec");
     expect(serverInstructions({ L2F_SPEC_SYNC: "1" })).not.toContain("snapshot_positions");

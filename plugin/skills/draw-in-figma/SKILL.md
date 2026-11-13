@@ -28,9 +28,9 @@ Tell the user what you found that you'll use, and anything the request needs tha
 
 ## 3. Build with the system
 
-- **Structure with one `create_node_tree` per section.** Use frames with `layoutMode`, `itemSpacing`, padding and `layoutSizingHorizontal`/`Vertical` (`HUG`, `FILL`, `FIXED`). Avoid absolute x/y inside auto layout.
+- **Structure with one `create_node_tree` per section.** Use frames with `layoutMode`, `itemSpacing`, padding and `layoutSizingHorizontal`/`Vertical` (`HUG`, `FILL`, `FIXED`). Avoid absolute x/y inside auto layout. Any frame with more than one child gets auto layout; absolute x/y is only for diagrams and connectors. If the result has `layoutWarnings`, fix those frames before moving on, or tell the user why they are absolute.
 - **Bind colors to variables.** Write `"$var:Collection/Name"` in any color field. Use hex only when the file has no matching variable, and say so.
-- **Use real components.** Place them with `create_component_instance` (`componentId` for local, `componentKey` for library) using the frame's `parentId`. Set them up with `properties`, `textOverrides`, `swap_instance_variant` or `set_component_properties`. Never redraw something that exists as a component.
+- **Use real components.** Place them with `create_component_instance` (`componentId` for local, `componentKey` for library) using the frame's `parentId`. Set them up with `properties`, `textOverrides`, `swap_instance_variant` or `set_component_properties`. Never redraw something that exists as a component. When you have built the same element three times, make it a component and swap the copies for instances.
 - **Name every layer** by its role ("Header / Actions", not "Frame 12").
 - **Standard sections** (hero, feature grid, pricing and similar): try `get_section_templates` and `build_page_section` first. They use far fewer tokens.
 - **Changing an existing tree:** pass `rootId` to `create_node_tree` (sync mode) rather than rebuilding. Use `design_query` or `batch_mutate` for bulk edits.
@@ -49,3 +49,7 @@ Work one section at a time on large screens, and check each before the next.
 - `figma_eval` runs arbitrary code in the file and can delete anything. Use it only when no other tool can do the job, and tell the user what the code does before running it.
 - Use `delete_node`, `delete_multiple_nodes` and `prune: true` only on nodes the user asked to remove.
 - Run component migrations (`migrate_instance`, `batch_migrate`) with dry-run first and show the user the result.
+
+## Report tool problems
+
+When an llm2figma tool errors, returns wrong or partial results, lacks something you needed, or forces a `figma_eval` workaround, tell the user, then file it on GitHub with the `l2f-feedback` label: search open issues first (`gh issue list -R rydersd/claude-to-figma --label l2f-feedback --search "<tool>"`) and comment on a match, otherwise `gh issue create -R rydersd/claude-to-figma --label l2f-feedback`. Include the tool, the call, what happened against what you expected, and the workaround. The repository is public: describe only the tool's behaviour, never file names or keys, layer names, client, company or project names, or design content.

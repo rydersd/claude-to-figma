@@ -288,6 +288,45 @@ export function resolveTreeLibraryRefs(tree: any, index: LibraryIndex | null): v
 /**
  * Count total nodes in a tree spec, expanding $repeat directives.
  */
+// Frames in a create_node_tree spec that hold two or more children without
+// auto layout: their children are placed by absolute x/y, so they won't reflow
+// when content changes. Reported back as layoutWarnings so the caller fixes
+// them (or says they are diagrams) in the same pass. A $repeat child counts
+// once per data row, and a frame inside a $repeat template once per row.
+export function findAbsoluteContainers(tree: any, maxExamples = 10): { count: number; examples: { name: string; children: number }[] } {
+  const examples: { name: string; children: number }[] = [];
+  let count = 0;
+  const walk = (node: any, times: number) => {
+    if (!node || typeof node !== "object" || times === 0) return;
+    if (node.$repeat) {
+      const rows = Array.isArray(node.$repeat.data) ? node.$repeat.data.length : 0;
+      walk(node.$repeat.template, times * rows);
+      return;
+    }
+    if (node.type !== "frame" || !Array.isArray(node.children)) return;
+    const children = node.children.reduce((n: number, c: any) => n + (c && c.$repeat ? (Array.isArray(c.$repeat.data) ? c.$repeat.data.length : 0) : 1), 0);
+    if (children >= 2 && (node.layoutMode === undefined || node.layoutMode === "NONE")) {
+      count += times;
+      if (examples.length < maxExamples) examples.push({ name: String(node.name ?? "(unnamed frame)"), children });
+    }
+    for (const child of node.children) walk(child, times);
+  };
+  walk(tree, 1);
+  return { count, examples };
+}
+
+function layoutWarnings(tree: any): { layoutWarnings?: { absoluteContainers: number; examples: { name: string; children: number }[]; note: string } } {
+  const found = findAbsoluteContainers(tree);
+  if (found.count === 0) return {};
+  return {
+    layoutWarnings: {
+      absoluteContainers: found.count,
+      examples: found.examples,
+      note: "These frames hold several children without auto layout (no layoutMode), so the children sit at absolute x/y and won't reflow. Give them layoutMode, itemSpacing and padding, unless position carries meaning (a diagram); then say so.",
+    },
+  };
+}
+
 function countTreeNodes(tree: any): number {
   if (!tree) return 0;
 
@@ -415,6 +454,8 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
         }
 
         const nodeCount = countTreeNodes(tree);
+        // Read before chunking, which may restructure the tree it sends.
+        const layoutReport = layoutWarnings(tree);
         const optimalChunkSize = getOptimalChunkSize();
 
         // For sync mode, chunking is not supported — send the full tree
@@ -427,7 +468,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
           );
           // sendCommandWithRetry already records metrics — don't double-count (NEW-H1 fix)
           const summary = summarizeTreeResult(rootId ? { ...(result as any), rootId } : result, !!verbose);
-          const payload = imageWarnings.length > 0 ? { ...summary, imageWarnings } : summary;
+          const payload = { ...summary, ...(imageWarnings.length > 0 ? { imageWarnings } : {}), ...layoutReport };
           return {
             content: [{ type: "text", text: JSON.stringify(payload) }],
           };
@@ -519,6 +560,7 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
           durationMs: overallDuration,
           rootId: createdParentId,
           ...(imageWarnings.length > 0 ? { imageWarnings } : {}),
+          ...layoutReport,
           ...(verbose ? { chunkResults: allResults } : {}),
         };
 

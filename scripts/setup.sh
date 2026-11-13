@@ -65,6 +65,25 @@ if [ "$INSTALL_LAUNCHER" -eq 1 ]; then
   echo "✓ Installed l2f and compatible c2f launcher in $LAUNCHER_DIR (add it to PATH if needed)"
 fi
 
+# The draw-in-figma skill (auto layout, real components, read before writing)
+# ships with the Claude Code plugin; a clone install gets it as a symlink into
+# the user's skills folder so every session can load it. Idempotent: an
+# existing link to this repo is kept, anything else at that path is left alone.
+SKILL_SRC="$REPO_ROOT/plugin/skills/draw-in-figma"
+SKILLS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+SKILL_DST="$SKILLS_DIR/draw-in-figma"
+if [ -d "$SKILL_SRC" ]; then
+  if [ -L "$SKILL_DST" ] && [ "$(readlink "$SKILL_DST")" = "$SKILL_SRC" ]; then
+    echo "✓ draw-in-figma skill already linked in $SKILLS_DIR"
+  elif [ -e "$SKILL_DST" ] || [ -L "$SKILL_DST" ]; then
+    echo "  $SKILL_DST already exists and is not a link to this repo; left it as it is."
+  else
+    mkdir -p "$SKILLS_DIR"
+    ln -s "$SKILL_SRC" "$SKILL_DST"
+    echo "✓ Linked the draw-in-figma skill into $SKILLS_DIR"
+  fi
+fi
+
 # setup only rewrites its own entries. A token under another scope or server
 # name is left alone, so say where one remains on every exit, including the
 # failure paths below. The file name only, never a value.

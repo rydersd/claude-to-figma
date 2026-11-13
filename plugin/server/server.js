@@ -19962,6 +19962,43 @@ function resolveTreeLibraryRefs(tree, index) {
     }
   }
 }
+function findAbsoluteContainers(tree, maxExamples = 10) {
+  const examples = [];
+  let count = 0;
+  const walk = (node, times) => {
+    if (!node || typeof node !== "object" || times === 0)
+      return;
+    if (node.$repeat) {
+      const rows = Array.isArray(node.$repeat.data) ? node.$repeat.data.length : 0;
+      walk(node.$repeat.template, times * rows);
+      return;
+    }
+    if (node.type !== "frame" || !Array.isArray(node.children))
+      return;
+    const children = node.children.reduce((n, c) => n + (c && c.$repeat ? Array.isArray(c.$repeat.data) ? c.$repeat.data.length : 0 : 1), 0);
+    if (children >= 2 && (node.layoutMode === undefined || node.layoutMode === "NONE")) {
+      count += times;
+      if (examples.length < maxExamples)
+        examples.push({ name: String(node.name ?? "(unnamed frame)"), children });
+    }
+    for (const child of node.children)
+      walk(child, times);
+  };
+  walk(tree, 1);
+  return { count, examples };
+}
+function layoutWarnings(tree) {
+  const found = findAbsoluteContainers(tree);
+  if (found.count === 0)
+    return {};
+  return {
+    layoutWarnings: {
+      absoluteContainers: found.count,
+      examples: found.examples,
+      note: "These frames hold several children without auto layout (no layoutMode), so the children sit at absolute x/y and won't reflow. Give them layoutMode, itemSpacing and padding, unless position carries meaning (a diagram); then say so."
+    }
+  };
+}
 function countTreeNodes(tree) {
   if (!tree)
     return 0;
@@ -20042,12 +20079,13 @@ function registerTools15(server, sendCommandToFigma2) {
         logger.warn(`create_node_tree image warnings: ${imageWarnings.join("; ")}`);
       }
       const nodeCount = countTreeNodes(tree);
+      const layoutReport = layoutWarnings(tree);
       const optimalChunkSize = getOptimalChunkSize();
       if (rootId || nodeCount <= optimalChunkSize) {
         const startTime = Date.now();
         const result = await sendCommandWithRetry("create_node_tree", { tree, parentId, rootId, prune }, { timeoutMs: 60000 });
         const summary = summarizeTreeResult(rootId ? { ...result, rootId } : result, !!verbose);
-        const payload = imageWarnings.length > 0 ? { ...summary, imageWarnings } : summary;
+        const payload = { ...summary, ...imageWarnings.length > 0 ? { imageWarnings } : {}, ...layoutReport };
         return {
           content: [{ type: "text", text: JSON.stringify(payload) }]
         };
@@ -20100,6 +20138,7 @@ function registerTools15(server, sendCommandToFigma2) {
         durationMs: overallDuration,
         rootId: createdParentId,
         ...imageWarnings.length > 0 ? { imageWarnings } : {},
+        ...layoutReport,
         ...verbose ? { chunkResults: allResults } : {}
       };
       return {
@@ -27853,10 +27892,14 @@ function registerTools30(server, sendCommandToFigma2) {
 }
 
 // src/llm2figma_mcp/instructions.ts
+var FEEDBACK_REPO = "rydersd/claude-to-figma";
+var FEEDBACK_LABEL = "l2f-feedback";
 function serverInstructions(env = process.env) {
   const lines = [
     "llm2figma edits the Figma file that has the llm2figma plugin open.",
-    "- If several files are connected, call join_channel with the channel the user gives, and check figma.root.name or the file key before the first write."
+    "- If several files are connected, call join_channel with the channel the user gives, and check figma.root.name or the file key before the first write.",
+    "- Build with auto layout: any frame holding more than one child gets layoutMode, itemSpacing and padding, and its children use layoutSizingHorizontal/Vertical (HUG, FILL or FIXED) instead of x/y. Absolute x/y is only for diagrams, connectors and placing top-level frames on the canvas. create_node_tree reports frames that hold several children without auto layout under layoutWarnings: fix them or say why they are absolute.",
+    "- Use components: before drawing a button, input, card, row or any other standard element, look for one (get_local_components, search_library_components) and place instances (create_component_instance, or instance nodes in create_node_tree); never redraw an existing component. When you have built the same element three times, make it a component and replace the copies with instances."
   ];
   if (isEnabled("SPEC_SYNC", env)) {
     lines.push("- To change an existing frame (text, colours, sizes, spacing, order, adding or removing layers), use spec sync by default, not figma_eval scripts: pull_spec {nodeId, path} \u2192 edit the .l2f.json file \u2192 plan_spec {path} \u2192 apply_spec {planId} \u2192 plan_spec again (0 operations means done). Edit only the lines you need; for a large Spec, search the file instead of reading all of it. Removals need allowRemovals: true.", "- Use figma_eval or the batch tools instead for what a Spec cannot express: prototype links (reactions), layers inside instances, OpaqueNodes (groups, sections, ellipses, rotated nodes, mixed-style text), and building new screens from scratch (create_node_tree).");
@@ -27864,6 +27907,7 @@ function serverInstructions(env = process.env) {
   if (isEnabled("VERIFY", env)) {
     lines.push("- Before a bulk or structural edit outside spec sync, take snapshot_positions of the affected root; afterwards diff_positions shows anything missing, added or moved.");
   }
+  lines.push(`- When llm2figma gets in the way (a tool errors, returns wrong or partial results, is missing something you needed, or you had to work around it with figma_eval), say so plainly in your reply to the user, then file a GitHub issue: first look for an open one (gh issue list -R ${FEEDBACK_REPO} --label ${FEEDBACK_LABEL} --search "<tool>"), and comment there if it exists; otherwise gh issue create -R ${FEEDBACK_REPO} --label ${FEEDBACK_LABEL} with the tool, what you called, what happened against what you expected, and your workaround. The repository is public: describe only the tool's behaviour, never file names or keys, node or layer names, client, company or project names, or design content.`);
   return lines.join(`
 `);
 }
