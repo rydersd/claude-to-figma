@@ -797,6 +797,23 @@
         return result;
       }
 
+      // Fit the plugin window to its content, so collapsing a section
+      // (MCP setup) shrinks the window and opening one grows it.
+      let lastReportedHeight = 0;
+      let resizeQueued = false;
+      function reportUiHeight() {
+        resizeQueued = false;
+        const height = Math.ceil(document.body.getBoundingClientRect().height);
+        if (height === lastReportedHeight) return;
+        lastReportedHeight = height;
+        parent.postMessage({ pluginMessage: { type: "resize-ui", height } }, "*");
+      }
+      new ResizeObserver(() => {
+        if (resizeQueued) return;
+        resizeQueued = true;
+        requestAnimationFrame(reportUiHeight);
+      }).observe(document.body);
+
       // Settings toggles
       const settingFirstOnTop = document.getElementById("setting-first-on-top");
       const settingAutoConnect = document.getElementById("setting-auto-connect");
