@@ -19,7 +19,7 @@
     "setup": "./scripts/setup.sh",
     "token": "./scripts/store-figma-token.sh",
     "typecheck": "tsc --noEmit",
-    "test:unit": "bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts tests/efficiency.test.ts tests/launcher.test.ts tests/flags.test.ts tests/keychain.test.ts tests/mcp-config.test.ts tests/plugin-runtime.test.ts tests/connection.test.ts tests/file-key.test.ts tests/comments.test.ts tests/verify.test.ts tests/node-tree.test.ts tests/flows.test.ts tests/code-map.test.ts tests/spec-sync.test.ts tests/spec-plan.test.ts tests/spec-apply.test.ts tests/dev-mode.test.ts",
+    "test:unit": "bun test tests/gradients.test.ts tests/images.test.ts tests/library.test.ts tests/plugin-library.test.ts tests/efficiency.test.ts tests/launcher.test.ts tests/flags.test.ts tests/keychain.test.ts tests/mcp-config.test.ts tests/plugin-runtime.test.ts tests/connection.test.ts tests/file-key.test.ts tests/comments.test.ts tests/verify.test.ts tests/node-tree.test.ts tests/flows.test.ts tests/code-map.test.ts tests/spec-sync.test.ts tests/spec-plan.test.ts tests/spec-apply.test.ts tests/dev-mode.test.ts tests/relay-channel.test.ts",
     "build": "tsup && ./scripts/build-claude-plugin.sh",
     "build:plugin": "tsup --config tsup.config.ts -- src/llm2figma_plugin/src/main.ts",
     "build:watch": "tsup --watch",

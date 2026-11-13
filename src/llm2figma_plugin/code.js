@@ -10072,6 +10072,9 @@ ${detail}`);
       case "close-plugin":
         figma.closePlugin();
         break;
+      case "save-channel":
+        await saveChannel(msg.channel);
+        break;
       case "resize-ui": {
         const height = Number(msg.height);
         if (Number.isFinite(height)) {
@@ -10546,6 +10549,34 @@ ${detail}`);
         throw new Error(`Unknown command: ${command}`);
     }
   }
+  var CHANNELS_KEY = "channels";
+  var MAX_SAVED_CHANNELS = 50;
+  var CHANNEL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+  async function loadChannel() {
+    const fileKey = figma.fileKey;
+    if (!fileKey) return null;
+    try {
+      const saved = await figma.clientStorage.getAsync(CHANNELS_KEY);
+      const entry = saved && typeof saved === "object" ? saved[fileKey] : null;
+      return entry && typeof entry.channel === "string" && CHANNEL_NAME.test(entry.channel) ? entry.channel : null;
+    } catch (error) {
+      console.error("Error loading saved channel:", error);
+      return null;
+    }
+  }
+  async function saveChannel(channel) {
+    const fileKey = figma.fileKey;
+    if (!fileKey || typeof channel !== "string" || !CHANNEL_NAME.test(channel)) return;
+    try {
+      const saved = await figma.clientStorage.getAsync(CHANNELS_KEY) || {};
+      const map = typeof saved === "object" ? { ...saved } : {};
+      map[fileKey] = { channel, at: Date.now() };
+      const keep = Object.entries(map).sort((a, b) => (b[1]?.at || 0) - (a[1]?.at || 0)).slice(0, MAX_SAVED_CHANNELS);
+      await figma.clientStorage.setAsync(CHANNELS_KEY, Object.fromEntries(keep));
+    } catch (error) {
+      console.error("Error saving channel:", error);
+    }
+  }
   (async function initializePlugin() {
     try {
       const savedSettings = await figma.clientStorage.getAsync("settings");
@@ -10562,6 +10593,7 @@ ${detail}`);
       }
       figma.ui.postMessage({
         type: "init-settings",
+        savedChannel: await loadChannel(),
         settings: {
           serverPort: state.serverPort,
           firstOnTop: state.firstOnTop,

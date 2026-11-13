@@ -478,6 +478,7 @@
         serverPort: 3055,
         pendingRequests: new Map(),
         channel: null,
+        savedChannel: null, // this file's channel from clientStorage
       };
 
       // UI Elements
@@ -574,19 +575,21 @@
 
           state.socket = new WebSocket(wsUrl);
 
-          state.socket.onopen = () => {
-            // Generate random channel name
-            const channelName = generateChannelName();
+          // Rejoin this file's channel when there is one, so reopening the
+          // file or restarting the plugin lands on the channel the MCP
+          // server is already in, and nobody has to paste a new code.
+          const joinChannel = (channelName) => {
             console.log("Joining channel:", channelName);
             state.channel = channelName;
-
-            // Join the channel using the same format as App.tsx
             state.socket.send(
               JSON.stringify({
                 type: "join",
                 channel: channelName.trim(),
               })
             );
+          };
+          state.socket.onopen = () => {
+            joinChannel(state.savedChannel || generateChannelName());
           };
 
           state.socket.onmessage = (event) => {
@@ -599,6 +602,10 @@
                 if (data.message && data.message.result) {
                   state.connected = true;
                   const channelName = data.channel;
+                  if (channelName && channelName !== state.savedChannel) {
+                    state.savedChannel = channelName;
+                    parent.postMessage({ pluginMessage: { type: "save-channel", channel: channelName } }, "*");
+                  }
                   updateConnectionStatus(
                     true,
                     `Connected to server in channel: <strong class="channel-name" style="cursor:pointer; text-decoration:underline; text-decoration-style:dotted;" title="Click to copy 'l2f channel is up: …'">${channelName}</strong>`
@@ -615,6 +622,12 @@
                     "*"
                   );
                 }
+              } else if (data.type === "error" && data.code === "channel_taken") {
+                // Another window of this file holds the saved channel. Join a
+                // fresh one for this window and keep the saved one as it is.
+                console.warn(data.message);
+                joinChannel(generateChannelName());
+                return;
               } else if (data.type === "error") {
                 console.error("Error:", data.message);
                 updateConnectionStatus(false, `Error: ${data.message}`);
@@ -786,6 +799,14 @@
       }
 
       // Add this function after the generateId() function
+      // Resolved when the plugin has sent its settings and saved channel; a
+      // timeout keeps auto-connect working if that message never arrives.
+      let settingsLoaded;
+      const settingsReady = new Promise((resolve) => {
+        settingsLoaded = resolve;
+        setTimeout(resolve, 1500);
+      });
+
       function generateChannelName() {
         const characters = "abcdefghijklmnopqrstuvwxyz0123456789";
         let result = "";
@@ -961,6 +982,10 @@
 
         switch (message.type) {
           case "init-settings":
+            if (message.savedChannel) {
+              state.savedChannel = message.savedChannel;
+            }
+            settingsLoaded();
             if (message.settings) {
               if (message.settings.serverPort) {
                 portInput.value = message.settings.serverPort;
@@ -977,7 +1002,10 @@
             updateConnectionStatus(message.connected, message.message);
             break;
           case "auto-connect":
-            connectButton.click();
+            // Wait for the saved channel, so auto-connect rejoins it.
+            settingsReady.then(() => {
+              if (!state.connected) connectButton.click();
+            });
             break;
           case "auto-disconnect":
             connectButton.click();
