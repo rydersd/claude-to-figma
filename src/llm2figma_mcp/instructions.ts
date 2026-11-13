@@ -15,8 +15,8 @@ export function serverInstructions(env: Record<string, string | undefined> = pro
   ];
   if (isEnabled("SPEC_SYNC", env)) {
     lines.push(
-      "- To change an existing frame (text, colours, sizes, spacing, order, adding or removing layers), use spec sync by default, not figma_eval scripts: pull_spec {nodeId, path} → edit the .l2f.json file → plan_spec {path} → apply_spec {planId} → plan_spec again (0 operations means done). Edit only the lines you need; for a large Spec, search the file instead of reading all of it. Removals need allowRemovals: true.",
-      "- Use figma_eval or the batch tools instead for what a Spec cannot express: prototype links (reactions), layers inside instances, OpaqueNodes (groups, sections, ellipses, rotated nodes, mixed-style text), and building new screens from scratch (create_node_tree).",
+      "- To change an existing frame (text, colours, sizes, spacing, order, prototype links (reactions), adding or removing layers), use spec sync by default, not figma_eval scripts: pull_spec {nodeId, path} → edit the .l2f.json file → plan_spec {path} → apply_spec {planId} → plan_spec again (0 operations means done). Edit only the lines you need; for a large Spec, search the file instead of reading all of it. Removals need allowRemovals: true.",
+      "- Use figma_eval or the batch tools instead for what a Spec cannot express: layers inside instances, OpaqueNodes (groups, sections, ellipses, rotated nodes, mixed-style text), and building new screens from scratch (create_node_tree).",
     );
   }
   if (isEnabled("VERIFY", env)) {

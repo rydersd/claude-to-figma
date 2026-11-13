@@ -23449,7 +23449,7 @@ var SPEC_TYPES = ["frame", "text", "rectangle", "vector", "instance"];
 var OPAQUE_TYPE = "$opaque";
 var UNREAD_KEY = "$unread";
 var NO_PAINT = "#00000000";
-var COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning"];
+var COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning", "reactions"];
 var SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
 var PAINTED = ["fillColor", "strokeColor", "strokeWeight", "strokeAlign", "effects"];
 var AUTO_LAYOUT = [
@@ -23487,7 +23487,16 @@ var SPEC_VOCABULARY = {
   ],
   instance: [...COMMON, "componentKey", "componentId", "componentSetKey", "componentSetId", "properties", "width", "height", ...SIZING]
 };
-var BASE_DEFAULTS = { visible: true, x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED" };
+var BASE_DEFAULTS = {
+  visible: true,
+  x: 0,
+  y: 0,
+  opacity: 1,
+  layoutPositioning: "AUTO",
+  layoutSizingHorizontal: "FIXED",
+  layoutSizingVertical: "FIXED",
+  reactions: []
+};
 var PAINT_DEFAULTS = { fillColor: NO_PAINT, strokeColor: NO_PAINT, strokeWeight: 1, effects: [] };
 var SPEC_DEFAULTS = {
   frame: {
@@ -23609,6 +23618,7 @@ var KEY_ORDER = [
   "pathData",
   "pathHash",
   "properties",
+  "reactions",
   UNREAD_KEY
 ];
 var MAX_SHOWN_CHARS = 80;
@@ -23720,11 +23730,74 @@ function canonicalEffects(list) {
   }
   return out;
 }
+function plainJson(value) {
+  if (value === null || typeof value === "string" || typeof value === "boolean")
+    return value;
+  if (typeof value === "number")
+    return isFinite(value) ? value : undefined;
+  if (Array.isArray(value)) {
+    const out2 = [];
+    for (const item of value) {
+      const copy = plainJson(item);
+      if (copy === undefined)
+        return;
+      out2.push(copy);
+    }
+    return out2;
+  }
+  if (Object.prototype.toString.call(value) !== "[object Object]")
+    return;
+  const out = {};
+  for (const key of Object.keys(value).sort()) {
+    const item = value[key];
+    if (item === undefined)
+      continue;
+    const copy = plainJson(item);
+    if (copy === undefined)
+      return;
+    out[key] = copy;
+  }
+  return out;
+}
+var REACTION_ACTIONS = new Set(["NODE", "BACK", "CLOSE", "URL"]);
+var REACTION_KEYS = new Set(["trigger", "actions", "action"]);
+var isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+function canonicalReactions(list) {
+  if (!Array.isArray(list))
+    return;
+  const out = [];
+  for (const reaction of list) {
+    if (!isPlainObject(reaction))
+      return;
+    if (Object.keys(reaction).some((key) => reaction[key] !== undefined && !REACTION_KEYS.has(key)))
+      return;
+    const trigger = plainJson(reaction.trigger);
+    if (!isPlainObject(trigger) || typeof trigger.type !== "string")
+      return;
+    const actions = plainJson(reaction.actions !== undefined ? reaction.actions : reaction.action ? [reaction.action] : []);
+    if (!Array.isArray(actions) || !actions.every((action) => isPlainObject(action) && REACTION_ACTIONS.has(action.type)))
+      return;
+    out.push({ actions, trigger });
+  }
+  return out;
+}
+function reactionDestinations(reactions) {
+  const ids = [];
+  for (const reaction of Array.isArray(reactions) ? reactions : []) {
+    for (const action of Array.isArray(reaction?.actions) ? reaction.actions : []) {
+      if (action && action.type === "NODE" && typeof action.destinationId === "string")
+        ids.push(action.destinationId);
+    }
+  }
+  return ids;
+}
 function canonicalValue(key, value) {
   if (COLOR_KEYS.has(key))
     return canonicalColor(value);
   if (key === "effects")
     return canonicalEffects(value);
+  if (key === "reactions")
+    return canonicalReactions(value);
   if (NUMBER_KEYS.has(key)) {
     const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
     return typeof n === "number" && isFinite(n) ? round2(n) : undefined;
@@ -24190,12 +24263,40 @@ function prepareSpec(spec, lock, rootParentLayout = {}) {
       truncated[id] = typeof node.props.reason === "string" ? node.props.reason : "node budget";
   }
   const sizeIds = [];
+  const destinations = new Map;
+  const linkFrom = (at, reactions) => {
+    for (const target of reactionDestinations(reactions)) {
+      if (seen.has(target))
+        continue;
+      if (!destinations.has(target))
+        destinations.set(target, []);
+      destinations.get(target).push(at);
+    }
+  };
   for (const [id, node] of desired) {
     const base = lock.nodes[id].props;
     if (RESIZABLE.has(String(node.props.type)) && (!same(node.props.width, base.width) || !same(node.props.height, base.height)))
       sizeIds.push(id);
+    if (!same(node.props.reactions, base.reactions))
+      linkFrom(`${where(node.path)} (${clip(id)})`, node.props.reactions);
   }
-  return { desired, desiredChildren, creates, baseHashes, truncated, sizeIds };
+  const linkSubtree = (node, path4) => {
+    linkFrom(where(path4), node.reactions);
+    (Array.isArray(node.children) ? node.children : []).forEach((child, i) => linkSubtree(child, [...path4, i]));
+  };
+  for (const op of creates)
+    linkSubtree(op.node, op.path);
+  return { desired, desiredChildren, creates, baseHashes, truncated, sizeIds, destinations };
+}
+function checkDestinations(prepared, missing) {
+  const errors = [];
+  for (const target of missing) {
+    for (const at of prepared.destinations.get(target) ?? []) {
+      errors.push(`${at}: reactions link to destinationId ${showValue(target)}, which is not a node on this page. A node created in this apply has no id yet: apply it first, then link to it in a second plan`);
+    }
+  }
+  if (errors.length)
+    failWith(errors);
 }
 function stripIds(node) {
   const { id: _id, children, ...rest } = node;
@@ -25088,12 +25189,17 @@ async function planSpec(args2, send, options = {}) {
     baseHashes: pre.baseHashes,
     truncated: pre.truncated,
     sizeIds: pre.sizeIds,
+    destinationIds: [...pre.destinations.keys()],
     maxNodes: WALK_LIMITS.maxNodes,
     maxDepth: WALK_LIMITS.maxDepth
   }, READ_TIMEOUT_MS);
   if (!live || typeof live !== "object" || !live.nodes || typeof live.nodes !== "object" || live.rootId !== lock.rootId) {
     throw new Error("The Figma plugin returned no node read. Rebuild and re-run the plugin (bun run build) so it knows read_spec_nodes.");
   }
+  if (pre.destinations.size && !Array.isArray(live.missingDestinations)) {
+    throw new Error("The Figma plugin did not check the Spec's prototype destinations. Rebuild and re-run the plugin (bun run build).");
+  }
+  checkDestinations(pre, live.missingDestinations ?? []);
   const connectedKey = live.fileKey ?? (options.userFileKey ?? getChannelFileKey)() ?? null;
   if (lock.fileKey && connectedKey && lock.fileKey !== connectedKey) {
     throw new Error(`Wrong file: ${paths.specPath} is for file key ${clip(String(lock.fileKey))}, but the connected file's key is ${clip(String(connectedKey))}.`);
@@ -27952,7 +28058,7 @@ function serverInstructions(env = process.env) {
     "- Use components: before drawing a button, input, card, row or any other standard element, look for one (get_local_components, search_library_components) and place instances (create_component_instance, or instance nodes in create_node_tree); never redraw an existing component. When you have built the same element three times, make it a component and replace the copies with instances."
   ];
   if (isEnabled("SPEC_SYNC", env)) {
-    lines.push("- To change an existing frame (text, colours, sizes, spacing, order, adding or removing layers), use spec sync by default, not figma_eval scripts: pull_spec {nodeId, path} \u2192 edit the .l2f.json file \u2192 plan_spec {path} \u2192 apply_spec {planId} \u2192 plan_spec again (0 operations means done). Edit only the lines you need; for a large Spec, search the file instead of reading all of it. Removals need allowRemovals: true.", "- Use figma_eval or the batch tools instead for what a Spec cannot express: prototype links (reactions), layers inside instances, OpaqueNodes (groups, sections, ellipses, rotated nodes, mixed-style text), and building new screens from scratch (create_node_tree).");
+    lines.push("- To change an existing frame (text, colours, sizes, spacing, order, prototype links (reactions), adding or removing layers), use spec sync by default, not figma_eval scripts: pull_spec {nodeId, path} \u2192 edit the .l2f.json file \u2192 plan_spec {path} \u2192 apply_spec {planId} \u2192 plan_spec again (0 operations means done). Edit only the lines you need; for a large Spec, search the file instead of reading all of it. Removals need allowRemovals: true.", "- Use figma_eval or the batch tools instead for what a Spec cannot express: layers inside instances, OpaqueNodes (groups, sections, ellipses, rotated nodes, mixed-style text), and building new screens from scratch (create_node_tree).");
   }
   if (isEnabled("VERIFY", env)) {
     lines.push("- Before a bulk or structural edit outside spec sync, take snapshot_positions of the affected root; afterwards diff_positions shows anything missing, added or moved.");

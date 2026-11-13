@@ -42,6 +42,16 @@ Two pulls to one path could interleave between "read the existing pair" and "wri
 - **Minimal moves.** Per parent, the nodes kept are the longest increasing run of positions between the two orders (both filtered to their common members); the rest are moves. A swap is one move, and which of the two is reported is arbitrary but deterministic, so tests must accept either.
 - **The other dimension needs a live value.** Normalised props drop derived sizes, so the server sends `sizeIds` (nodes whose Spec width or height changed, known before the read) and the plugin returns their live size.
 
+## Prototype links (issue #40)
+
+`reactions` is in `COMMON`, so every Spec type carries it, and it goes through the same three-way comparison as any other key; nothing in the planner is special to it except the destination check.
+
+- **Canonical form, not a re-built one.** The value is Figma's own reaction objects, deep-copied with sorted keys and `undefined` fields dropped, and the deprecated singular `action` removed. Figma returns `action` beside `actions`, and its key order is not something to rely on; without the sort the same link would hash differently between a pull and a later read and show as drift. Defaults are not filled in (unlike `buildFullReaction` in `prototyping.ts`), because filling them would invent values Figma may not hold.
+- **An allow-list decides `$unread`.** `NODE`, `BACK`, `CLOSE` and `URL` actions round-trip as plain data. Variable, conditional and media actions carry ids and expressions whose round trip through `setReactionsAsync` has not been verified, so a node holding one lists `reactions` in `$unread` rather than guessing. The same check (`canonicalValue("reactions", …)` returning undefined) makes strict mode refuse such a value written by hand.
+- **The write lives in `updateNodeProperties` and `createNode`, and is first.** That keeps the vocabulary parity test true without a special case. `create_node_tree`'s Zod schema has no `reactions` key, so the tool strips it and its behaviour is unchanged. The setter runs before any other key, so a rejected list throws before anything else on that node is written, and the apply reports the whole update as `failed` truthfully.
+- **Destinations are checked at plan time, only for edited links.** The server collects `destinationId`s from reactions that differ from the SpecLock (and from new nodes), drops those in the Spec, and sends the rest to `read_spec_nodes` as `destinationIds`; the plugin returns those that are not a node on the page. Unedited links are left alone: they are what Figma already holds.
+- **No links to a node created in the same apply.** A new node has no id until the apply writes it into the Spec, so linking to it takes a second plan.
+
 ## See also
 
 - [Geometry verification](geometry-verification.md): the bounded walk and plugin-side stores this builds on.

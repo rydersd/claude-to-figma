@@ -53,7 +53,7 @@ A small Spec:
 
 ### What a Spec holds
 
-`SPEC_VOCABULARY` in `src/shared/spec.ts` is the one table of the keys each type may carry. Every key in it is written back by both `createNode` and `updateNodeProperties` in `node-tree.ts` (FILL on a frame by `applyDeferredFill(node, spec, only, {checkParent: true})`), and a parity test checks each one (`tests/spec-sync.test.ts`, "writable vocabulary parity"). Every type has `name`, `visible`, `x`, `y`, `opacity`, `layoutPositioning`, `layoutSizingHorizontal` and `layoutSizingVertical`, plus:
+`SPEC_VOCABULARY` in `src/shared/spec.ts` is the one table of the keys each type may carry. Every key in it is written back by both `createNode` and `updateNodeProperties` in `node-tree.ts` (FILL on a frame by `applyDeferredFill(node, spec, only, {checkParent: true})`), and a parity test checks each one (`tests/spec-sync.test.ts`, "writable vocabulary parity"). Every type has `name`, `visible`, `x`, `y`, `opacity`, `layoutPositioning`, `layoutSizingHorizontal`, `layoutSizingVertical` and `reactions` (see [Prototype links](#prototype-links-reactions)), plus:
 
 | Type | Keys |
 |---|---|
@@ -66,6 +66,23 @@ A small Spec:
 Values are in one canonical form: numbers rounded to 2 decimals, colours as upper-case hex (`#RRGGBB`, `#RRGGBBAA` below full opacity, `#00000000` for no paint) or a variable reference. A paint bound to a variable is `"$var:Collection/Name"`, or `{"$var": "Collection/Name", "opacity": 0.3}` when the paint's opacity is below 1; create and update accept both forms.
 
 **An instance is a leaf.** A variant is named by its component set: `componentSetKey` (library) or `componentSetId` (a local set, which has no importable key), with the VARIANT values in `properties` choosing the variant. A variant instance never carries `componentKey`, so changing a VARIANT value is a property edit and never fights a variant key. Any other instance has `componentKey` (library) or `componentId` (local). `properties` is flattened to `{"Name#id": value}` (instance-swap properties are not included). Its children are never read, because their ids cannot be created, moved or removed.
+
+### Prototype links (`reactions`)
+
+`reactions` is Figma's own list of reaction objects as plain JSON, so retargeting a button means editing its `destinationId` in the Spec:
+
+```jsonc
+"reactions": [
+  {"actions": [{"destinationId": "12:80", "navigation": "NAVIGATE", "preserveScrollPosition": false,
+                "transition": null, "type": "NODE"}],
+   "trigger": {"type": "ON_CLICK"}}
+]
+```
+
+- **Canonical form.** Each reaction is `{actions, trigger}` only: the deprecated singular `action` is dropped (or stands in for `actions` when that is missing), fields that are `undefined` are dropped, and keys are sorted at every level, so the order Figma returns keys in never changes the Spec or a hash. Numbers and `null` are kept as Figma has them. An empty list is the default, so a node without prototype links has no `reactions` key; deleting the key plans an update to `[]`.
+- **What a Spec carries.** Actions of type `NODE` (navigate, overlay, swap, scroll-to), `BACK`, `CLOSE` and `URL`, with any trigger. A node holding anything else (`SET_VARIABLE`, `SET_VARIABLE_MODE`, `CONDITIONAL`, `UPDATE_MEDIA_RUNTIME`, a reaction without a trigger, an unknown reaction key or a value that is not plain JSON) lists `reactions` in its `$unread`, so it is never written. Written by hand in a Spec, such a value is an error.
+- **Writing.** An update writes the whole list with `await node.setReactionsAsync(list)`, before any other key of that node, so a list Figma rejects leaves the node untouched and the update is `failed`. Updates run after the creates, in the same undo step. A created node gets its reactions right after it is created. The read-back decides `partial`, as for every key.
+- **Destinations.** A `destinationId` may point outside the pulled subtree. `plan_spec` asks the plugin about each destination outside the Spec that a changed or new node links to, and refuses, naming the linking node, when it is not a node on the Spec's page. A node created in the same apply has no id yet, so it cannot be linked to in that plan: apply it first (the apply writes its id into the Spec), then link to it and plan again.
 
 ### Absent means default (rule D)
 
@@ -85,7 +102,7 @@ What is left out as derived, never compared:
 
 ### Not synced
 
-Values the write path cannot reproduce are left out of an otherwise editable node, and their keys listed in the node's `$unread`: anything `figma.mixed` (unequal corner radii, individual stroke weights); `lineHeight` that is not in pixels, letter spacing in percent (other than 0) and fractional `fontSize`; paint lists with more than one paint, or a hidden, blended or non-solid paint; a colour bound to a variable whose `Collection/Name` does not resolve back to that variable; `strokeCap` unless every vertex agrees; `pathData` unless the vector has exactly one NONZERO path (it is written as Figma reads it back); effects with bound variables, progressive blur, "show shadow behind node" or a type other than drop shadow, inner shadow, layer blur and background blur. A line height of `AUTO` is the default and simply absent, not unread. Not in the format at all (and not listed in `$unread`): rotation, per-corner radii, constraints, min/max size, text decoration and other text styles outside the table, instance-swap properties, a vector's full network (several paths, per-vertex caps that differ), and anything inside an instance.
+Values the write path cannot reproduce are left out of an otherwise editable node, and their keys listed in the node's `$unread`: anything `figma.mixed` (unequal corner radii, individual stroke weights); `lineHeight` that is not in pixels, letter spacing in percent (other than 0) and fractional `fontSize`; paint lists with more than one paint, or a hidden, blended or non-solid paint; a colour bound to a variable whose `Collection/Name` does not resolve back to that variable; `strokeCap` unless every vertex agrees; `pathData` unless the vector has exactly one NONZERO path (it is written as Figma reads it back); effects with bound variables, progressive blur, "show shadow behind node" or a type other than drop shadow, inner shadow, layer blur and background blur; `reactions` holding an action type other than `NODE`, `BACK`, `CLOSE` and `URL` (see [Prototype links](#prototype-links-reactions)). A line height of `AUTO` is the default and simply absent, not unread. Not in the format at all (and not listed in `$unread`): rotation, per-corner radii, constraints, min/max size, text decoration and other text styles outside the table, instance-swap properties, a vector's full network (several paths, per-vertex caps that differ), and anything inside an instance.
 
 ### Files and paths
 
@@ -169,6 +186,8 @@ Details:
 - places an existing node under a new one (apply the new parent first, pull, then move into it);
 - deletes a property that has no default (for example an instance's `componentKey`, its `properties`, or one key of them).
 
+After the live read, it also refuses when a changed or new node's `reactions` link to a `destinationId` outside the Spec that is not a node on the Spec's page (see [Prototype links](#prototype-links-reactions)).
+
 Every value, key list and type string quoted in an error is clipped to about 80 characters, and lists stop at 10 items with a count of the rest.
 
 It also refuses when the SpecLock records an unfinished apply (`pendingApply`; pull again), when the Spec or SpecLock is missing, a symlink or not valid JSON, and when the connected file or page is not the Spec's (as for [Refusals](#refusals)).
@@ -216,7 +235,7 @@ The plugin checks the file and page (as for [Refusals](#refusals)), then, in the
 `figma.commitUndo()` before the first write and after the last, so one undo in Figma reverts the apply (and anything done by hand in the file while it ran). The tool never calls `triggerUndo`.
 
 1. **Creates**, each a new subtree under an existing parent, through `createNode` with `onBindFailure: "keep"`: a node whose colour variable cannot be bound is kept, renamed `<name> (failed)`, and reported under `failed`. Every key absent from a created node is written as its `SPEC_DEFAULTS` value, so the new node is what "absent means default" says. A new text node without a `name` gets Figma's auto-rename, so it stays named by its text.
-2. **Updates**, through `resolveAndBind` and `updateNodeProperties` with `only` set to the listed keys, then `applyDeferredFill(node, spec, only, {checkParent: true})`. No other setter fires: a text edit leaves the font alone, a fill edit leaves a bound stroke alone.
+2. **Updates**, through `resolveAndBind` and `updateNodeProperties` with `only` set to the listed keys, then `applyDeferredFill(node, spec, only, {checkParent: true})`. No other setter fires: a text edit leaves the font alone, a fill edit leaves a bound stroke alone. `reactions` is written first, with `await node.setReactionsAsync(list)`; the creates have already run, so every id they made exists.
 3. **Moves**, and the place of each created node, per parent in the Spec's child order: only the nodes that moved are inserted, each right after its previous Spec sibling (or before the first one, when it has none), so nodes added by hand keep their places. Each insert is read back. A reparent into a frame without auto-layout (or of an `ABSOLUTE` node) keeps the node's absolute position: its `relativeTransform` is set from its old `absoluteTransform` and the new parent's, then asserted. Keys that depend on the parent (`x`, `y`, `layoutPositioning`, `layoutSizingHorizontal`, `layoutSizingVertical`) on a node that also moves are written after the move, against the new parent, with `applyDeferredFill(..., {checkParent: true})` for FILL. A move whose node reached its new parent but whose index or kept position did not hold is reported under `partial` with what happened, never under `failed`.
 4. **Removals**, last, and only with `allowRemovals: true`: the topmost node is moved into a page-level frame `l2f/superseded` at the same absolute position and renamed `<name> (superseded YYYY-MM-DD)`. Its descendants travel with it. The holder is created when missing (no auto-layout, no clipping, no fill, hidden, so superseded nodes leave the view; show it in the layers panel to see them) and its id is kept in the SpecLock as `supersededFrameId`. A recorded holder that is no longer a page-level frame without auto-layout is left as it is, and a fresh one (`l2f/superseded 2`, ...) is made. A removed node that reached the holder but did not keep its position is `partial`, not `failed`. Nothing on this path calls `remove()`.
 

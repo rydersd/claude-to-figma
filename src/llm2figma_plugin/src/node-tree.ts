@@ -240,6 +240,11 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
   };
 
   // --- Common properties for all node types ---
+  // Prototype reactions first: if Figma rejects them, nothing else was written.
+  if (typeof existingNode.setReactionsAsync === "function" && want("reactions") && Array.isArray(spec.reactions)) {
+    await existingNode.setReactionsAsync(spec.reactions);
+    changedProps.push("reactions");
+  }
   if (want("name") && spec.name !== undefined && existingNode.name !== spec.name) {
     existingNode.name = spec.name;
     changedProps.push("name");
@@ -903,6 +908,17 @@ async function createNodeAt(
     const node: any = await figma.getNodeByIdAsync(result.id);
     if (node && fillsParent) applyDeferredFill(node, props, undefined, { checkParent: true });
     if (node && props.visible !== undefined) node.visible = !!props.visible;
+  }
+  // Prototype reactions (spec sync; create_node_tree's schema has no such key).
+  // The node is kept when Figma rejects them, and the error reported.
+  if (Array.isArray(props.reactions) && props.reactions.length) {
+    try {
+      const node: any = await figma.getNodeByIdAsync(result.id);
+      if (node) await node.setReactionsAsync(props.reactions);
+    } catch (err: any) {
+      ctx.counters.errors++;
+      ctx.errors.push(withPath({ type, name: props.name || "(unnamed)", nodeId: result.id, error: "Reactions not set: " + (err.message || String(err)) }));
+    }
   }
 
   ctx.counters.created++;

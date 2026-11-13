@@ -8,7 +8,7 @@ import {
 } from "../../shared/spec.js";
 import { WALK_LIMITS } from "../../shared/walk.js";
 import { backUp, readExistingPair, readSpecPair, resolveSpecPaths, specBaseDir, writeFileAtomic, type SpecPaths } from "../spec-files.js";
-import { computePlan, prepareSpec, type LiveRead, type Plan, type PlanIssue, type PlanOperation } from "../spec-plan.js";
+import { checkDestinations, computePlan, prepareSpec, type LiveRead, type Plan, type PlanIssue, type PlanOperation } from "../spec-plan.js";
 import { buildApply, findPartial, relock, withCreatedIds, type OnConflict, type PartialEntry, type ReadBack, type SkippedEntry } from "../spec-apply.js";
 
 // Spec sync (L2F_SPEC_SYNC). pull_spec writes a subtree to a Spec file the model
@@ -257,12 +257,16 @@ export async function planSpec(args: { path: string }, send: SendCommandFn, opti
 
   const live = await send("read_spec_nodes", {
     rootId: lock.rootId, expect: { fileKey: lock.fileKey, fileName: lock.fileName, pageId: lock.pageId },
-    baseHashes: pre.baseHashes, truncated: pre.truncated, sizeIds: pre.sizeIds,
+    baseHashes: pre.baseHashes, truncated: pre.truncated, sizeIds: pre.sizeIds, destinationIds: [...pre.destinations.keys()],
     maxNodes: WALK_LIMITS.maxNodes, maxDepth: WALK_LIMITS.maxDepth,
   }, READ_TIMEOUT_MS) as LiveRead;
   if (!live || typeof live !== "object" || !live.nodes || typeof live.nodes !== "object" || live.rootId !== lock.rootId) {
     throw new Error("The Figma plugin returned no node read. Rebuild and re-run the plugin (bun run build) so it knows read_spec_nodes.");
   }
+  if (pre.destinations.size && !Array.isArray(live.missingDestinations)) {
+    throw new Error("The Figma plugin did not check the Spec's prototype destinations. Rebuild and re-run the plugin (bun run build).");
+  }
+  checkDestinations(pre, live.missingDestinations ?? []);
   const connectedKey = live.fileKey ?? (options.userFileKey ?? getChannelFileKey)() ?? null;
   if (lock.fileKey && connectedKey && lock.fileKey !== connectedKey) {
     throw new Error(`Wrong file: ${paths.specPath} is for file key ${clip(String(lock.fileKey))}, but the connected file's key is ${clip(String(connectedKey))}.`);

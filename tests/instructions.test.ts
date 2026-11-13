@@ -12,7 +12,9 @@ describe("server instructions", () => {
     expect(text).toContain("use spec sync by default");
     expect(text).toContain("pull_spec");
     expect(text).toContain("apply_spec");
-    expect(text).toContain("prototype links");
+    // Prototype links are edited through the Spec, not figma_eval (issue #40).
+    expect(text).toContain("order, prototype links (reactions), adding or removing layers), use spec sync");
+    expect(text).not.toMatch(/figma_eval or the batch tools instead[^\n]*prototype/);
     expect(text).toContain("snapshot_positions");
   });
 

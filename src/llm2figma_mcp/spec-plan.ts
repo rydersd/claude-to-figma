@@ -9,7 +9,7 @@
 // docs/Spec-Sync.md and the plan's "Spec sync" section for the tables.
 
 import {
-  OPAQUE_TYPE, SPEC_DEFAULTS, UNREAD_KEY, clip, lockProps, normalizeNode, normalizeSpecTree, showList, showValue,
+  OPAQUE_TYPE, SPEC_DEFAULTS, UNREAD_KEY, clip, lockProps, normalizeNode, normalizeSpecTree, reactionDestinations, showList, showValue,
   stableStringify, type ParentLayout, type SpecFile, type SpecLockFile, type SpecType,
 } from "../shared/spec.js";
 
@@ -33,6 +33,8 @@ export interface LiveRead {
   truncated: boolean;
   nodeCount: number;
   nodes: Record<string, LiveNode>;
+  // The destinationIds sent that are not a node on the page.
+  missingDestinations?: string[];
 }
 
 export type PlanOperation =
@@ -146,6 +148,10 @@ export interface PreparedSpec {
   // Nodes whose Spec width or height differs from the base: the read returns
   // their live size, since an update naming one dimension needs the other.
   sizeIds: string[];
+  // Prototype destinations outside the Spec that a changed or new node's
+  // reactions link to, each with the Spec places linking to it: the live read
+  // checks they exist.
+  destinations: Map<string, string[]>;
 }
 
 const MAX_LISTED_ERRORS = 10;
@@ -268,11 +274,39 @@ export function prepareSpec(spec: SpecFile, lock: SpecLockFile, rootParentLayout
     if (node.props.truncated === true) truncated[id] = typeof node.props.reason === "string" ? node.props.reason : "node budget";
   }
   const sizeIds: string[] = [];
+  const destinations = new Map<string, string[]>();
+  const linkFrom = (at: string, reactions: unknown) => {
+    for (const target of reactionDestinations(reactions)) {
+      if (seen.has(target)) continue;
+      if (!destinations.has(target)) destinations.set(target, []);
+      destinations.get(target)!.push(at);
+    }
+  };
   for (const [id, node] of desired) {
     const base = lock.nodes[id].props;
     if (RESIZABLE.has(String(node.props.type)) && (!same(node.props.width, base.width) || !same(node.props.height, base.height))) sizeIds.push(id);
+    if (!same(node.props.reactions, base.reactions)) linkFrom(`${where(node.path)} (${clip(id)})`, node.props.reactions);
   }
-  return { desired, desiredChildren, creates, baseHashes, truncated, sizeIds };
+  const linkSubtree = (node: Record<string, any>, path: number[]) => {
+    linkFrom(where(path), node.reactions);
+    (Array.isArray(node.children) ? node.children : []).forEach((child: any, i: number) => linkSubtree(child, [...path, i]));
+  };
+  for (const op of creates) linkSubtree(op.node, op.path);
+  return { desired, desiredChildren, creates, baseHashes, truncated, sizeIds, destinations };
+}
+
+// Refuses the plan when a prototype link the Spec writes points at a node that
+// is not on the page (read_spec_nodes' missingDestinations), naming each node
+// that links to it. A destination in the Spec itself is never sent: the live
+// read covers it.
+export function checkDestinations(prepared: PreparedSpec, missing: readonly string[]): void {
+  const errors: string[] = [];
+  for (const target of missing) {
+    for (const at of prepared.destinations.get(target) ?? []) {
+      errors.push(`${at}: reactions link to destinationId ${showValue(target)}, which is not a node on this page. A node created in this apply has no id yet: apply it first, then link to it in a second plan`);
+    }
+  }
+  if (errors.length) failWith(errors);
 }
 
 function stripIds(node: Record<string, any>): Record<string, any> {

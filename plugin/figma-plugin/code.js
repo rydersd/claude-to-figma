@@ -65,7 +65,7 @@
   var OPAQUE_TYPE = "$opaque";
   var UNREAD_KEY = "$unread";
   var NO_PAINT = "#00000000";
-  var COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning"];
+  var COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning", "reactions"];
   var SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
   var PAINTED = ["fillColor", "strokeColor", "strokeWeight", "strokeAlign", "effects"];
   var AUTO_LAYOUT = [
@@ -103,7 +103,16 @@
     ],
     instance: [...COMMON, "componentKey", "componentId", "componentSetKey", "componentSetId", "properties", "width", "height", ...SIZING]
   };
-  var BASE_DEFAULTS = { visible: true, x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED" };
+  var BASE_DEFAULTS = {
+    visible: true,
+    x: 0,
+    y: 0,
+    opacity: 1,
+    layoutPositioning: "AUTO",
+    layoutSizingHorizontal: "FIXED",
+    layoutSizingVertical: "FIXED",
+    reactions: []
+  };
   var PAINT_DEFAULTS = { fillColor: NO_PAINT, strokeColor: NO_PAINT, strokeWeight: 1, effects: [] };
   var SPEC_DEFAULTS = {
     frame: {
@@ -225,6 +234,7 @@
     "pathData",
     "pathHash",
     "properties",
+    "reactions",
     UNREAD_KEY
   ];
   var MAX_SHOWN_CHARS = 80;
@@ -329,9 +339,50 @@
     }
     return out;
   }
+  function plainJson(value) {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+    if (typeof value === "number") return isFinite(value) ? value : void 0;
+    if (Array.isArray(value)) {
+      const out2 = [];
+      for (const item of value) {
+        const copy = plainJson(item);
+        if (copy === void 0) return void 0;
+        out2.push(copy);
+      }
+      return out2;
+    }
+    if (Object.prototype.toString.call(value) !== "[object Object]") return void 0;
+    const out = {};
+    for (const key of Object.keys(value).sort()) {
+      const item = value[key];
+      if (item === void 0) continue;
+      const copy = plainJson(item);
+      if (copy === void 0) return void 0;
+      out[key] = copy;
+    }
+    return out;
+  }
+  var REACTION_ACTIONS = /* @__PURE__ */ new Set(["NODE", "BACK", "CLOSE", "URL"]);
+  var REACTION_KEYS = /* @__PURE__ */ new Set(["trigger", "actions", "action"]);
+  var isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+  function canonicalReactions(list) {
+    if (!Array.isArray(list)) return void 0;
+    const out = [];
+    for (const reaction of list) {
+      if (!isPlainObject(reaction)) return void 0;
+      if (Object.keys(reaction).some((key) => reaction[key] !== void 0 && !REACTION_KEYS.has(key))) return void 0;
+      const trigger = plainJson(reaction.trigger);
+      if (!isPlainObject(trigger) || typeof trigger.type !== "string") return void 0;
+      const actions = plainJson(reaction.actions !== void 0 ? reaction.actions : reaction.action ? [reaction.action] : []);
+      if (!Array.isArray(actions) || !actions.every((action) => isPlainObject(action) && REACTION_ACTIONS.has(action.type))) return void 0;
+      out.push({ actions, trigger });
+    }
+    return out;
+  }
   function canonicalValue(key, value) {
     if (COLOR_KEYS.has(key)) return canonicalColor(value);
     if (key === "effects") return canonicalEffects(value);
+    if (key === "reactions") return canonicalReactions(value);
     if (NUMBER_KEYS.has(key)) {
       const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
       return typeof n === "number" && isFinite(n) ? round2(n) : void 0;
@@ -6680,6 +6731,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         }
       }
     };
+    if (typeof existingNode.setReactionsAsync === "function" && want("reactions") && Array.isArray(spec.reactions)) {
+      await existingNode.setReactionsAsync(spec.reactions);
+      changedProps.push("reactions");
+    }
     if (want("name") && spec.name !== void 0 && existingNode.name !== spec.name) {
       existingNode.name = spec.name;
       changedProps.push("name");
@@ -7236,6 +7291,15 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       const node = await figma.getNodeByIdAsync(result.id);
       if (node && fillsParent) applyDeferredFill(node, props, void 0, { checkParent: true });
       if (node && props.visible !== void 0) node.visible = !!props.visible;
+    }
+    if (Array.isArray(props.reactions) && props.reactions.length) {
+      try {
+        const node = await figma.getNodeByIdAsync(result.id);
+        if (node) await node.setReactionsAsync(props.reactions);
+      } catch (err) {
+        ctx.counters.errors++;
+        ctx.errors.push(withPath({ type, name: props.name || "(unnamed)", nodeId: result.id, error: "Reactions not set: " + (err.message || String(err)) }));
+      }
     }
     ctx.counters.created++;
     created.push({ path, id: result.id });
@@ -9322,7 +9386,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const type = SPEC_TYPE_OF[node.type];
     const { unread, mark } = unreadList();
     const props = await readByType(node, type, cache, mark);
-    return props ? { props, unread } : { opaque: "main component missing" };
+    if (!props) return { opaque: "main component missing" };
+    props.reactions = mark("reactions", readReactions(node));
+    return { props, unread };
+  }
+  function readReactions(node) {
+    return node.reactions === void 0 ? [] : canonicalValue("reactions", node.reactions);
   }
   async function readByType(node, type, cache, mark) {
     switch (type) {
@@ -9511,7 +9580,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     return node && typeof node.width === "number" && typeof node.height === "number" ? { width: round2(node.width), height: round2(node.height) } : void 0;
   }
   async function readSpecNodes(params) {
-    const { rootId, expect, baseHashes, truncated, sizeIds, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+    const { rootId, expect, baseHashes, truncated, sizeIds, destinationIds, maxNodes, maxDepth, maxBytes, commandId } = params || {};
     if (!rootId || typeof rootId !== "string") throw new Error("Missing rootId parameter");
     const bases = baseHashes && typeof baseHashes === "object" ? baseHashes : {};
     const forced = /* @__PURE__ */ new Map();
@@ -9534,6 +9603,12 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       const size = liveSize(id === read.rootId ? read.root : await figma.getNodeByIdAsync(id));
       if (size) nodes[id].size = size;
     }
+    const missingDestinations = [];
+    for (const id of Array.isArray(destinationIds) ? destinationIds : []) {
+      const target = typeof id === "string" ? await figma.getNodeByIdAsync(id) : null;
+      const targetPage = target && !target.removed ? pageOf2(target) : null;
+      if (!targetPage || targetPage.id !== read.pageId) missingDestinations.push(String(id));
+    }
     return {
       fileKey: read.fileKey,
       fileName: read.fileName,
@@ -9543,7 +9618,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       rootParentLayoutMode: read.rootParentLayoutMode,
       truncated: read.truncated,
       nodeCount: Object.keys(nodes).length,
-      nodes
+      nodes,
+      missingDestinations
     };
   }
   function forcedReasons(truncated) {

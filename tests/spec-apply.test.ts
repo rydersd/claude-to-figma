@@ -27,6 +27,7 @@ let nodes = new Map<string, any>();
 let page: any;
 let undoCommits = 0;
 let removeCalls = 0;
+let reactionWrites: Array<{ id: string; reactions: any[] }> = [];
 
 type M = [[number, number, number], [number, number, number]];
 const mul = (a: M, b: M): M => [
@@ -56,7 +57,12 @@ function makeNode(type: string, extra: any = {}, parent: any = null): any {
     layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED",
     clipsContent: true, itemReverseZIndex: false, itemSpacing: 0, counterAxisSpacing: 0,
     paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0, primaryAxisAlignItems: "MIN", counterAxisAlignItems: "MIN",
-    cornerRadius: 0, rel: [[1, 0, x], [0, 1, y]] as M,
+    cornerRadius: 0, rel: [[1, 0, x], [0, 1, y]] as M, reactions: [],
+    // Like Figma, the read-back also carries the deprecated singular `action`.
+    async setReactionsAsync(list: any[]) {
+      reactionWrites.push({ id: this.id, reactions: JSON.parse(JSON.stringify(list)) });
+      this.reactions = list.map((r: any) => ({ action: r.actions[0], actions: JSON.parse(JSON.stringify(r.actions)), trigger: { ...r.trigger } }));
+    },
     resize(w: number, h: number) { if (!this.ignoreResize) { this.width = w; this.height = h; } },
     appendChild(child: any) { detach(child); child.parent = this; this.children.push(child); },
     insertChild(index: number, child: any) { detach(child); child.parent = this; this.children.splice(index, 0, child); },
@@ -101,6 +107,7 @@ function freshFigma() {
   nodes = new Map();
   undoCommits = 0;
   removeCalls = 0;
+  reactionWrites = [];
   page = makeNode("PAGE", { name: "Page 1", async loadAsync() { this.loaded = true; } });
   (globalThis as any).figma = {
     mixed: Symbol("mixed"),
@@ -639,6 +646,129 @@ describe("spec sync apply (PR 11d)", () => {
     await apply(planned.planId);
     await expect(apply(planned.planId)).rejects.toThrow(/SpecLock .* changed since plan/);
     expect(allowedEditors("apply_spec_ops")).not.toContain("dev");
+  });
+
+  describe("prototype reactions (issue #40)", () => {
+    // As Figma returns a reaction: the deprecated singular `action` beside
+    // `actions`, and an undefined field.
+    const navigate = (destinationId: string) => ({
+      trigger: { type: "ON_CLICK" },
+      action: { type: "NODE", destinationId, navigation: "NAVIGATE", transition: null, preserveScrollPosition: false },
+      actions: [{ type: "NODE", destinationId, navigation: "NAVIGATE", transition: null, preserveScrollPosition: false, overlayRelativePosition: undefined }],
+    });
+    const canonical = (destinationId: string) => [{
+      actions: [{ destinationId, navigation: "NAVIGATE", preserveScrollPosition: false, transition: null, type: "NODE" }],
+      trigger: { type: "ON_CLICK" },
+    }];
+    async function linked() {
+      const seeded = await seed();
+      const screenB = makeNode("FRAME", { name: "Screen B", x: 500 }, page);
+      const screenC = makeNode("FRAME", { name: "Screen C", x: 900 }, page);
+      seeded.byName("Swatch").reactions = [navigate(screenB.id)];
+      return { ...seeded, screenB, screenC };
+    }
+
+    test("pull: an ON_CLICK NAVIGATE reaction is in the Spec in canonical form", async () => {
+      const { root, byName, screenB } = await linked();
+      await pull(root);
+      const swatch = readJson(specPath()).tree.children.find((c: any) => c.name === "Swatch");
+      expect(swatch.reactions).toEqual(canonical(screenB.id));
+      expect(JSON.stringify(swatch.reactions)).toBe(JSON.stringify(canonical(screenB.id)));
+      expect(swatch.$unread).toBeUndefined();
+      // A node without reactions has no key: [] is the default.
+      expect(readJson(specPath()).tree.children.find((c: any) => c.name === "Title").reactions).toBeUndefined();
+      expect(readJson(lockPath()).nodes[byName("Swatch").id].props.reactions).toEqual(canonical(screenB.id));
+    });
+
+    test("retargeting destinationId is one update of reactions, written with setReactionsAsync; a re-plan is empty", async () => {
+      const { root, byName, screenC } = await linked();
+      await pull(root);
+      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = screenC.id; });
+      const planned = await plan();
+      expect(planned.counts).toMatchObject({ operations: 1, updates: 1, conflicts: 0, drift: 0 });
+      expect(planned.operations).toEqual([{ op: "update", id: byName("Swatch").id, name: "Swatch", keys: ["reactions"] }]);
+      const before = snapshot();
+      const result = await apply(planned.planId);
+      expect(result.counts).toMatchObject({ updated: 1, partial: 0, failed: 0 });
+      expect(reactionWrites).toEqual([{ id: byName("Swatch").id, reactions: canonical(screenC.id) }]);
+      expect(changedFields(before, snapshot(), byName("Swatch").id)).toEqual(["reactions"]);
+      expect(undoCommits).toBe(2);
+      expect((await plan()).counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
+    });
+
+    test("deleting the reactions key plans an update to []", async () => {
+      const { root, byName } = await linked();
+      await pull(root);
+      editSpec((_s, find) => { delete find("Swatch").reactions; });
+      const planned = await plan();
+      expect(planned.operations).toEqual([{ op: "update", id: byName("Swatch").id, name: "Swatch", keys: ["reactions"] }]);
+      expect((store.get(planned.planId).operations[0] as any).set).toEqual({ reactions: [] });
+      await apply(planned.planId);
+      expect(byName("Swatch").reactions).toEqual([]);
+      expect((await plan()).counts.operations).toBe(0);
+    });
+
+    test("a reaction the plugin cannot reproduce is listed in $unread, and an edit to it is refused", async () => {
+      const { root, byName, screenB } = await linked();
+      byName("Swatch").reactions = [{ trigger: { type: "ON_CLICK" }, actions: [{ type: "SET_VARIABLE", variableId: "v-brand", variableValue: { type: "BOOLEAN", resolvedType: "BOOLEAN", value: true } }] }];
+      await pull(root);
+      const swatch = readJson(specPath()).tree.children.find((c: any) => c.name === "Swatch");
+      expect(swatch.$unread).toEqual(["reactions"]);
+      expect(swatch.reactions).toBeUndefined();
+      editSpec((_s, find) => { find("Swatch").reactions = canonical(screenB.id); });
+      const planned = await plan();
+      expect(planned.counts.updates).toBe(0);
+      expect(planned.conflicts).toEqual([expect.objectContaining({ id: byName("Swatch").id, kind: "property", keys: ["reactions"] })]);
+      await apply(planned.planId, { onConflict: "spec" });
+      expect(reactionWrites).toEqual([]);
+      expect(byName("Swatch").reactions[0].actions[0].type).toBe("SET_VARIABLE");
+      // Written by hand in a Spec, an action type the Spec does not carry is an error.
+      editSpec((_s, find) => { const s = find("Title"); s.reactions = [{ trigger: { type: "ON_CLICK" }, actions: [{ type: "SET_VARIABLE_MODE" }] }]; });
+      await expect(plan()).rejects.toThrow(/reactions .* cannot be written/);
+    });
+
+    test("a destinationId that is not a node on the page is a plan error naming the node; one in the Spec is fine", async () => {
+      const { root, byName } = await linked();
+      await pull(root);
+      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = "404:1"; });
+      await expect(plan()).rejects.toThrow(new RegExp(`tree\\.children\\[2\\] \\(${byName("Swatch").id}\\): reactions link to destinationId "404:1"`));
+      expect(sent.filter(s => s.command === "read_spec_nodes").at(-1).params.destinationIds).toEqual(["404:1"]);
+      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = byName("Row").id; });
+      const planned = await plan();
+      expect(planned.counts.updates).toBe(1);
+      expect(sent.filter(s => s.command === "read_spec_nodes").at(-1).params.destinationIds).toEqual([]);
+    });
+
+    test("the canonical form and the hashes do not depend on the order Figma returns keys in", async () => {
+      const { root, byName, screenB } = await linked();
+      await pull(root);
+      const lock = readJson(lockPath());
+      const swatch = byName("Swatch");
+      expect(lock.nodes[swatch.id].props.reactions).toEqual(canonical(screenB.id));
+      const reordered = navigate(screenB.id);
+      swatch.reactions = [{
+        actions: reordered.actions.map((a: any) => Object.fromEntries(Object.entries(a).reverse())),
+        action: reordered.action, trigger: reordered.trigger,
+      }];
+      const live = await readSpecNodes({ rootId: root.id, baseHashes: {}, maxNodes: 100 });
+      expect(live.nodes[swatch.id].propsHash).toBe(lock.nodes[swatch.id].propsHash);
+      expect((await plan()).counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
+    });
+
+    test("Dev Mode refuses an apply that would write reactions, with nothing written", async () => {
+      const { root, screenC } = await linked();
+      await pull(root);
+      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = screenC.id; });
+      const planned = await plan();
+      (globalThis as any).figma.editorType = "dev";
+      hook = async command => {
+        if (command !== "apply_spec_ops") return;
+        try { assertEditorAllowed(command, (globalThis as any).figma.editorType, {}); } catch (error: any) { throw new FigmaCommandError(error.message, "plugin_error"); }
+      };
+      await expect(apply(planned.planId)).rejects.toThrow(/not available in the dev editor/);
+      expect(reactionWrites).toEqual([]);
+      expect(readJson(lockPath()).pendingApply).toBeNull();
+    });
   });
 
   test("apply_spec registers with the other spec tools only under L2F_SPEC_SYNC", () => {
