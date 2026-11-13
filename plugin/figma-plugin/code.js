@@ -9828,7 +9828,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     autoConnect: true
     // Auto-connect on plugin launch
   };
-  figma.showUI(__html__, { width: 350, height: 600 });
+  var UI_WIDTH = 350;
+  var UI_MIN_HEIGHT = 200;
+  var UI_MAX_HEIGHT = 800;
+  figma.showUI(__html__, { width: UI_WIDTH, height: 600 });
   function reportUncaught(source, error) {
     const detail = formatError(error);
     console.error(`[llm2figma] uncaught ${source}:
@@ -9863,6 +9866,13 @@ ${detail}`);
       case "close-plugin":
         figma.closePlugin();
         break;
+      case "resize-ui": {
+        const height = Number(msg.height);
+        if (Number.isFinite(height)) {
+          figma.ui.resize(UI_WIDTH, Math.round(Math.min(UI_MAX_HEIGHT, Math.max(UI_MIN_HEIGHT, height))));
+        }
+        break;
+      }
       case "execute-command":
         setPluginOperationGuard(true);
         try {
