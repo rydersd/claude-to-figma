@@ -17189,7 +17189,9 @@ function onDisconnect() {
 // src/llm2figma_mcp/plugin-runtime.ts
 import fs2 from "fs";
 import net from "net";
+import os2 from "os";
 import path2 from "path";
+import { fileURLToPath } from "url";
 import { execFileSync, spawn } from "child_process";
 import { randomUUID as randomUUID2 } from "crypto";
 
@@ -17202,6 +17204,19 @@ var RELAY_PORT = Number(process.env.L2F_RELAY_PORT) || 3055;
 var PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 var PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
 var isPluginInstall = Boolean(PLUGIN_ROOT && PLUGIN_DATA);
+function cloneRelayScript() {
+  try {
+    const here = path2.dirname(fileURLToPath(import.meta.url));
+    return [path2.resolve(here, "..", "socket.ts"), path2.resolve(here, "..", "src", "socket.ts")].find((f) => fs2.existsSync(f));
+  } catch {
+    return;
+  }
+}
+var CLONE_RELAY_SCRIPT = isPluginInstall ? undefined : cloneRelayScript();
+var autostartOff = process.env.L2F_NO_RELAY_AUTOSTART === "1";
+var relayAutostart = !autostartOff && (isPluginInstall || Boolean(CLONE_RELAY_SCRIPT));
+var relayStatus = null;
+var lastRelayStatus = () => relayStatus;
 function figmaPluginManifestPath() {
   return PLUGIN_DATA ? path2.join(PLUGIN_DATA, "figma-plugin", "manifest.json") : null;
 }
@@ -17242,14 +17257,16 @@ async function relayVersion(port) {
 var relayPidFile = (dataDir, port) => path2.join(dataDir, `relay-${port}.pid`);
 var relayLockFile = (dataDir, port) => path2.join(dataDir, `relay-${port}.lock`);
 var legacyRelayPidFile = (dataDir) => path2.join(dataDir, "relay.pid");
-function isPluginRelayCommand(command, pluginRoot) {
+function isOwnRelayCommand(command, host) {
   const args = command.trim().split(/\s+/).slice(1);
   while (args.length > 0 && args[0].startsWith("-"))
     args.shift();
   const script = args.join(" ");
   if (!path2.isAbsolute(script))
     return false;
-  const installDir = path2.dirname(path2.resolve(pluginRoot));
+  if (host.relayScript)
+    return path2.resolve(script) === path2.resolve(host.relayScript);
+  const installDir = path2.dirname(path2.resolve(host.pluginRoot));
   const [version, ...rest] = path2.relative(installDir, path2.resolve(script)).split(path2.sep);
   return Boolean(version) && version !== ".." && rest.length === 2 && rest[0] === "server" && rest[1] === "relay.js";
 }
@@ -17269,7 +17286,7 @@ async function stopOwnRelay(host) {
     if (!Number.isInteger(pid) || pid <= 1)
       return false;
     const command = host.run("ps", ["-p", String(pid), "-o", "command="]);
-    if (!isPluginRelayCommand(command.trim(), host.pluginRoot))
+    if (!isOwnRelayCommand(command.trim(), host))
       return false;
     const listeners = host.run("lsof", ["-nP", `-iTCP:${host.port}`, "-sTCP:LISTEN", "-t"]).split(/\s+/).filter(Boolean);
     if (!listeners.includes(String(pid)))
@@ -17366,27 +17383,36 @@ async function acquireRelayLock(host) {
   }
 }
 async function startOrReplaceRelay(host) {
+  const done = (status, result) => {
+    relayStatus = status;
+    return result;
+  };
   if (await host.version() === RELAY_PROTOCOL_VERSION)
-    return true;
+    return done("already-running", true);
   const release = await acquireRelayLock(host);
   if (!release) {
     logger.warn(`Another session is still starting the relay on port ${host.port}; not touching it.`);
-    return host.isListening();
+    const listening = await host.isListening();
+    return done(listening ? "already-running" : "failed", listening);
   }
   try {
     const version = await host.version();
     if (version === RELAY_PROTOCOL_VERSION)
-      return true;
+      return done("already-running", true);
+    if (version === null && await host.isListening()) {
+      logger.warn(`Port ${host.port} is held by a process that isn't an llm2figma relay; leaving it alone.`);
+      return done("blocked", true);
+    }
     if (version !== null) {
       if (!await stopOwnRelay(host)) {
-        logger.warn(`An older relay (protocol "${version}") is running on port ${host.port} and wasn't started by this plugin.`);
-        return true;
+        logger.warn(`An older relay (protocol "${version}") is running on port ${host.port} and wasn't started by this server.`);
+        return done("blocked", true);
       }
-      logger.info("Replaced an older relay started by this plugin");
+      logger.info("Replaced an older relay started by this server");
     }
     if (!host.hasBun) {
       logger.error("The relay needs Bun. Install it: curl -fsSL https://bun.sh/install | bash");
-      return false;
+      return done("failed", false);
     }
     const logPath = path2.join(host.pluginData, "relay.log");
     host.spawnRelay(relayPidFile(host.pluginData, host.port), logPath);
@@ -17394,19 +17420,21 @@ async function startOrReplaceRelay(host) {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
       if (await host.isListening())
-        return true;
+        return done("started", true);
       await host.sleep(150);
     }
     logger.error(`The relay did not start; see ${logPath}`);
-    return false;
+    return done("failed", false);
   } finally {
     release();
   }
 }
-function defaultRelayHost(pluginRoot, pluginData, port) {
+function defaultRelayHost(pluginRoot, pluginData, port, relayScript) {
+  const script = relayScript ?? path2.join(pluginRoot, "server", "relay.js");
   return {
     pluginRoot,
     pluginData,
+    relayScript,
     port,
     hasBun: Boolean(process.versions.bun),
     version: () => relayVersion(port),
@@ -17416,7 +17444,7 @@ function defaultRelayHost(pluginRoot, pluginData, port) {
     spawnRelay: (pidFile, logPath) => {
       fs2.mkdirSync(pluginData, { recursive: true });
       const log = fs2.openSync(logPath, "w");
-      const child = spawn(process.execPath, [path2.join(pluginRoot, "server", "relay.js")], {
+      const child = spawn(process.execPath, [script], {
         detached: true,
         stdio: ["ignore", log, log],
         env: { ...process.env, L2F_RELAY_PORT: String(port), L2F_RELAY_PID_FILE: pidFile }
@@ -17429,10 +17457,15 @@ function defaultRelayHost(pluginRoot, pluginData, port) {
 }
 var relayStart = null;
 function ensureRelay(port) {
-  if (!PLUGIN_ROOT || !PLUGIN_DATA)
-    return isRelayListening(port);
+  if (!relayAutostart) {
+    return isRelayListening(port).then((listening) => {
+      relayStatus = listening ? "already-running" : autostartOff ? "autostart-off" : "not-running";
+      return listening;
+    });
+  }
   if (!relayStart) {
-    relayStart = startOrReplaceRelay(defaultRelayHost(PLUGIN_ROOT, PLUGIN_DATA, port)).finally(() => {
+    const host = PLUGIN_ROOT && PLUGIN_DATA ? defaultRelayHost(PLUGIN_ROOT, PLUGIN_DATA, port) : defaultRelayHost(path2.dirname(CLONE_RELAY_SCRIPT), process.env.L2F_RELAY_DATA_DIR || path2.join(os2.homedir(), ".llm2figma"), port, CLONE_RELAY_SCRIPT);
+    relayStart = startOrReplaceRelay(host).finally(() => {
       relayStart = null;
     });
   }
@@ -17691,7 +17724,7 @@ function autoJoinChannel() {
 function sendCommandToFigma(command, params = {}, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      if (!isPluginInstall) {
+      if (!relayAutostart) {
         connectToFigma();
         reject(new FigmaCommandError("Not connected to the relay. Start it with `bun socket` in the llm2figma repo.", "not_sent"));
         return;
@@ -26155,9 +26188,19 @@ Pass \`rootId\` (instead of \`parentId\`) to reconcile an existing tree: matches
 }
 
 // src/llm2figma_mcp/tools/setup.ts
+var RELAY_STATUS_TEXT = {
+  started: "started by this server",
+  "already-running": "already running",
+  blocked: `blocked: port ${RELAY_PORT} is held by a process this server didn't start (another program, or an older relay); it was left alone`,
+  failed: "this server couldn't start it",
+  "autostart-off": "not running; autostart is off (L2F_NO_RELAY_AUTOSTART=1)",
+  "not-running": "not running"
+};
+var START_BY_HAND = "Start the relay by hand: `bun socket` in the llm2figma repo (it needs Bun).";
 function registerSetupTools(server) {
-  server.tool("setup_status", "Check the llm2figma connection: whether the relay is running (starting it when installed as a Claude Code plugin), which Figma files have the plugin open, and where the Figma plugin manifest is for importing into Figma. Use it when setting up or when a Figma tool reports it isn't connected.", {}, async () => {
+  server.tool("setup_status", "Check the llm2figma connection: whether the relay is running (starting it if the port is free, unless L2F_NO_RELAY_AUTOSTART=1), which Figma files have the plugin open, and where the Figma plugin manifest is for importing into Figma. Use it when setting up or when a Figma tool reports it isn't connected.", {}, async () => {
     const relay = await ensureRelay(RELAY_PORT);
+    const relayStatus2 = lastRelayStatus();
     let files = [];
     let channelError;
     if (relay) {
@@ -26168,10 +26211,11 @@ function registerSetupTools(server) {
       }
     }
     const manifest = figmaPluginManifestPath();
-    const next = !relay ? "Start the relay: `bun socket` in the llm2figma repo (the plugin version starts it automatically; it needs Bun)." : channelError ? channelError : files.length === 0 ? `Open a file in the Figma desktop app and run Plugins \u2192 Development \u2192 llm2figma.${manifest ? ` If it isn't listed, import it first: Plugins \u2192 Development \u2192 Import plugin from manifest\u2026 \u2192 ${manifest}` : ""}` : files.length === 1 ? "Ready. Figma tools will use the open file." : "Several files have the plugin open. Ask the user which one, then call join_channel with its channel name.";
+    const next = !relay ? START_BY_HAND : relayStatus2 === "blocked" ? `Port ${RELAY_PORT} is held by a process that isn't a current llm2figma relay. Stop it, then restart this server or run \`bun socket\` in the llm2figma repo.` : channelError ? channelError : files.length === 0 ? `Open a file in the Figma desktop app and run Plugins \u2192 Development \u2192 llm2figma.${manifest ? ` If it isn't listed, import it first: Plugins \u2192 Development \u2192 Import plugin from manifest\u2026 \u2192 ${manifest}` : ""}` : files.length === 1 ? "Ready. Figma tools will use the open file." : "Several files have the plugin open. Ask the user which one, then call join_channel with its channel name.";
     const status = {
       installedAsClaudeCodePlugin: isPluginInstall,
       relayRunning: relay,
+      relay: relayStatus2 ? RELAY_STATUS_TEXT[relayStatus2] : "unknown",
       connectedFigmaFiles: files.map((f) => f.name),
       figmaPluginManifest: manifest ?? "src/llm2figma_plugin/manifest.json in the llm2figma repo",
       figmaTokenInKeychain: await hasFigmaTokenItem(),
@@ -27958,6 +28002,9 @@ registerFeature("DEV_MODE", registerTools30);
 registerPrompts(server);
 async function main() {
   installFigmaPluginFiles();
+  if (!isPluginInstall && isLocalRelay) {
+    ensureRelay(RELAY_PORT).catch((error) => logger.warn(`Could not start the relay: ${error instanceof Error ? error.message : String(error)}`));
+  }
   try {
     connectToFigma();
   } catch (error) {

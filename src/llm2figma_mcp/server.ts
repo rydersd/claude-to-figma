@@ -3,7 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { logger } from "./helpers.js";
-import { connectToFigma, sendCommandToFigma } from "./connection.js";
+import { connectToFigma, isLocalRelay, sendCommandToFigma } from "./connection.js";
 
 // Import tool registration modules
 import { registerTools as registerDocumentTools } from "./tools/document.js";
@@ -36,7 +36,8 @@ import { registerTools as registerSpecTools } from "./tools/spec.js";
 import { registerReadTools as registerCommentReadTools, registerWriteTools as registerCommentWriteTools } from "./tools/comments.js";
 import { registerWhenEnabled, type Feature } from "../shared/flags.js";
 import { registerPrompts } from "./tools/prompts.js";
-import { installFigmaPluginFiles, isPluginInstall } from "./plugin-runtime.js";
+import { ensureRelay, installFigmaPluginFiles, isPluginInstall } from "./plugin-runtime.js";
+import { RELAY_PORT } from "../relay-protocol.js";
 import { registerSetupTools } from "./tools/setup.js";
 
 import { registerTools as registerReferenceCacheTools } from "./tools/reference-cache.js";
@@ -97,6 +98,12 @@ registerPrompts(server);
 // Start the server
 async function main() {
   installFigmaPluginFiles();
+
+  // A clone install starts the relay now, so the Figma plugin can connect
+  // before the first tool call (the plugin install starts it on first use).
+  if (!isPluginInstall && isLocalRelay) {
+    ensureRelay(RELAY_PORT).catch((error) => logger.warn(`Could not start the relay: ${error instanceof Error ? error.message : String(error)}`));
+  }
 
   try {
     // Try to connect to Figma socket server

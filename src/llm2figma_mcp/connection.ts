@@ -4,7 +4,7 @@ import { logger } from "./helpers.js";
 import type { FigmaCommand, CommandProgressUpdate } from "./types.js";
 import { recordOperation, getAdaptiveParams, getOptimalTimeout } from "./metrics.js";
 import { pushEvent, onDisconnect } from "./events.js";
-import { ensureRelay, isPluginInstall } from "./plugin-runtime.js";
+import { ensureRelay, isPluginInstall, relayAutostart } from "./plugin-runtime.js";
 import { RELAY_PORT } from "../relay-protocol.js";
 
 
@@ -60,7 +60,7 @@ const serverArg = args.find(arg => arg.startsWith('--server='));
 const serverUrl = serverArg ? serverArg.split('=')[1] : 'localhost';
 // Use the IPv4 loopback the relay binds to, so "localhost" resolving to ::1
 // first can't miss it.
-const isLocalRelay = serverUrl === 'localhost';
+export const isLocalRelay = serverUrl === 'localhost';
 const WS_URL = isLocalRelay ? 'ws://127.0.0.1' : `wss://${serverUrl}`;
 
 // How long a WebSocket upgrade may take before the attempt is abandoned. A
@@ -385,10 +385,10 @@ export function sendCommandToFigma(
   timeoutMs: number = 30000
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    // If not connected, connect (and start the relay when installed as a
-    // plugin), then send.
+    // If not connected, connect (and start the relay unless autostart is
+    // off), then send.
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      if (!isPluginInstall) {
+      if (!relayAutostart) {
         connectToFigma();
         reject(new FigmaCommandError("Not connected to the relay. Start it with `bun socket` in the llm2figma repo.", "not_sent"));
         return;

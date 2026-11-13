@@ -357,28 +357,29 @@ describe("legacy relay.pid migration", () => {
 // B (port Y) meets an older relay it didn't start, while relay.pid in the
 // shared data dir names session A's live relay on port X. Before per-port
 // ownership, B killed A.
+async function freePort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as net.AddressInfo).port;
+  await new Promise((r) => server.close(r));
+  return port;
+}
+
+const portOpen = (port: number) => new Promise<boolean>((r) => {
+  const s = net.connect({ host: "127.0.0.1", port });
+  s.once("connect", () => { s.destroy(); r(true); });
+  s.once("error", () => r(false));
+});
+
+async function waitForPort(port: number) {
+  for (let i = 0; i < 100; i++) {
+    if (await portOpen(port)) return;
+    await sleep(50);
+  }
+  throw new Error(`port ${port} never opened`);
+}
+
 describe("ensureRelay with real processes (finding #4)", () => {
-  async function freePort(): Promise<number> {
-    const server = net.createServer();
-    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
-    const port = (server.address() as net.AddressInfo).port;
-    await new Promise((r) => server.close(r));
-    return port;
-  }
-
-  async function waitForPort(port: number) {
-    for (let i = 0; i < 100; i++) {
-      const open = await new Promise<boolean>((r) => {
-        const s = net.connect({ host: "127.0.0.1", port });
-        s.once("connect", () => { s.destroy(); r(true); });
-        s.once("error", () => r(false));
-      });
-      if (open) return;
-      await sleep(50);
-    }
-    throw new Error(`port ${port} never opened`);
-  }
-
   test("does not kill another port's relay named by the shared relay.pid", async () => {
     const dir = mkdtempSync(join(tmpdir(), "llm2figma-ensure-"));
     const root = join(dir, "cache", "llm2figma", "0.2.0");
@@ -416,4 +417,156 @@ describe("ensureRelay with real processes (finding #4)", () => {
       rmSync(dir, { recursive: true });
     }
   }, 20_000);
+});
+
+// Issue #42: a clone install (no CLAUDE_PLUGIN_*) starts the checkout's
+// src/socket.ts itself, detached, under the same pid-file and lock rules.
+// Spare ports and temp data dirs only; every process started is killed.
+describe("clone install relay autostart (issue #42)", () => {
+  const SOCKET = resolve("src/socket.ts");
+  const RUNTIME = resolve("src/llm2figma_mcp/plugin-runtime.ts");
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const listeners = (port: number) => Bun.spawnSync(["lsof", "-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"])
+    .stdout.toString().split(/\s+/).filter(Boolean).map(Number);
+  const relayCount = () => Bun.spawnSync(["pgrep", "-f", SOCKET]).stdout.toString().split(/\s+/).filter(Boolean).length;
+
+  async function setup() {
+    const port = await freePort();
+    expect(port).not.toBe(3055);
+    const data = mkdtempSync(join(tmpdir(), "llm2figma-clone-"));
+    tempDirs.push(data);
+    return { port, data };
+  }
+
+  function cloneEnv(port: number, data: string, extra: Record<string, string> = {}) {
+    const env: Record<string, string> = { ...process.env as Record<string, string>, L2F_RELAY_PORT: String(port), L2F_RELAY_DATA_DIR: data };
+    delete env.CLAUDE_PLUGIN_ROOT;
+    delete env.CLAUDE_PLUGIN_DATA;
+    delete env.L2F_NO_RELAY_AUTOSTART;
+    return { ...env, ...extra };
+  }
+
+  // One server's relay check, as a separate process.
+  async function ensureIn(port: number, data: string, extra: Record<string, string> = {}) {
+    const child = Bun.spawn([process.execPath, "-e",
+      `const m = await import(${JSON.stringify(RUNTIME)}); const ok = await m.ensureRelay(${port}); console.log(JSON.stringify({ ok, status: m.lastRelayStatus() }));`], {
+      env: cloneEnv(port, data, extra), stdout: "pipe", stderr: "pipe",
+    });
+    const out = await new Response(child.stdout).text();
+    await child.exited;
+    return JSON.parse(out.trim().split("\n").pop() || "{}");
+  }
+
+  // Kill whatever listens on the spare port, and any relay recorded for it.
+  async function cleanup(port: number, data: string) {
+    expect(port).not.toBe(3055);
+    const pids = new Set(listeners(port));
+    try { pids.add(Number(readFileSync(relayPidFile(data, port), "utf8"))); } catch {}
+    for (const pid of pids) if (pid > 1) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    for (let i = 0; i < 40 && (await portOpen(port)); i++) await sleep(50);
+  }
+
+  test("a server with the port free starts a relay that outlives it", async () => {
+    const { port, data } = await setup();
+    const server = Bun.spawn([process.execPath, resolve("src/llm2figma_mcp/server.ts")], {
+      env: cloneEnv(port, data), stdin: "pipe", stdout: "ignore", stderr: "ignore",
+    });
+    try {
+      await waitForPort(port);
+      for (let i = 0; i < 40 && !existsSync(relayPidFile(data, port)); i++) await sleep(50);
+      const pid = Number(readFileSync(relayPidFile(data, port), "utf8"));
+      expect(listeners(port)).toEqual([pid]);
+      const command = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]).stdout.toString().trim();
+      expect(command).toBe(`${process.execPath} ${SOCKET}`);
+      server.kill("SIGKILL");
+      await server.exited;
+      await sleep(300);
+      expect(alive(pid)).toBe(true);
+      expect(await portOpen(port)).toBe(true);
+    } finally {
+      server.kill("SIGKILL");
+      await server.exited;
+      await cleanup(port, data);
+    }
+  }, 20_000);
+
+  test("a second server finds the running relay and spawns nothing", async () => {
+    const { port, data } = await setup();
+    try {
+      expect(await ensureIn(port, data)).toEqual({ ok: true, status: "started" });
+      const pid = readFileSync(relayPidFile(data, port), "utf8");
+      const log = join(data, "relay.log");
+      const logBefore = fs.statSync(log).mtimeMs;
+      const count = relayCount();
+      await sleep(20);
+      expect(await ensureIn(port, data)).toEqual({ ok: true, status: "already-running" });
+      expect(readFileSync(relayPidFile(data, port), "utf8")).toBe(pid);
+      expect(fs.statSync(log).mtimeMs).toBe(logBefore);
+      expect(relayCount()).toBe(count);
+      expect(listeners(port)).toEqual([Number(pid)]);
+    } finally { await cleanup(port, data); }
+  }, 20_000);
+
+  test("two servers starting at once end up with exactly one relay", async () => {
+    const { port, data } = await setup();
+    const before = relayCount();
+    try {
+      const results = await Promise.all([ensureIn(port, data), ensureIn(port, data)]);
+      expect(results.map((r) => r.ok)).toEqual([true, true]);
+      expect(results.map((r) => r.status).sort()).toEqual(["already-running", "started"]);
+      const pid = Number(readFileSync(relayPidFile(data, port), "utf8"));
+      expect(listeners(port)).toEqual([pid]);
+      expect(relayCount() - before).toBe(1);
+      expect(existsSync(relayLockFile(data, port))).toBe(false);
+    } finally { await cleanup(port, data); }
+  }, 30_000);
+
+  test("an existing current-protocol relay is reused, not replaced", async () => {
+    const { port, data } = await setup();
+    const manual = Bun.spawn([process.execPath, SOCKET], { env: cloneEnv(port, data), stdout: "ignore", stderr: "ignore" });
+    try {
+      await waitForPort(port);
+      expect(await ensureIn(port, data)).toEqual({ ok: true, status: "already-running" });
+      expect(manual.exitCode).toBeNull();
+      expect(listeners(port)).toEqual([manual.pid]);
+      expect(existsSync(relayPidFile(data, port))).toBe(false);
+      expect(existsSync(join(data, "relay.log"))).toBe(false);
+    } finally {
+      manual.kill();
+      await manual.exited;
+      await cleanup(port, data);
+    }
+  }, 20_000);
+
+  test("L2F_NO_RELAY_AUTOSTART=1 spawns nothing", async () => {
+    const { port, data } = await setup();
+    try {
+      expect(await ensureIn(port, data, { L2F_NO_RELAY_AUTOSTART: "1" })).toEqual({ ok: false, status: "autostart-off" });
+      await sleep(300);
+      expect(await portOpen(port)).toBe(false);
+      expect(readdirSync(data)).toEqual([]);
+    } finally { await cleanup(port, data); }
+  }, 20_000);
+
+  test("a foreign process on the port is left alone and reported as blocking", async () => {
+    for (const foreign of [
+      `require("node:net").createServer((s) => s.end()).listen(Number(process.env.PORT), "127.0.0.1")`,
+      `Bun.serve({ hostname: "127.0.0.1", port: Number(process.env.PORT), fetch: () => new Response("not a relay") })`,
+    ]) {
+      const { port, data } = await setup();
+      const other = Bun.spawn([process.execPath, "-e", foreign], { env: { ...process.env, PORT: String(port) }, stdout: "ignore", stderr: "ignore" });
+      try {
+        await waitForPort(port);
+        expect([foreign, await ensureIn(port, data)]).toEqual([foreign, { ok: true, status: "blocked" }]);
+        expect(other.exitCode).toBeNull();
+        expect(listeners(port)).toEqual([other.pid]);
+        expect(existsSync(relayPidFile(data, port))).toBe(false);
+        expect(existsSync(join(data, "relay.log"))).toBe(false);
+      } finally {
+        other.kill();
+        await other.exited;
+        await cleanup(port, data);
+      }
+    }
+  }, 30_000);
 });

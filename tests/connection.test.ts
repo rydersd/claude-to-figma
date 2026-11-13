@@ -31,7 +31,8 @@ async function stalledServer() {
 // Runs body in a child, then snapshots what the server has seen while the
 // child is still alive (its exit would close every socket and hide a leak).
 async function runChild(port: number, body: string, seen: { connections: number; closed: number }) {
-  const env: Record<string, string> = { ...process.env as Record<string, string>, L2F_RELAY_PORT: String(port) };
+  // Autostart off: these tests are about reconnecting, not starting a relay.
+  const env: Record<string, string> = { ...process.env as Record<string, string>, L2F_RELAY_PORT: String(port), L2F_NO_RELAY_AUTOSTART: "1" };
   delete env.CLAUDE_PLUGIN_ROOT;
   delete env.CLAUDE_PLUGIN_DATA;
   const child = Bun.spawn([process.execPath, "-e",

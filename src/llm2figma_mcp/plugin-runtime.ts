@@ -1,9 +1,12 @@
-// Helpers that only apply when the server runs as an installed Claude Code
-// plugin. Claude Code sets CLAUDE_PLUGIN_ROOT (the installed, versioned copy)
-// and CLAUDE_PLUGIN_DATA (a stable per-plugin directory kept across updates).
+// Relay start-up for both installs, and helpers that only apply when the
+// server runs as an installed Claude Code plugin. Claude Code sets
+// CLAUDE_PLUGIN_ROOT (the installed, versioned copy) and CLAUDE_PLUGIN_DATA (a
+// stable per-plugin directory kept across updates).
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { logger } from "./helpers.js";
@@ -13,6 +16,28 @@ const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT;
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA;
 
 export const isPluginInstall = Boolean(PLUGIN_ROOT && PLUGIN_DATA);
+
+// A clone install (`bun <repo>/src/llm2figma_mcp/server.ts`) starts the relay
+// from the same checkout. Its pid, lock and log files live in ~/.llm2figma
+// (L2F_RELAY_DATA_DIR moves them, for tests). L2F_NO_RELAY_AUTOSTART=1 turns
+// autostart off for either install.
+// From src/llm2figma_mcp/ or dist/; the CJS build has no import.meta.url.
+function cloneRelayScript(): string | undefined {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    return [path.resolve(here, "..", "socket.ts"), path.resolve(here, "..", "src", "socket.ts")].find((f) => fs.existsSync(f));
+  } catch {
+    return undefined;
+  }
+}
+const CLONE_RELAY_SCRIPT = isPluginInstall ? undefined : cloneRelayScript();
+const autostartOff = process.env.L2F_NO_RELAY_AUTOSTART === "1";
+export const relayAutostart = !autostartOff && (isPluginInstall || Boolean(CLONE_RELAY_SCRIPT));
+
+// What the last relay check found, for setup_status.
+export type RelayStatus = "started" | "already-running" | "blocked" | "failed" | "autostart-off" | "not-running";
+let relayStatus: RelayStatus | null = null;
+export const lastRelayStatus = () => relayStatus;
 
 // Figma imports a development plugin by manifest path, so keep its files in
 // the data directory: that path survives plugin updates, the root does not.
@@ -61,8 +86,12 @@ async function relayVersion(port: number): Promise<string | null> {
 // Everything relay replacement touches outside this module, injectable so the
 // ownership and locking rules can be tested without real processes.
 export interface RelayHost {
+  /** The plugin's installed root; unused when relayScript is set. */
   pluginRoot: string;
+  /** Where the pid, lock and log files live. */
   pluginData: string;
+  /** Clone install: the one relay script this server starts and may replace. */
+  relayScript?: string;
   port: number;
   hasBun: boolean;
   /** The relay's protocol version, "" for one too old to report it, null when nothing answers. */
@@ -71,7 +100,7 @@ export interface RelayHost {
   /** Run a command (no shell) and return stdout; throws when it fails. */
   run(file: string, args: string[]): string;
   kill(pid: number): void;
-  /** Start the bundled relay detached; it writes its own pid to pidFile once it holds the port. */
+  /** Start the relay detached; it writes its own pid to pidFile once it holds the port. */
   spawnRelay(pidFile: string, logPath: string): void;
   sleep(ms: number): Promise<void>;
 }
@@ -91,12 +120,14 @@ const legacyRelayPidFile = (dataDir: string) => path.join(dataDir, "relay.pid");
 // runtime and its flags: a relay path that merely appears in some other
 // argument proves nothing. `ps` does not quote, so everything after the flags
 // is taken as the script path, which also keeps paths with spaces working.
-function isPluginRelayCommand(command: string, pluginRoot: string): boolean {
+// A clone install's relay must run exactly host.relayScript.
+function isOwnRelayCommand(command: string, host: RelayHost): boolean {
   const args = command.trim().split(/\s+/).slice(1);
   while (args.length > 0 && args[0].startsWith("-")) args.shift();
   const script = args.join(" ");
   if (!path.isAbsolute(script)) return false;
-  const installDir = path.dirname(path.resolve(pluginRoot));
+  if (host.relayScript) return path.resolve(script) === path.resolve(host.relayScript);
+  const installDir = path.dirname(path.resolve(host.pluginRoot));
   const [version, ...rest] = path.relative(installDir, path.resolve(script)).split(path.sep);
   return Boolean(version) && version !== ".." && rest.length === 2 && rest[0] === "server" && rest[1] === "relay.js";
 }
@@ -122,7 +153,7 @@ export async function stopOwnRelay(host: RelayHost): Promise<boolean> {
     const pid = Number(record.trim());
     if (!Number.isInteger(pid) || pid <= 1) return false;
     const command = host.run("ps", ["-p", String(pid), "-o", "command="]);
-    if (!isPluginRelayCommand(command.trim(), host.pluginRoot)) return false;
+    if (!isOwnRelayCommand(command.trim(), host)) return false;
     const listeners = host.run("lsof", ["-nP", `-iTCP:${host.port}`, "-sTCP:LISTEN", "-t"])
       .split(/\s+/).filter(Boolean);
     if (!listeners.includes(String(pid))) return false;
@@ -224,28 +255,35 @@ export async function acquireRelayLock(host: RelayHost): Promise<(() => void) | 
  * the version is re-checked under it.
  */
 export async function startOrReplaceRelay(host: RelayHost): Promise<boolean> {
-  if ((await host.version()) === RELAY_PROTOCOL_VERSION) return true;
+  const done = (status: RelayStatus, result: boolean) => { relayStatus = status; return result; };
+  if ((await host.version()) === RELAY_PROTOCOL_VERSION) return done("already-running", true);
   const release = await acquireRelayLock(host);
   if (!release) {
     logger.warn(`Another session is still starting the relay on port ${host.port}; not touching it.`);
-    return host.isListening();
+    const listening = await host.isListening();
+    return done(listening ? "already-running" : "failed", listening);
   }
   try {
     // Another session may have replaced or started it while we waited.
     const version = await host.version();
-    if (version === RELAY_PROTOCOL_VERSION) return true;
+    if (version === RELAY_PROTOCOL_VERSION) return done("already-running", true);
+    if (version === null && (await host.isListening())) {
+      // Something that doesn't answer HTTP holds the port: not a relay.
+      logger.warn(`Port ${host.port} is held by a process that isn't an llm2figma relay; leaving it alone.`);
+      return done("blocked", true);
+    }
     if (version !== null) {
       // An older relay holds the port. Replace it if we started it;
       // otherwise leave it and let the caller report it.
       if (!(await stopOwnRelay(host))) {
-        logger.warn(`An older relay (protocol "${version}") is running on port ${host.port} and wasn't started by this plugin.`);
-        return true;
+        logger.warn(`An older relay (protocol "${version}") is running on port ${host.port} and wasn't started by this server.`);
+        return done("blocked", true);
       }
-      logger.info("Replaced an older relay started by this plugin");
+      logger.info("Replaced an older relay started by this server");
     }
     if (!host.hasBun) {
       logger.error("The relay needs Bun. Install it: curl -fsSL https://bun.sh/install | bash");
-      return false;
+      return done("failed", false);
     }
 
     const logPath = path.join(host.pluginData, "relay.log");
@@ -256,20 +294,22 @@ export async function startOrReplaceRelay(host: RelayHost): Promise<boolean> {
     // until something answers.
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
-      if (await host.isListening()) return true;
+      if (await host.isListening()) return done("started", true);
       await host.sleep(150);
     }
     logger.error(`The relay did not start; see ${logPath}`);
-    return false;
+    return done("failed", false);
   } finally {
     release();
   }
 }
 
-function defaultRelayHost(pluginRoot: string, pluginData: string, port: number): RelayHost {
+function defaultRelayHost(pluginRoot: string, pluginData: string, port: number, relayScript?: string): RelayHost {
+  const script = relayScript ?? path.join(pluginRoot, "server", "relay.js");
   return {
     pluginRoot,
     pluginData,
+    relayScript,
     port,
     hasBun: Boolean(process.versions.bun),
     version: () => relayVersion(port),
@@ -280,7 +320,7 @@ function defaultRelayHost(pluginRoot: string, pluginData: string, port: number):
       fs.mkdirSync(pluginData, { recursive: true });
       // Start each relay with a fresh log so it can't grow without bound.
       const log = fs.openSync(logPath, "w");
-      const child = spawn(process.execPath, [path.join(pluginRoot, "server", "relay.js")], {
+      const child = spawn(process.execPath, [script], {
         detached: true,
         stdio: ["ignore", log, log],
         env: { ...process.env, L2F_RELAY_PORT: String(port), L2F_RELAY_PID_FILE: pidFile },
@@ -294,13 +334,23 @@ function defaultRelayHost(pluginRoot: string, pluginData: string, port: number):
 
 let relayStart: Promise<boolean> | null = null;
 
-// Start the bundled relay in the background if nothing is listening on the
-// port. It keeps running after this session ends so other sessions and the
-// Figma plugin can keep using it; its log and pid live in CLAUDE_PLUGIN_DATA.
+// Start the relay in the background if nothing is listening on the port: the
+// bundled relay.js for the plugin (log and pid in CLAUDE_PLUGIN_DATA), or the
+// checkout's src/socket.ts for a clone install. It keeps running after this
+// session ends so other sessions and the Figma plugin can keep using it.
 export function ensureRelay(port: number): Promise<boolean> {
-  if (!PLUGIN_ROOT || !PLUGIN_DATA) return isRelayListening(port);
+  if (!relayAutostart) {
+    return isRelayListening(port).then((listening) => {
+      relayStatus = listening ? "already-running" : autostartOff ? "autostart-off" : "not-running";
+      return listening;
+    });
+  }
   if (!relayStart) {
-    relayStart = startOrReplaceRelay(defaultRelayHost(PLUGIN_ROOT, PLUGIN_DATA, port)).finally(() => {
+    const host = PLUGIN_ROOT && PLUGIN_DATA
+      ? defaultRelayHost(PLUGIN_ROOT, PLUGIN_DATA, port)
+      : defaultRelayHost(path.dirname(CLONE_RELAY_SCRIPT!),
+          process.env.L2F_RELAY_DATA_DIR || path.join(os.homedir(), ".llm2figma"), port, CLONE_RELAY_SCRIPT);
+    relayStart = startOrReplaceRelay(host).finally(() => {
       relayStart = null;
     });
   }
