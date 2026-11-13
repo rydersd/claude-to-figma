@@ -66,14 +66,15 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
 
   server.tool(
     "diff_positions",
-    "Compare a snapshot from snapshot_positions with the document now. Returns missing ids (no longer exist: deleted, or absorbed into a wrapper by suggest-auto-layout), added ids (new in the subtree, such as auto-generated wrapper frames), and moved nodes (absoluteBoundingBox changed beyond the tolerance, or reparented; a reparent with boxChanged false is a zero-drift move). After a truncated snapshot, nodes under a parent whose children the snapshot did not finish reading are listed as unsnapshotted, not added. Snapshot nodes the re-walk does not reach are looked up by id, so missing always means gone. Every list is capped at 100 (listsTruncated); counts are full. Pass the explicit snapshotId; an unknown or expired id is an error, never an empty diff.",
+    "Compare a snapshot from snapshot_positions with the document now. Returns missing ids (no longer exist: deleted, or absorbed into a wrapper by suggest-auto-layout), added ids (new in the subtree, such as auto-generated wrapper frames), and moved nodes (absoluteBoundingBox changed beyond the tolerance, or reparented; a reparent with boxChanged false is a zero-drift move). A node that only moved with its parent (same parent, same size, shifted by the parent's own offset) is not listed: it is counted in counts.movedWithParent and in its nearest listed ancestor's `carried`, so moving one screen lists the screen, not every layer in it; counts.moved is still every moved node. Pass includeCarried: true to list them all. After a truncated snapshot, nodes under a parent whose children the snapshot did not finish reading are listed as unsnapshotted, not added. Snapshot nodes the re-walk does not reach are looked up by id, so missing always means gone. Every list is capped at 100 (listsTruncated); counts are full. Pass the explicit snapshotId; an unknown or expired id is an error, never an empty diff.",
     {
       snapshotId: z.string().describe("The id snapshot_positions returned"),
       tolerance: z.number().min(0).max(10).optional().describe("Box change ignored below this many px (default 0.5)"),
+      includeCarried: z.boolean().optional().describe("List nodes that only moved with their parent too (default false: counted, not listed)"),
     },
-    async ({ snapshotId, tolerance }: any) => {
+    async ({ snapshotId, tolerance, includeCarried }: any) => {
       try {
-        const result = await sendCommandToFigma("diff_positions", { snapshotId, tolerance }, 60000);
+        const result = await sendCommandToFigma("diff_positions", { snapshotId, tolerance, includeCarried }, 60000);
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
       } catch (error) {
         return { isError: true, content: [{ type: "text", text: `Error diffing positions: ${error instanceof Error ? error.message : String(error)}` }] };

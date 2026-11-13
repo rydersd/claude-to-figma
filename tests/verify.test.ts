@@ -429,7 +429,7 @@ describe("snapshot_positions and diff_positions", () => {
     const diff: any = await diffPositions({ snapshotId });
     expect(diff.missing).toEqual([bus.id]);
     expect(diff.added).toEqual([wrapper.id]);
-    expect(diff.counts).toEqual({ missing: 1, added: 1, moved: 0, unsnapshotted: 0 });
+    expect(diff.counts).toEqual({ missing: 1, added: 1, moved: 0, movedWithParent: 0, unsnapshotted: 0 });
   });
 
   test("after a truncated snapshot, a pre-existing node is unsnapshotted, not added", async () => {
@@ -482,11 +482,62 @@ describe("snapshot_positions and diff_positions", () => {
     for (let i = 0; i < 9999; i++) makeNode("RECTANGLE", { x: i % 100, y: Math.floor(i / 100), width: 1, height: 1 }, root);
     const { snapshotId } = await snapshotPositions({ nodeId: root.id, maxNodes: 10000 });
     root.x += 10;
-    const diff: any = await diffPositions({ snapshotId });
+    const diff: any = await diffPositions({ snapshotId, includeCarried: true });
     expect(diff.counts.moved).toBe(10000);
     expect(diff.moved).toHaveLength(100);
     expect(diff.listsTruncated).toBe(true);
     expect(JSON.stringify(diff).length).toBeLessThan(50000);
+  });
+
+  test("children that only moved with their parent are counted, not listed", async () => {
+    const page = makeNode("PAGE", { width: 0, height: 0 });
+    const screens = [0, 1, 2].map((i) => makeNode("FRAME", { x: i * 500, y: 0, width: 375, height: 812 }, page));
+    const kids = screens.map((s) => [0, 1, 2, 3].map((j) => makeNode("RECTANGLE", { x: 24, y: 40 + j * 60, width: 300, height: 48 }, s)));
+    const grandkid = makeNode("TEXT", { x: 4, y: 4, width: 50, height: 20 }, kids[0][0] as any);
+    const { snapshotId } = await snapshotPositions({ nodeId: page.id });
+    screens[0].x += 100;
+    screens[1].x += 100;
+    const diff: any = await diffPositions({ snapshotId });
+    // Two screens listed, each carrying its 4 rows (+ the text inside one row).
+    expect(diff.moved.map((m: any) => m.id)).toEqual([screens[0].id, screens[1].id]);
+    expect(diff.moved[0].carried).toBe(5);
+    expect(diff.moved[1].carried).toBe(4);
+    expect(diff.counts).toMatchObject({ moved: 11, movedWithParent: 9 });
+    expect(diff.listsTruncated).toBe(false);
+    void grandkid;
+  });
+
+  test("a child that moved on its own, or was resized, is still listed", async () => {
+    const page = makeNode("PAGE", { width: 0, height: 0 });
+    const screen = makeNode("FRAME", { x: 0, y: 0, width: 375, height: 812 }, page);
+    const follower = makeNode("RECTANGLE", { x: 24, y: 40, width: 300, height: 48 }, screen);
+    const nudged = makeNode("RECTANGLE", { x: 24, y: 100, width: 300, height: 48 }, screen);
+    const resized = makeNode("RECTANGLE", { x: 24, y: 160, width: 300, height: 48 }, screen);
+    const { snapshotId } = await snapshotPositions({ nodeId: page.id });
+    screen.x += 100;
+    nudged.x += 7; // its own move on top of the parent's
+    resized.resize(200, 48);
+    const diff: any = await diffPositions({ snapshotId });
+    expect(diff.moved.map((m: any) => m.id).sort()).toEqual([screen.id, nudged.id, resized.id].sort());
+    expect(diff.moved.find((m: any) => m.id === screen.id).carried).toBe(1);
+    expect(diff.counts).toMatchObject({ moved: 4, movedWithParent: 1 });
+    void follower;
+  });
+
+  test("a child that stayed put while its parent moved is listed (it shifted inside the parent)", () => {
+    const box = (x: number, w = 10) => ({ x, y: 0, width: w, height: 10 });
+    const before = [
+      { id: "p", name: "p", parentId: "root", box: box(0, 100) },
+      { id: "c", name: "c", parentId: "p", box: box(10) },
+    ];
+    const after = [
+      { id: "p", name: "p", parentId: "root", box: box(50, 100) },
+      { id: "c", name: "c", parentId: "p", box: box(30) }, // moved 20, parent moved 50
+    ];
+    const diff = diffPositionEntries(before, after);
+    expect(diff.moved.map((m) => m.id)).toEqual(["p", "c"]);
+    expect(diff.movedWithParent).toBe(0);
+    expect(diffPositionEntries(before, after, 0.5, { includeCarried: true }).moved).toHaveLength(2);
   });
 
   test("diffPositionEntries compares boxes within the tolerance", () => {

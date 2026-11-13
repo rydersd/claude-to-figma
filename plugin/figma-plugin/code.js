@@ -3380,7 +3380,14 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!a || !b) return a !== b;
     return Math.abs(a.x - b.x) > tolerance || Math.abs(a.y - b.y) > tolerance || Math.abs(a.width - b.width) > tolerance || Math.abs(a.height - b.height) > tolerance;
   }
-  function diffPositionEntries(before, after, tolerance = CONTAINMENT_TOLERANCE) {
+  function followsParent(move, parent, tolerance) {
+    if (!parent || move.reparented || !move.boxChanged || !parent.boxChanged) return false;
+    const a = move.from.box, b = move.to.box, pa = parent.from.box, pb = parent.to.box;
+    if (!a || !b || !pa || !pb) return false;
+    if (Math.abs(a.width - b.width) > tolerance || Math.abs(a.height - b.height) > tolerance) return false;
+    return Math.abs(b.x - a.x - (pb.x - pa.x)) <= tolerance && Math.abs(b.y - a.y - (pb.y - pa.y)) <= tolerance;
+  }
+  function diffPositionEntries(before, after, tolerance = CONTAINMENT_TOLERANCE, opts = {}) {
     const now = new Map(after.map((e) => [e.id, e]));
     const then = new Set(before.map((e) => e.id));
     const missing = [];
@@ -3398,7 +3405,26 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
     }
     const added = after.filter((e) => !then.has(e.id)).map((e) => e.id);
-    return { missing, added, moved };
+    const movedTotal = moved.length;
+    if (opts.includeCarried) return { missing, added, moved, movedTotal, movedWithParent: 0 };
+    const byId = new Map(moved.map((m) => [m.id, m]));
+    const owner = /* @__PURE__ */ new Map();
+    const ownerOf = (m) => {
+      if (owner.has(m.id)) return owner.get(m.id);
+      const parent = m.from.parentId ? byId.get(m.from.parentId) : void 0;
+      const result = followsParent(m, parent, tolerance) ? ownerOf(parent) ?? parent : null;
+      owner.set(m.id, result);
+      return result;
+    };
+    const listed = [];
+    const carried = /* @__PURE__ */ new Map();
+    for (const m of moved) {
+      const top = ownerOf(m);
+      if (top) carried.set(top.id, (carried.get(top.id) || 0) + 1);
+      else listed.push(m);
+    }
+    const independent = listed.map((m) => carried.has(m.id) ? { ...m, carried: carried.get(m.id) } : m);
+    return { missing, added, moved: independent, movedTotal, movedWithParent: movedTotal - listed.length };
   }
 
   // src/llm2figma_plugin/src/verify.ts
@@ -3489,7 +3515,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     return !parentId || !snapshotIds.has(parentId) || cutOff.has(parentId);
   }
   async function diffPositions(params) {
-    const { snapshotId, tolerance = CONTAINMENT_TOLERANCE } = params || {};
+    const { snapshotId, tolerance = CONTAINMENT_TOLERANCE, includeCarried = false } = params || {};
     if (!snapshotId) throw new Error("Missing snapshotId parameter");
     const snapshot = snapshotStore.get(snapshotId);
     const root = await figma.getNodeByIdAsync(snapshot.rootId);
@@ -3506,7 +3532,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       const node = await figma.getNodeByIdAsync(old.id);
       if (node && !node.removed) after.push(positionEntry(node));
     }
-    const diff = diffPositionEntries(snapshot.entries, after, tolerance);
+    const diff = diffPositionEntries(snapshot.entries, after, tolerance, { includeCarried });
     let added = diff.added;
     const unsnapshotted = [];
     if (snapshot.truncated) {
@@ -3526,7 +3552,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       snapshotId,
       rootId: snapshot.rootId,
       rootMissing: !root,
-      counts: { missing: diff.missing.length, added: added.length, moved: diff.moved.length, unsnapshotted: unsnapshotted.length },
+      counts: { missing: diff.missing.length, added: added.length, moved: diff.movedTotal, movedWithParent: diff.movedWithParent, unsnapshotted: unsnapshotted.length },
       missing: cap(diff.missing),
       added: cap(added),
       moved: cap(diff.moved),

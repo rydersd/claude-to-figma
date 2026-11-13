@@ -119,7 +119,7 @@ function unseenBySnapshot(entry: PositionEntry, nowById: Map<string, PositionEnt
 }
 
 export async function diffPositions(params: any) {
-  const { snapshotId, tolerance = CONTAINMENT_TOLERANCE } = params || {};
+  const { snapshotId, tolerance = CONTAINMENT_TOLERANCE, includeCarried = false } = params || {};
   if (!snapshotId) throw new Error("Missing snapshotId parameter");
   const snapshot = snapshotStore.get(snapshotId);
   const root: any = await figma.getNodeByIdAsync(snapshot.rootId);
@@ -139,7 +139,7 @@ export async function diffPositions(params: any) {
     const node: any = await figma.getNodeByIdAsync(old.id);
     if (node && !node.removed) after.push(positionEntry(node));
   }
-  const diff = diffPositionEntries(snapshot.entries, after, tolerance);
+  const diff = diffPositionEntries(snapshot.entries, after, tolerance, { includeCarried });
 
   // A node new to the walk is `added` only when the snapshot saw its whole
   // neighbourhood; after a truncated snapshot it may simply never have been read.
@@ -163,7 +163,7 @@ export async function diffPositions(params: any) {
     snapshotId,
     rootId: snapshot.rootId,
     rootMissing: !root,
-    counts: { missing: diff.missing.length, added: added.length, moved: diff.moved.length, unsnapshotted: unsnapshotted.length },
+    counts: { missing: diff.missing.length, added: added.length, moved: diff.movedTotal, movedWithParent: diff.movedWithParent, unsnapshotted: unsnapshotted.length },
     missing: cap(diff.missing),
     added: cap(added),
     moved: cap(diff.moved),
