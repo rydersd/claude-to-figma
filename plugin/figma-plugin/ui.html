@@ -169,6 +169,34 @@
         display: none;
       }
 
+      /* Collapsible first-time setup (MCP config) */
+      details > summary {
+        font-size: 14px;
+        font-weight: 600;
+        color: #ffffff;
+        cursor: pointer;
+        list-style: none;
+        margin: 20px 0 8px;
+      }
+      details > summary::-webkit-details-marker {
+        display: none;
+      }
+      details > summary::before {
+        content: "▸";
+        display: inline-block;
+        width: 14px;
+        transition: transform 0.15s;
+      }
+      details[open] > summary::before {
+        transform: rotate(90deg);
+      }
+      .summary-hint {
+        font-size: 11px;
+        font-weight: 400;
+        color: #888888;
+        margin-left: 6px;
+      }
+
       .logo {
         width: 50px;
         height: 50px;
@@ -322,8 +350,8 @@
           <div style="font-size: 11px; color: #666; text-align: right;">v1.3.0</div>
         </div>
 
-        <div id="mcp-config" class="section hidden">
-          <h2>MCP Configuration</h2>
+        <details id="mcp-config" class="section hidden">
+          <summary>MCP setup <span class="summary-hint">first time only</span></summary>
           <p>
             Copy this configuration to your <code>mcp.json</code> file:
           </p>
@@ -343,7 +371,7 @@
             "
           ></textarea>
           <button id="btn-copy" class="secondary">Copy to Clipboard</button>
-        </div>
+        </details>
 
         <!-- Add Progress Bar Section -->
         <div id="progress-container" class="section hidden">
