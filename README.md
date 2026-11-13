@@ -73,6 +73,8 @@ bun socket
 
 6. Start a new Claude Code session and ask for something, for example "describe what's on the current Figma page". Tools join the connected file's channel automatically. If several files have the plugin open, Claude asks you to pick one with `join_channel`.
 
+7. Optional: turn on the flagged tools (spec sync, layout verification, flows, Dev Mode, comments and more) by setting `L2F_ALL=1` for the server. To keep it on permanently, follow [Feature flags](#feature-flags-l2f_all).
+
 ## Attribution
 
 This project is a fork of [cursor-talk-to-figma-mcp](https://github.com/sonnylazuardi/cursor-talk-to-figma-mcp) by [sonnylazuardi](https://github.com/sonnylazuardi), licensed under MIT. The original project provides the MCP server, WebSocket relay, and Figma plugin architecture that this project builds upon.
@@ -99,6 +101,39 @@ Or add it to a project's `.mcp.json`:
   }
 }
 ```
+
+### Feature flags (`L2F_ALL`)
+
+New tool families ship behind server-side flags. A tool whose flag is off is not registered, so it doesn't appear in Claude's tool list. The server reads flags only from its own environment when it starts; no tool parameter or client-sent value can turn one on.
+
+- `L2F_ALL=1` turns on every flag except `L2F_COMMENTS_WRITE`, which posts comments as you and must be set on its own.
+- `L2F_<FEATURE>=1` turns on one flag. The flags are `FILE_KEY`, `COMMENTS`, `COMMENTS_WRITE`, `FLOWS`, `VARIABLES_WRITE`, `COMPONENT_PROPERTIES`, `GRID_LAYOUT`, `VERIFY`, `SPEC_SYNC`, `CODE_MAP`, `DEV_MODE`, `SLIDES` and `TEXT_PATH`.
+- `L2F_SPEC_DIR` is a setting, not a flag: the folder Spec files resolve against. `L2F_ALL` doesn't set it.
+
+**Keep `L2F_ALL` on permanently (recommended).** `bun setup` writes `"L2F_ALL": "${L2F_ALL:-}"`, which only picks up a value exported in the environment Claude Code was launched from. Apps launched from the Dock or Spotlight (VS Code, Claude desktop) don't read your shell profile, so the flag is usually empty there. Write a literal `"1"` instead. `bun setup` keeps existing values, so a later setup or machine switch won't undo it.
+
+- Project scope (`.mcp.json` in this repo), run from the repo root:
+
+  ```bash
+  bun -e 'const f=".mcp.json";const c=JSON.parse(await Bun.file(f).text());const s=c.mcpServers.LLM2Figma;s.env={...s.env,L2F_ALL:"1"};await Bun.write(f,JSON.stringify(c,null,2)+"\n")'
+  ```
+
+- User scope (`bun setup --user`, or added with `claude mcp add --scope user`): re-register with the flag:
+
+  ```bash
+  claude mcp remove --scope user LLM2Figma
+  claude mcp add --scope user -e L2F_ALL=1 LLM2Figma -- "$(command -v bun)" "$PWD/src/llm2figma_mcp/server.ts"
+  ```
+
+  Or run the one-liner above with `f="$HOME/.claude.json"`. `/mcp` shows which scope your LLM2Figma entry comes from.
+
+**Claude Code plugin install.** The plugin's server config passes `${L2F_ALL:-}` through, so the variable must be in the environment Claude Code starts from:
+- Add `export L2F_ALL=1` to your shell profile and start Claude Code (or `code`) from a terminal.
+- On macOS, for apps launched from the Dock, run `launchctl setenv L2F_ALL 1` and restart the app. This lasts until reboot.
+
+**For one session only:** `L2F_ALL=1 claude`, or quit VS Code and relaunch it with `L2F_ALL=1 code ~/llm2figma`.
+
+**Apply the change:** restart the MCP server, with `/mcp` → **LLM2Figma** → **Reconnect** or by starting a new session. To check, ask Claude to list its llm2figma tools. With `L2F_ALL=1` you should see flagged tools such as `snapshot_positions`, `pull_spec` and `get_flows`.
 
 ### Figma token and library file keys (team library tools, optional)
 
