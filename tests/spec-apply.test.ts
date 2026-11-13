@@ -29,6 +29,16 @@ let undoCommits = 0;
 let removeCalls = 0;
 let reactionWrites: Array<{ id: string; reactions: any[] }> = [];
 
+// One action as Figma reads it back after setReactionsAsync (measured live).
+function figmaReadBack(action: any): any {
+  if (action.type === "URL") return { ...action, openInNewTab: action.openInNewTab ?? true };
+  if (action.type !== "NODE") return action;
+  const { preserveScrollPosition, ...rest } = action;
+  const out: any = { ...rest, resetVideoPosition: rest.resetVideoPosition ?? false };
+  if (out.resetScrollPosition === undefined && preserveScrollPosition !== undefined) out.resetScrollPosition = !preserveScrollPosition;
+  return out;
+}
+
 type M = [[number, number, number], [number, number, number]];
 const mul = (a: M, b: M): M => [
   [a[0][0] * b[0][0] + a[0][1] * b[1][0], a[0][0] * b[0][1] + a[0][1] * b[1][1], a[0][0] * b[0][2] + a[0][1] * b[1][2] + a[0][2]],
@@ -58,18 +68,20 @@ function makeNode(type: string, extra: any = {}, parent: any = null): any {
     clipsContent: true, itemReverseZIndex: false, itemSpacing: 0, counterAxisSpacing: 0,
     paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0, primaryAxisAlignItems: "MIN", counterAxisAlignItems: "MIN",
     cornerRadius: 0, rel: [[1, 0, x], [0, 1, y]] as M, reactions: [],
-    // Like Figma: a non-empty list replaces a non-empty one only after a clear
-    // ("Reaction was invalid"), and the read-back carries the deprecated
-    // singular `action`, fills a NODE action's reset/preserve fields and
-    // stores numbers as float32. `reactionError` makes every call throw.
+    // Figma's read-back, as measured live: the deprecated singular `action`
+    // beside `actions`; numbers as float32; a NODE action gains
+    // resetVideoPosition: false, loses preserveScrollPosition (stored as
+    // resetScrollPosition = !preserve), and keeps resetScrollPosition and
+    // resetInteractiveComponents only when written; a URL action gains
+    // openInNewTab: true. The mock also refuses replacing a non-empty list
+    // without a clear first ("Reaction was invalid"), which Figma is laxer
+    // about. `reactionError` makes every call throw.
     async setReactionsAsync(list: any[]) {
       if (this.reactionError) throw new Error(this.reactionError);
       reactionWrites.push({ id: this.id, reactions: JSON.parse(JSON.stringify(list)) });
       if (this.reactions.length && list.length) throw new Error("Reaction was invalid");
       this.reactions = list.map((r: any) => {
-        const actions = JSON.parse(JSON.stringify(r.actions), (_k, v) => (typeof v === "number" ? Math.fround(v) : v)).map((a: any) => (a.type === "NODE"
-          ? { resetScrollPosition: false, resetInteractiveComponents: false, resetVideoPosition: false, preserveScrollPosition: false, transition: null, ...a }
-          : a));
+        const actions = JSON.parse(JSON.stringify(r.actions), (_k, v) => (typeof v === "number" ? Math.fround(v) : v)).map(figmaReadBack);
         return { action: actions[0], actions, trigger: { ...r.trigger } };
       });
     },
@@ -663,20 +675,17 @@ describe("spec sync apply (PR 11d)", () => {
     // `actions`, and an undefined field.
     const navigate = (destinationId: string) => ({
       trigger: { type: "ON_CLICK" },
-      action: { type: "NODE", destinationId, navigation: "NAVIGATE", transition: null, preserveScrollPosition: false },
-      actions: [{ type: "NODE", destinationId, navigation: "NAVIGATE", transition: null, preserveScrollPosition: false, overlayRelativePosition: undefined }],
+      action: { type: "NODE", destinationId, navigation: "NAVIGATE", transition: null, resetVideoPosition: false },
+      actions: [{ type: "NODE", destinationId, navigation: "NAVIGATE", transition: null, resetVideoPosition: false, overlayRelativePosition: undefined }],
     });
+    // The pulled form: Figma's read-back, minus `action`, keys sorted.
     const canonical = (destinationId: string) => [{
-      actions: [{ destinationId, navigation: "NAVIGATE", preserveScrollPosition: false, transition: null, type: "NODE" }],
+      actions: [{ destinationId, navigation: "NAVIGATE", resetVideoPosition: false, transition: null, type: "NODE" }],
       trigger: { type: "ON_CLICK" },
     }];
-    // The SpecLock's (comparison) form: a NODE action's missing fields filled
-    // with what Figma reads back for them.
+    // The SpecLock's (comparison) form: an absent resetInteractiveComponents counts as false.
     const locked = (destinationId: string) => [{
-      actions: [{
-        destinationId, navigation: "NAVIGATE", preserveScrollPosition: false, resetInteractiveComponents: false,
-        resetScrollPosition: false, resetVideoPosition: false, transition: null, type: "NODE",
-      }],
+      actions: [{ destinationId, navigation: "NAVIGATE", resetInteractiveComponents: false, resetVideoPosition: false, transition: null, type: "NODE" }],
       trigger: { type: "ON_CLICK" },
     }];
     const lastDestinationIds = () => sent.filter(s => s.command === "read_spec_nodes").at(-1).params.destinationIds;
@@ -796,25 +805,43 @@ describe("spec sync apply (PR 11d)", () => {
       expect((await plan()).counts.operations).toBe(0);
     });
 
-    test("a hand-written link Figma reads back with defaults and float32 numbers is not partial, and a re-plan is empty", async () => {
-      const { root, byName, screenB } = await linked();
-      await pull(root);
-      const written = [{
-        trigger: { type: "ON_CLICK" },
-        actions: [{ type: "NODE", destinationId: screenB.id, navigation: "NAVIGATE", transition: { type: "DISSOLVE", duration: 0.3, easing: { type: "EASE_OUT" } } }],
-      }];
-      editSpec((_s, find) => { find("Title").reactions = written; });
-      const planned = await plan();
-      expect(planned.operations).toEqual([{ op: "update", id: byName("Title").id, name: "Title", keys: ["reactions"] }]);
-      const result = await apply(planned.planId);
-      expect(result.counts).toMatchObject({ updated: 1, partial: 0, failed: 0 });
-      // Written exactly as planned; Figma's read-back differs (defaults, float32).
-      expect(reactionWrites.at(-1)!.reactions).toEqual((store.get(planned.planId).operations[0] as any).set.reactions);
-      expect(reactionWrites.at(-1)!.reactions[0].actions[0].transition.duration).toBe(0.3);
-      expect(byName("Title").reactions[0].actions[0]).toMatchObject({ resetScrollPosition: false, transition: { duration: Math.fround(0.3) } });
-      expect(Math.fround(0.3)).not.toBe(0.3);
-      expect((await plan()).counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
-    });
+    // Figma's live read-back table: the action written, and what
+    // node.reactions[0].actions[0] returns for it (DEST is the destination).
+    const DEST = "$dest";
+    const node = (extra: any) => ({ type: "NODE", destinationId: DEST, navigation: "NAVIGATE", transition: null, ...extra });
+    const READ_BACK: Array<[string, any, any]> = [
+      ["NODE with no scroll fields", node({}), node({ resetVideoPosition: false })],
+      ["resetScrollPosition: false", node({ resetScrollPosition: false }), node({ resetVideoPosition: false, resetScrollPosition: false })],
+      ["preserveScrollPosition: true", node({ preserveScrollPosition: true }), node({ resetVideoPosition: false, resetScrollPosition: false })],
+      ["preserveScrollPosition: false", node({ preserveScrollPosition: false }), node({ resetVideoPosition: false, resetScrollPosition: true })],
+      ["resetInteractiveComponents: true", node({ resetInteractiveComponents: true }), node({ resetVideoPosition: false, resetInteractiveComponents: true })],
+      ["navigation OVERLAY", node({ navigation: "OVERLAY" }), node({ navigation: "OVERLAY", resetVideoPosition: false })],
+      ["BACK", { type: "BACK" }, { type: "BACK" }],
+      ["URL", { type: "URL", url: "https://example.com" }, { type: "URL", url: "https://example.com", openInNewTab: true }],
+      ["a 0.3 s transition (float32)",
+        node({ transition: { type: "DISSOLVE", duration: 0.3, easing: { type: "EASE_OUT" } } }),
+        node({ resetVideoPosition: false, transition: { type: "DISSOLVE", duration: Math.fround(0.3), easing: { type: "EASE_OUT" } } })],
+    ];
+    for (const [label, written, readBack] of READ_BACK) {
+      test(`Figma's read-back of a hand-written link compares equal: ${label}`, async () => {
+        const { root, byName, screenB } = await linked();
+        await pull(root);
+        const title = byName("Title");
+        const fill = (action: any) => JSON.parse(JSON.stringify(action).replaceAll(DEST, screenB.id));
+        const reactions = [{ trigger: { type: "ON_CLICK" }, actions: [fill(written)] }];
+        editSpec((_s, find) => { find("Title").reactions = reactions; });
+        const planned = await plan();
+        expect(planned.operations).toEqual([{ op: "update", id: title.id, name: "Title", keys: ["reactions"] }]);
+        const result = await apply(planned.planId);
+        expect(result.counts).toMatchObject({ updated: 1, partial: 0, failed: 0 });
+        // Written exactly as the Spec has it; Figma's read-back is the table's.
+        expect(reactionWrites.at(-1)!.reactions).toEqual(reactions);
+        expect(title.reactions[0].actions[0]).toEqual(fill(readBack));
+        // A pull gives exactly Figma's read-back, minus `action`.
+        expect((await exportSpec({ nodeId: title.id })).tree.reactions).toEqual([{ actions: [fill(readBack)], trigger: { type: "ON_CLICK" } }]);
+        expect((await plan()).counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
+      });
+    }
 
     test("setReactionsAsync throwing fails that node with the error text and writes nothing else on it", async () => {
       const { root, byName, screenC } = await linked();

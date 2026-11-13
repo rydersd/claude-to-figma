@@ -23792,14 +23792,19 @@ function reactionLinks(reactions) {
   }
   return links;
 }
-var NODE_ACTION_DEFAULTS = {
-  destinationId: null,
-  preserveScrollPosition: false,
-  resetInteractiveComponents: false,
-  resetScrollPosition: false,
-  resetVideoPosition: false,
-  transition: null
-};
+function comparableAction(action) {
+  if (!action || typeof action !== "object")
+    return action;
+  if (action.type === "URL")
+    return { openInNewTab: true, ...action };
+  if (action.type !== "NODE")
+    return action;
+  const { preserveScrollPosition, ...rest } = action;
+  const out = { destinationId: null, transition: null, resetInteractiveComponents: false, resetVideoPosition: false, ...rest };
+  if (out.resetScrollPosition === undefined && typeof preserveScrollPosition === "boolean")
+    out.resetScrollPosition = !preserveScrollPosition;
+  return out;
+}
 var float32 = (value) => {
   if (typeof value === "number")
     return Math.fround(value);
@@ -23814,7 +23819,7 @@ function comparableReactions(list) {
     return list;
   return plainJson(float32(list.map((reaction) => ({
     ...reaction,
-    actions: Array.isArray(reaction?.actions) ? reaction.actions.map((action) => action && action.type === "NODE" ? { ...NODE_ACTION_DEFAULTS, ...action } : action) : reaction?.actions
+    actions: Array.isArray(reaction?.actions) ? reaction.actions.map(comparableAction) : reaction?.actions
   }))));
 }
 function canonicalValue(key, value) {

@@ -305,12 +305,21 @@ export function reactionLinks(reactions: unknown): ReactionLink[] {
   return links;
 }
 
-// Fields Figma fills in on a NODE action it reads back when they were not
-// written (prototyping.ts's builders always send them, so Figma holds them).
-const NODE_ACTION_DEFAULTS: Record<string, unknown> = {
-  destinationId: null, preserveScrollPosition: false, resetInteractiveComponents: false, resetScrollPosition: false,
-  resetVideoPosition: false, transition: null,
-};
+// How Figma reads an action back, as measured live (setReactionsAsync, then
+// node.reactions): a NODE action gains resetVideoPosition: false, and
+// resetInteractiveComponents is absent unless written (so absent = false);
+// preserveScrollPosition is never returned, it is stored as resetScrollPosition
+// = !preserveScrollPosition (and resetScrollPosition stays absent when neither
+// was written); a URL action gains openInNewTab: true.
+function comparableAction(action: any): any {
+  if (!action || typeof action !== "object") return action;
+  if (action.type === "URL") return { openInNewTab: true, ...action };
+  if (action.type !== "NODE") return action;
+  const { preserveScrollPosition, ...rest } = action;
+  const out: Record<string, unknown> = { destinationId: null, transition: null, resetInteractiveComponents: false, resetVideoPosition: false, ...rest };
+  if (out.resetScrollPosition === undefined && typeof preserveScrollPosition === "boolean") out.resetScrollPosition = !preserveScrollPosition;
+  return out;
+}
 
 const float32 = (value: unknown): unknown => {
   if (typeof value === "number") return Math.fround(value);
@@ -320,8 +329,8 @@ const float32 = (value: unknown): unknown => {
 };
 
 // Canonical reactions in the form they are COMPARED in (the SpecLock's form,
-// through lockProps): a NODE action's missing fields filled with what Figma
-// reads back for them, and every number as Figma stores it (float32), so a
+// through lockProps): each action as Figma reads it back (comparableAction),
+// and every number as Figma stores it (float32), so a
 // hand-written link and Figma's read-back of it compare equal. Idempotent. The
 // value written to Figma is always the Spec's own, never this one.
 export function comparableReactions(list: unknown): unknown {
@@ -329,7 +338,7 @@ export function comparableReactions(list: unknown): unknown {
   return plainJson(float32(list.map((reaction: any) => ({
     ...reaction,
     actions: Array.isArray(reaction?.actions)
-      ? reaction.actions.map((action: any) => (action && action.type === "NODE" ? { ...NODE_ACTION_DEFAULTS, ...action } : action))
+      ? reaction.actions.map(comparableAction)
       : reaction?.actions,
   }))));
 }
