@@ -491,13 +491,30 @@
         // Attach click-to-copy on channel name
         const channelEl = connectionStatus.querySelector(".channel-name");
         if (channelEl) {
+          const channel = channelEl.textContent;
           channelEl.addEventListener("click", () => {
-            const text = `channel changed to '${channelEl.textContent}'`;
-            navigator.clipboard.writeText(text).then(() => {
-              const original = channelEl.textContent;
-              channelEl.textContent = "Copied!";
-              setTimeout(() => { channelEl.textContent = original; }, 1500);
-            });
+            const text = `l2f channel is up: ${channel}`;
+            // Figma's plugin iframe often blocks navigator.clipboard, so fall
+            // back to a hidden textarea and execCommand("copy").
+            const fallback = () => {
+              const area = document.createElement("textarea");
+              area.value = text;
+              area.style.position = "fixed";
+              area.style.opacity = "0";
+              document.body.appendChild(area);
+              area.select();
+              const ok = document.execCommand("copy");
+              area.remove();
+              return ok;
+            };
+            const show = (label) => {
+              channelEl.textContent = label;
+              setTimeout(() => { channelEl.textContent = channel; }, 1500);
+            };
+            const copied = navigator.clipboard
+              ? navigator.clipboard.writeText(text).then(() => true, fallback)
+              : Promise.resolve(fallback());
+            copied.then((ok) => show(ok ? "Copied!" : "Copy failed"));
           });
         }
 
@@ -556,7 +573,7 @@
                   const channelName = data.channel;
                   updateConnectionStatus(
                     true,
-                    `Connected to server in channel: <strong class="channel-name" style="cursor:pointer; text-decoration:underline; text-decoration-style:dotted;" title="Click to copy channel to clipboard">${channelName}</strong>`
+                    `Connected to server in channel: <strong class="channel-name" style="cursor:pointer; text-decoration:underline; text-decoration-style:dotted;" title="Click to copy 'l2f channel is up: …'">${channelName}</strong>`
                   );
 
                   // Notify the plugin code
