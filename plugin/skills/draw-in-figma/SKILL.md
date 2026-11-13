@@ -38,6 +38,13 @@ Tell the user what you found that you'll use, and anything the request needs tha
 
 Work one section at a time on large screens, and check each before the next.
 
+## Callouts and design reviews
+
+- Use `place_callouts` for callouts, review notes and annotated walkthroughs (it needs the server flag `L2F_CALLOUTS`). It puts the labels in rails beside the frame, joins each to its target with an orthogonal leader, and adds each one to the target's native annotations so developers see it in Dev Mode. Never draw callouts with `create_line` or diagonal vectors across the design: they cover what people are reviewing.
+- Give each callout a stable `key`, and to change the callouts call `place_callouts` again with the full list: callouts are matched by key and updated in place, and ones you leave out are archived, never deleted.
+- Tell the user about anything in `overflow`: those callouts had no room beside the frame. Above 12 callouts it switches to numbered badges and a numbered list on its own.
+- Paste one FigJam connector into the file to get draggable leaders: with a connector to clone (or one chosen with `set_default_connector`), leaders are real connectors that stay attached when things move. Figma routes their elbows, so only drawn leaders are guaranteed never to cross.
+
 ## 4. Check your work
 
 - Look at it: `export_node_as_image` (or `screenshot_region`) on the frame you built, and compare with what was asked.

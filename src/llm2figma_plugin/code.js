@@ -10478,9 +10478,6 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       return null;
     }
   }
-  function tag(node, key, part, targetId) {
-    node.setPluginData(PART_DATA, JSON.stringify({ key, part, targetId }));
-  }
   async function findConnectorTemplate() {
     const id = await figma.clientStorage.getAsync("defaultConnectorId");
     if (id) {
@@ -10552,19 +10549,22 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     placeAt(f, parent, box.x, box.y);
     return f;
   }
-  function createLeader(key, points, parent) {
-    const v = figma.createVector();
-    v.name = `leader/${key}`;
+  function setLeaderPath(v, points) {
     const minX = Math.min(...points.map((p) => p.x)), minY = Math.min(...points.map((p) => p.y));
     const data = points.map((p, i) => `${i ? "L" : "M"} ${p.x - minX} ${p.y - minY}`).join(" ");
     v.vectorPaths = [{ windingRule: "NONE", data }];
+    placeAt(v, v.parent, minX, minY);
+  }
+  function createLeader(key, points, parent) {
+    const v = figma.createVector();
+    v.name = `leader/${key}`;
     v.fills = [];
     v.strokes = [{ type: "SOLID", color: ACCENT }];
     v.strokeWeight = 1;
     v.strokeCap = "ROUND";
     v.strokeJoin = "ROUND";
     parent.appendChild(v);
-    placeAt(v, parent, minX, minY);
+    setLeaderPath(v, points);
     return v;
   }
   function createDot(key, at, parent) {
@@ -10612,6 +10612,67 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       keys.add(key);
     }
   }
+  function partOf(node) {
+    if (!node || typeof node.getPluginData !== "function") return null;
+    const raw = node.getPluginData(PART_DATA);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  function readExisting(group, parent, frameId) {
+    const ex = { group, parts: /* @__PURE__ */ new Map(), rails: {}, archive: null };
+    const add = (node) => {
+      const d = partOf(node);
+      if (!d || !d.key || !["label", "leader", "dot", "badge"].includes(d.part)) return;
+      const entry = ex.parts.get(d.key) ?? {};
+      if (!entry[d.part]) entry[d.part] = node;
+      entry.targetId = entry.targetId ?? d.targetId;
+      ex.parts.set(d.key, entry);
+    };
+    for (const c of group.children) {
+      const d = partOf(c);
+      if (d && d.part === "archive") {
+        ex.archive = c;
+        continue;
+      }
+      if (d && d.part === "rail" && d.rail) {
+        ex.rails[d.rail] = c;
+        for (const label of c.children) add(label);
+        continue;
+      }
+      add(c);
+    }
+    for (const c of parent.children) {
+      const d = partOf(c);
+      if (d && d.frameId === frameId && c !== group) add(c);
+    }
+    return ex;
+  }
+  function moveInto(container, node) {
+    const t = node.absoluteTransform;
+    const x = t[0][2], y = t[1][2];
+    container.appendChild(node);
+    placeAt(node, container, x, y);
+  }
+  function removeOwnAnnotation(node, key) {
+    if (!node || !("annotations" in node)) return false;
+    const current = Array.from(node.annotations || []);
+    const kept = current.filter((a) => annotationKey(a) !== key);
+    if (kept.length === current.length) return false;
+    node.annotations = kept.map(copyAnnotation);
+    return true;
+  }
+  async function setText(textNode, text, fallbackFont) {
+    if (!textNode) return;
+    const font = textNode.fontName && typeof textNode.fontName === "object" && "family" in textNode.fontName ? textNode.fontName : fallbackFont;
+    await loadFontCached(font);
+    textNode.fontName = font;
+    textNode.characters = text;
+  }
+  var textChild = (node) => (node.children || []).find((c) => c.type === "TEXT");
   async function placeCallouts(params) {
     validateParams(params);
     const width = params.width ?? DEFAULTS.width;
@@ -10625,10 +10686,9 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!parent || parent.type !== "SECTION" && parent.type !== "PAGE") {
       throw new Error(`place_callouts needs a frame placed directly on a page or in a section (${frame.id} is inside ${parent ? parent.type : "nothing"})`);
     }
-    const existing = parent.children.find((c) => groupFrameId(c) === frame.id);
-    if (existing) {
-      throw new Error(`callouts already placed for ${frame.id} (${existing.id}); updating them in place is not supported yet`);
-    }
+    const existingGroup = parent.children.find((c) => groupFrameId(c) === frame.id) ?? null;
+    const ex = existingGroup ? readExisting(existingGroup, parent, frame.id) : null;
+    const old = (key) => ex && ex.parts.get(key) || {};
     const resolved = [];
     const unresolved = [];
     for (let i = 0; i < params.callouts.length; i++) {
@@ -10644,6 +10704,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const obstacles = [];
     for (const sibling of parent.children) {
       if (sibling === frame || sibling.visible === false || groupFrameId(sibling) === frame.id) continue;
+      const d = partOf(sibling);
+      if (d && d.frameId === frame.id) continue;
       const b = boxOf(sibling);
       if (b) obstacles.push(b);
     }
@@ -10662,13 +10724,26 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const numberOf = /* @__PURE__ */ new Map();
     if (mode === "numbered") readingOrder(resolved.map((r) => r.box)).forEach((ri, n) => numberOf.set(ri, n + 1));
     const labels = [];
+    const reused = /* @__PURE__ */ new Set();
     for (let ri = 0; ri < resolved.length; ri++) {
       const r = resolved[ri];
       const text = mode === "numbered" ? `${numberOf.get(ri)}. ${r.text}` : r.text;
-      const label = await createLabel(r.key, text, width);
-      parent.appendChild(label);
-      label.visible = false;
-      labels.push(label);
+      const prev = old(r.key).label;
+      if (prev) {
+        prev.name = `callout/${r.key}`;
+        await setText(textChild(prev), text, REGULAR);
+        if (Math.abs(prev.width - width) > 0.01) {
+          prev.resize(width, prev.height);
+          prev.primaryAxisSizingMode = "AUTO";
+        }
+        labels.push(prev);
+        reused.add(ri);
+      } else {
+        const label = await createLabel(r.key, text, width);
+        parent.appendChild(label);
+        label.visible = false;
+        labels.push(label);
+      }
     }
     const layout = layoutCallouts(
       frameBox,
@@ -10677,60 +10752,163 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       obstacles,
       { rails: params.rails, gap: params.gap, railOffset: params.railOffset, width, denseThreshold }
     );
-    const parts = [];
+    const fresh = [];
+    const freshConnectors = [];
+    const toArchive = [];
+    const supersede = (node) => {
+      if (node) toArchive.push(node);
+    };
+    const tagged = (node, key, part, targetId) => {
+      node.setPluginData(PART_DATA, JSON.stringify({ key, part, targetId, frameId: frame.id }));
+      return node;
+    };
     const railNodes = {};
     for (const rail of Object.keys(layout.rails)) {
-      railNodes[rail] = createRail(rail, layout.rails[rail], parent);
-      parts.push(railNodes[rail]);
+      const box = layout.rails[rail];
+      const prev = ex && ex.rails[rail];
+      if (prev) {
+        prev.resize(Math.max(1, box.width), Math.max(1, box.height));
+        placeAt(prev, prev.parent, box.x, box.y);
+        railNodes[rail] = prev;
+      } else {
+        const node = createRail(rail, box, parent);
+        node.setPluginData(PART_DATA, JSON.stringify({ part: "rail", rail, frameId: frame.id }));
+        railNodes[rail] = node;
+        fresh.push(node);
+      }
     }
     const placed = [];
-    const connectors = [];
     const placedLabels = /* @__PURE__ */ new Map();
     for (const p of layout.placed) {
       const r = resolved[p.index];
+      const prev = old(r.key);
       const label = labels[p.index];
       railNodes[p.rail].appendChild(label);
       placeAt(label, railNodes[p.rail], p.label.x, p.label.y);
       label.visible = true;
-      tag(label, r.key, "label", r.targetId);
+      tagged(label, r.key, "label", r.targetId);
       placedLabels.set(r.key, label);
       const entry = { key: r.key, rail: p.rail, x: p.label.x - frameBox.x, y: p.label.y - frameBox.y, labelId: label.id };
       if (p.leader && leaders.style === "connector") {
-        const connector = createConnectorLeader(leaders.template, r.key, label.id, p.rail, r.targetId, parent);
-        tag(connector, r.key, "leader", r.targetId);
-        connectors.push(connector);
+        let connector = prev.leader && prev.leader.type === "CONNECTOR" ? prev.leader : null;
+        if (connector) wireConnector(connector, r.key, label.id, p.rail, r.targetId);
+        else {
+          supersede(prev.leader);
+          connector = createConnectorLeader(leaders.template, r.key, label.id, p.rail, r.targetId, parent);
+          freshConnectors.push(connector);
+        }
+        connector.visible = true;
+        tagged(connector, r.key, "leader", r.targetId);
+        supersede(prev.dot);
         entry.leaderId = connector.id;
       } else if (p.leader) {
-        const leader = createLeader(r.key, p.leader, parent);
-        tag(leader, r.key, "leader", r.targetId);
-        const dot = createDot(r.key, p.dot, parent);
-        tag(dot, r.key, "dot", r.targetId);
-        parts.push(leader, dot);
+        let leader = prev.leader && prev.leader.type === "VECTOR" ? prev.leader : null;
+        if (leader) setLeaderPath(leader, p.leader);
+        else {
+          supersede(prev.leader);
+          leader = createLeader(r.key, p.leader, parent);
+          fresh.push(leader);
+        }
+        leader.visible = true;
+        tagged(leader, r.key, "leader", r.targetId);
+        let dot = prev.dot;
+        if (dot) placeAt(dot, dot.parent, p.dot.x - DOT / 2, p.dot.y - DOT / 2);
+        else {
+          dot = createDot(r.key, p.dot, parent);
+          fresh.push(dot);
+        }
+        dot.visible = true;
+        tagged(dot, r.key, "dot", r.targetId);
         entry.leaderId = leader.id;
+      } else {
+        supersede(prev.leader);
+        supersede(prev.dot);
       }
       if (p.badge) {
-        const badge = await createBadge(p.number, p.badge, parent);
-        tag(badge, r.key, "badge", r.targetId);
-        parts.push(badge);
+        let badge = prev.badge;
+        if (badge) {
+          badge.name = `badge/${p.number}`;
+          const number = textChild(badge);
+          if (number) number.name = `badge/${p.number}/number`;
+          await setText(number, String(p.number), BOLD);
+          placeAt(badge, badge.parent, p.badge.x, p.badge.y);
+        } else {
+          badge = await createBadge(p.number, p.badge, parent);
+          fresh.push(badge);
+        }
+        badge.visible = true;
+        tagged(badge, r.key, "badge", r.targetId);
         entry.number = p.number;
+      } else {
+        supersede(prev.badge);
       }
       placed.push(entry);
     }
-    for (const o of layout.overflow) labels[o.index].remove();
-    let group = null;
+    const hidden = [];
+    const hide = (parts) => {
+      for (const n of [parts.label, parts.leader, parts.dot, parts.badge]) if (n) n.visible = false;
+    };
+    for (const o of layout.overflow) {
+      const ri = o.index;
+      if (reused.has(ri)) {
+        hide(old(o.key));
+        hidden.push(o.key);
+      } else labels[ri].remove();
+    }
+    for (const u of unresolved) if (ex && ex.parts.has(u.key)) {
+      hide(old(u.key));
+      hidden.push(u.key);
+    }
+    const inputKeys = new Set(params.callouts.map((c) => c.key ?? c.targetId));
+    const superseded = [];
+    const dropped = [];
+    if (ex) {
+      for (const [key, parts] of ex.parts) {
+        if (inputKeys.has(key)) continue;
+        for (const n of [parts.label, parts.leader, parts.dot, parts.badge]) supersede(n);
+        superseded.push(key);
+        dropped.push({ key, targetId: parts.targetId });
+      }
+    }
+    let group = existingGroup;
     let connectorsOutsideGroup = false;
-    if (parts.length || connectors.length) {
+    if (group) {
+      for (const n of fresh) moveInto(group, n);
+      for (const c of freshConnectors) {
+        try {
+          moveInto(group, c);
+        } catch {
+          connectorsOutsideGroup = true;
+        }
+      }
+      group.name = `callouts/${frame.name}`;
+    } else if (fresh.length || freshConnectors.length) {
       try {
-        group = figma.group([...parts, ...connectors], parent);
+        group = figma.group([...fresh, ...freshConnectors], parent);
       } catch (error) {
-        if (!connectors.length || !parts.length) throw error;
-        group = figma.group(parts, parent);
+        if (!freshConnectors.length || !fresh.length) throw error;
+        group = figma.group(fresh, parent);
         connectorsOutsideGroup = true;
       }
       group.name = `callouts/${frame.name}`;
       group.setPluginData(GROUP_DATA, JSON.stringify({ frameId: frame.id }));
     }
-    const annotations = { added: 0, updated: 0, unchanged: 0, skipped: [] };
+    if (group && toArchive.length) {
+      for (const n of toArchive) {
+        if (!n.name.endsWith(" (superseded)")) n.name = `${n.name} (superseded)`;
+        n.visible = false;
+        moveInto(group, n);
+      }
+      let archive = ex && ex.archive;
+      if (archive) for (const n of toArchive) moveInto(archive, n);
+      else {
+        archive = figma.group(toArchive, group);
+        archive.setPluginData(PART_DATA, JSON.stringify({ part: "archive", frameId: frame.id }));
+      }
+      archive.name = `callouts/${frame.name}/archive`;
+      archive.visible = false;
+    }
+    const annotations = { added: 0, updated: 0, unchanged: 0, removed: 0, skipped: [] };
     if (native) {
       for (const r of resolved) {
         if (!("annotations" in r.node)) {
@@ -10743,6 +10921,14 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           annotations.skipped.push({ key: r.key, reason: error instanceof Error ? error.message : String(error) });
         }
       }
+      for (const d of dropped) {
+        if (!d.targetId) continue;
+        try {
+          if (removeOwnAnnotation(await figma.getNodeByIdAsync(d.targetId), d.key)) annotations.removed++;
+        } catch (error) {
+          annotations.skipped.push({ key: d.key, reason: error instanceof Error ? error.message : String(error) });
+        }
+      }
     }
     return {
       groupId: group ? group.id : null,
@@ -10751,6 +10937,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       ...connectorsOutsideGroup ? { connectorsOutsideGroup } : {},
       placed,
       overflow: [...unresolved, ...layout.overflow.map((o) => ({ key: o.key, reason: o.reason }))],
+      rerun: ex ? { updated: placed.filter((p) => old(p.key).label).length, hidden, superseded } : null,
       annotations: native ? annotations : null,
       verification: verify(layout, railNodes, placedLabels, frameBox, obstacles, group, sectionBox)
     };

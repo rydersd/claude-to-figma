@@ -107,7 +107,7 @@ Or add it to a project's `.mcp.json`:
 New tool families ship behind server-side flags. A tool whose flag is off is not registered, so it doesn't appear in Claude's tool list. The server reads flags only from its own environment when it starts; no tool parameter or client-sent value can turn one on.
 
 - `L2F_ALL=1` turns on every flag except `L2F_COMMENTS_WRITE`, which posts comments as you and must be set on its own.
-- `L2F_<FEATURE>=1` turns on one flag. The flags are `FILE_KEY`, `COMMENTS`, `COMMENTS_WRITE`, `FLOWS`, `VARIABLES_WRITE`, `COMPONENT_PROPERTIES`, `GRID_LAYOUT`, `VERIFY`, `SPEC_SYNC`, `CODE_MAP`, `DEV_MODE`, `SLIDES` and `TEXT_PATH`.
+- `L2F_<FEATURE>=1` turns on one flag. The flags are `FILE_KEY`, `COMMENTS`, `COMMENTS_WRITE`, `FLOWS`, `VARIABLES_WRITE`, `COMPONENT_PROPERTIES`, `GRID_LAYOUT`, `VERIFY`, `SPEC_SYNC`, `CODE_MAP`, `DEV_MODE`, `SLIDES`, `TEXT_PATH` and `CALLOUTS`.
 - `L2F_SPEC_DIR` is a setting, not a flag: the folder Spec files resolve against. `L2F_ALL` doesn't set it.
 - `L2F_NO_RELAY_AUTOSTART=1` is a setting, not a flag: the server then doesn't start the relay, and you run `bun socket` yourself. `L2F_ALL` doesn't set it.
 
@@ -276,6 +276,10 @@ The MCP server provides the following tools for interacting with Figma:
 - `get_measurements` - Lists the current page's measurements, or one node's, capped at 100. Design editor and Dev Mode
 
 Names, links and measurement text in these results come from the file: they are cut to 200 characters and labelled as untrusted text.
+
+### Callouts (behind `L2F_CALLOUTS=1`)
+
+- `place_callouts` - Places review callouts around a frame without covering it. Labels go in rails beside the frame (the target's nearer side first, then the other side, then top and bottom), keep their targets' order, and never overlap the frame, sibling frames or each other; what does not fit is returned as `overflow`. Each label is joined to its target by an orthogonal leader with one elbow, or, above `denseThreshold` (12) callouts, the targets get numbered badges and the rails a numbered list. Leaders are cloned FigJam connectors when the file has one to clone (paste one in, or set it with `set_default_connector`), otherwise drawn vectors; only drawn leaders are guaranteed not to cross. Each callout is also added to its target's native annotations (other annotations are kept). Re-running with the same keys updates in place; callouts left out are renamed `(superseded)`, hidden and archived, never deleted
 
 ### Prototyping & Connections
 

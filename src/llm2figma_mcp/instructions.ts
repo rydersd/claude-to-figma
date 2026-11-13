@@ -22,6 +22,9 @@ export function serverInstructions(env: Record<string, string | undefined> = pro
   if (isEnabled("VERIFY", env)) {
     lines.push("- Before a bulk or structural edit outside spec sync, take snapshot_positions of the affected root; afterwards diff_positions shows anything missing, added or moved.");
   }
+  if (isEnabled("CALLOUTS", env)) {
+    lines.push("- For callouts, review notes or annotated walkthroughs, use place_callouts: labels in rails beside the frame, orthogonal leaders, and native annotations for Dev Mode. Never draw callouts with create_line or diagonal vectors over the design. To change them, call it again with the full list and stable keys; tell the user about anything in overflow.");
+  }
   lines.push(
     `- When llm2figma gets in the way (a tool errors, returns wrong or partial results, is missing something you needed, or you had to work around it with figma_eval), say so plainly in your reply to the user, then file a GitHub issue: first look for an open one (gh issue list -R ${FEEDBACK_REPO} --label ${FEEDBACK_LABEL} --search "<tool>"), and comment there if it exists; otherwise gh issue create -R ${FEEDBACK_REPO} --label ${FEEDBACK_LABEL} with the tool, what you called, what happened against what you expected, and your workaround. The repository is public: describe only the tool's behaviour, never file names or keys, node or layer names, client, company or project names, or design content.`,
   );

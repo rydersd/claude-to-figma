@@ -58,6 +58,10 @@ Five flagged tools (`L2F_DEV_MODE=1`) hand frames to developers; details in [Too
 - `set_dev_status`, `get_dev_resources`, `add_dev_resource` — ready-for-dev or completed status and https links on nodes, in the design editor and in Dev Mode
 - `add_measurement`, `get_measurements` — measurements between node sides on the current page; adding is Dev Mode only, reading also works in the design editor
 
+## Callouts
+
+Behind `L2F_CALLOUTS=1`: `place_callouts {frameId, callouts: [{key?, targetId, text}], ...}` puts review callouts in rails beside a frame with orthogonal leaders (cloned connectors when the file has one) or numbered badges, adds them to the targets' native annotations, and updates them in place on a re-run. Use it instead of `create_line` for callouts; details in [Tools-Prototyping-and-Annotations](Tools-Prototyping-and-Annotations.md#callouts-place_callouts).
+
 ## Spec sync
 
 Flagged tools that write a design to a file the model edits in place, and show what the edits would change; details in [Spec Sync](Spec-Sync.md):

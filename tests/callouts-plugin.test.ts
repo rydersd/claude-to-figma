@@ -227,7 +227,7 @@ describe("place_callouts builder (leaders mode)", () => {
     const dot = named(group, "dot/5:1")[0];
     expect(dot.absoluteBoundingBox).toEqual({ x: 1600 + 20 - 3, y: 865 - 3, width: 6, height: 6 });
     // Parts carry their key for re-runs.
-    expect(JSON.parse(email.getPluginData("l2f-callout"))).toEqual({ key: "5:1", part: "label", targetId: "5:1" });
+    expect(JSON.parse(email.getPluginData("l2f-callout"))).toEqual({ key: "5:1", part: "label", targetId: "5:1", frameId: frame.id });
   });
 
   test("a sibling in the left band sends callouts to the right rail", async () => {
@@ -256,11 +256,9 @@ describe("place_callouts builder (leaders mode)", () => {
     expect(result.placed).toHaveLength(3);
   });
 
-  test("refusals: duplicate keys, a frame not on a page or in a section, a second run", async () => {
+  test("refusals: duplicate keys, a frame not on a page or in a section", async () => {
     await expect(placeCallouts({ frameId: frame.id, callouts: [CALLOUTS[0], { ...CALLOUTS[0], text: "again" }] })).rejects.toThrow("duplicate callout key: 5:1");
     await expect(placeCallouts({ frameId: "5:1", callouts: CALLOUTS })).rejects.toThrow("directly on a page or in a section");
-    await placeCallouts({ frameId: frame.id, callouts: CALLOUTS });
-    await expect(placeCallouts({ frameId: frame.id, callouts: CALLOUTS })).rejects.toThrow("callouts already placed");
   });
 });
 
@@ -345,7 +343,7 @@ describe("native annotations", () => {
     const email = nodes.get("5:1");
     email.annotations = [{ labelMarkdown: "Designer note" }, { label: "Plain", categoryId: "c1", properties: [{ type: "width" }] }];
     const first = await placeCallouts({ frameId: frame.id, callouts: CALLOUTS });
-    expect(first.annotations).toEqual({ added: 3, updated: 0, unchanged: 0, skipped: [] });
+    expect(first.annotations).toEqual({ added: 3, updated: 0, unchanged: 0, removed: 0, skipped: [] });
     expect(email.annotations).toEqual([
       { labelMarkdown: "Designer note" },
       { label: "Plain", categoryId: "c1", properties: [{ type: "width" }] },
@@ -436,5 +434,116 @@ describe("gates and the server tool", () => {
     const out = await failing.place_callouts.run(args);
     expect(out.isError).toBe(true);
     expect(out.content[0].text).toBe(`Error placing callouts: ${NO_CONNECTOR_TEMPLATE}`);
+  });
+});
+
+describe("re-runs", () => {
+  const ids = (root: any): string[] => {
+    const out: string[] = [];
+    const walk = (n: any) => { for (const c of n.children) { out.push(c.id); walk(c); } };
+    walk(root);
+    return out.sort();
+  };
+  const boxes = (root: any) => named(root, "").map((n: any) => [n.name, n.absoluteBoundingBox, n.visible]);
+
+  test("the same input again finds the group by plugin data and changes nothing", async () => {
+    const first = await placeCallouts({ frameId: frame.id, callouts: CALLOUTS, leaderStyle: "vector" });
+    const before = { ids: ids(section), boxes: boxes(section) };
+    const second = await placeCallouts({ frameId: frame.id, callouts: CALLOUTS, leaderStyle: "vector" });
+    expect(second.groupId).toBe(first.groupId);
+    expect(second.placed).toEqual(first.placed);
+    expect(second.rerun).toEqual({ updated: 3, hidden: [], superseded: [] });
+    expect(second.annotations).toMatchObject({ added: 0, updated: 0, unchanged: 3, removed: 0 });
+    expect(ids(section)).toEqual(before.ids);
+    expect(boxes(section)).toEqual(before.boxes);
+    expect(second.verification.ok).toBe(true);
+  });
+
+  test("changed text updates in place; a dropped callout is superseded, hidden, archived and loses only its annotation", async () => {
+    nodes.get("7:1").annotations = [{ labelMarkdown: "Keep me" }];
+    const first = await placeCallouts({ frameId: frame.id, callouts: CALLOUTS, leaderStyle: "vector" });
+    const group = nodes.get(first.groupId);
+    const emailLabel = named(group, "callout/5:1")[0];
+    const termsParts = ["callout/7:1", "leader/7:1", "dot/7:1"].map(n => named(group, n)[0]);
+    const second = await placeCallouts({
+      frameId: frame.id, leaderStyle: "vector",
+      callouts: [{ ...CALLOUTS[0], text: "Validate on blur." }, CALLOUTS[1]],
+    });
+    expect(second.rerun).toEqual({ updated: 2, hidden: [], superseded: ["7:1"] });
+    // Updated in place: same node, new text.
+    expect(named(group, "callout/5:1")[0]).toBe(emailLabel);
+    expect(named(emailLabel, "callout/5:1/text")[0].characters).toBe("Validate on blur.");
+    // Superseded: same nodes, renamed, hidden, inside the archive group. Nothing removed.
+    const archive = group.children.find((c: any) => c.name === "callouts/Checkout/archive");
+    expect(archive.type).toBe("GROUP");
+    expect(archive.visible).toBe(false);
+    for (const n of termsParts) {
+      expect(n.removed).toBeUndefined();
+      expect(n.visible).toBe(false);
+      expect(n.parent).toBe(archive);
+      expect(n.name.endsWith(" (superseded)")).toBe(true);
+    }
+    // Archived nodes kept their place on the canvas.
+    expect(termsParts[2].absoluteBoundingBox).toEqual({ x: 1600 + 30 - 3, y: 800 + 510 - 3, width: 6, height: 6 });
+    // Annotations follow: updated for 5:1, removed for 7:1 (its other annotation stays).
+    expect(nodes.get("5:1").annotations).toEqual([{ labelMarkdown: "**Callout 5:1:** Validate on blur." }]);
+    expect(nodes.get("7:1").annotations).toEqual([{ labelMarkdown: "Keep me" }]);
+    expect(second.annotations).toMatchObject({ updated: 1, unchanged: 1, removed: 1 });
+    // A later run finds the archive again instead of making a second one.
+    await placeCallouts({ frameId: frame.id, leaderStyle: "vector", callouts: [CALLOUTS[1]] });
+    expect(group.children.filter((c: any) => c.name.endsWith("/archive"))).toHaveLength(1);
+    expect(named(archive, "callout/5:1 (superseded)")).toHaveLength(1);
+    // Bringing a superseded key back makes new parts; the archived ones stay archived.
+    await placeCallouts({ frameId: frame.id, leaderStyle: "vector", callouts: CALLOUTS });
+    expect(named(archive, "callout/7:1 (superseded)")).toHaveLength(1);
+    expect(group.children.filter((c: any) => c.name === "leader/7:1")).toHaveLength(1);
+  });
+
+  test("connectors are reused for each key; switching from vectors supersedes the vector and its dot", async () => {
+    const first = await placeCallouts({ frameId: frame.id, callouts: CALLOUTS, leaderStyle: "vector" });
+    const group = nodes.get(first.groupId);
+    const oldLeader = named(group, "leader/pay")[0];
+    makeConnector(page);
+    const second = await placeCallouts({ frameId: frame.id, callouts: CALLOUTS });
+    expect(second.leaderStyle).toBe("connector");
+    expect(oldLeader.name).toBe("leader/pay (superseded)");
+    const connector = group.children.find((c: any) => c.name === "leader/pay");
+    expect(connector.type).toBe("CONNECTOR");
+    expect(named(group, "dot/pay (superseded)")).toHaveLength(1);
+    const third = await placeCallouts({ frameId: frame.id, callouts: CALLOUTS, leaderStyle: "connector" });
+    expect(third.placed.find((p: any) => p.key === "pay").leaderId).toBe(connector.id);
+    expect(group.children.filter((c: any) => c.type === "CONNECTOR")).toHaveLength(3);
+    expect(connector.connectorStart.endpointNodeId).toBe(named(group, "callout/pay")[0].id);
+  });
+
+  test("switching to numbered mode supersedes leaders and dots and numbers the reused labels", async () => {
+    const first = await placeCallouts({ frameId: frame.id, callouts: CALLOUTS, leaderStyle: "vector" });
+    const group = nodes.get(first.groupId);
+    const emailLabel = named(group, "callout/5:1")[0];
+    const extra = Array.from({ length: 11 }, (_, i) => withAnnotations(child(frame, "FRAME", `Row ${i}`, 200, 100 + i * 25, 60, 20)));
+    const second = await placeCallouts({ frameId: frame.id, callouts: [...CALLOUTS, ...extra.map((t, i) => ({ targetId: t.id, text: `Row ${i}` }))] });
+    expect(second.mode).toBe("numbered");
+    expect(named(group, "callout/5:1")[0]).toBe(emailLabel);
+    expect(named(emailLabel, "callout/5:1/text")[0].characters).toMatch(/^\d+\. Validate the email/);
+    expect(group.children.filter((c: any) => c.name.startsWith("leader/") || c.name.startsWith("dot/"))).toEqual([]);
+    expect(named(group, "leader/5:1 (superseded)")).toHaveLength(1);
+    expect(group.children.filter((c: any) => /^badge\/\d+$/.test(c.name))).toHaveLength(14);
+  });
+
+  test("an existing callout with no room this time is hidden in place, not superseded", async () => {
+    const first = await placeCallouts({ frameId: frame.id, callouts: CALLOUTS, leaderStyle: "vector", rails: ["left"] });
+    const group = nodes.get(first.groupId);
+    const pay = named(group, "callout/pay")[0];
+    // A sibling now fills most of the left band: two of the three labels still fit,
+    // and the one whose target is furthest from the rail gives way.
+    child(section, "FRAME", "Promo", 300, 400, 250, 600);
+    const second = await placeCallouts({ frameId: frame.id, callouts: CALLOUTS, leaderStyle: "vector", rails: ["left"] });
+    expect(second.overflow).toEqual([{ key: "pay", reason: "no room" }]);
+    expect(second.rerun.hidden).toEqual(["pay"]);
+    expect(pay.visible).toBe(false);
+    expect(pay.name).toBe("callout/pay");
+    expect(pay.removed).toBeUndefined();
+    expect(named(group, "leader/pay")[0].visible).toBe(false);
+    expect(second.verification.ok).toBe(true);
   });
 });

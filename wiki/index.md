@@ -1,10 +1,11 @@
 # Wiki Index
 
-> Auto-maintained by Claude. Last updated: 2026-11-12. Articles: 4.
+> Auto-maintained by Claude. Last updated: 2026-11-13. Articles: 6.
 > Purpose: non-obvious knowledge about the llm2figma bridge — architecture decisions, patterns, and gotchas that wouldn't be obvious from reading code.
 
 ## Recent
 
+- 2026-11-13: [Callouts](concepts/callouts.md) — why rail leaders never cross, the settle loop, sections that must not grow, annotations with no id, cloned connectors, re-runs that never delete. Tags: callouts, annotations, connectors
 - 2026-11-12: [Dev Mode](concepts/dev-mode.md) — which Dev Mode writes Figma allows, the manifest it needs, inherited dev resources, measurement limits. Tags: dev-mode, figma
 - 2026-11-12: [Spec sync](concepts/spec-sync.md) — Spec and SpecLock design, one normaliser for both sides, why absent paint means none, truncation vs deletion, the shared variable-index test trap. Tags: spec-sync, testing
 - 2026-11-12: [Geometry verification](concepts/geometry-verification.md) — silent `resize()`, why containment passes on misplaced section children, plugin-side snapshots. Tags: verification, figma
@@ -13,6 +14,7 @@
 
 ## Concepts
 
+- [Callouts](concepts/callouts.md) — `L2F_CALLOUTS` design: rail layout and its no-crossing argument, section-relative placement, the `Callout <key>:` annotation marker, connector templates, archive on re-run, unconfirmed live behaviour.
 - [Dev Mode](concepts/dev-mode.md) — `L2F_DEV_MODE` gotchas: the editor gate's Dev Mode exceptions, `dev` + `inspect` in the manifest, inherited resources and duplicates, current-page measurements, link validation without `URL`.
 - [Event Streaming](concepts/event-streaming.md) — How `figma_events_subscribe` / `figma_events_poll` work; priority buffer, plugin operation guard, listener lifecycle, known limitations (undo/redo, DELETE nodeName, multiplayer REMOTE).
 - [Geometry verification](concepts/geometry-verification.md) — `L2F_VERIFY` gotchas: resize read-back causes, `absoluteBoundingBox` containment and its blind spot for section offsets, snapshot expiry.
