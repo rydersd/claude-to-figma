@@ -6,7 +6,8 @@
 //      still hashes, sits and orders its children as the plan saw; on any
 //      difference it refuses the whole run and writes nothing;
 //   2. commitUndo, then creates (onBindFailure "keep"), updates (only the
-//      listed keys, never a key in the node's $unread), moves (minimal
+//      listed keys, never a key in the node's $unread; `reactions` through
+//      setReactionsAsync, after the creates), moves (minimal
 //      insertChild, read back; a reparent keeps the absolute position) and
 //      removals (into a page-level `l2f/superseded` frame at the same absolute
 //      position, never remove()); one failure is recorded and the rest go on;

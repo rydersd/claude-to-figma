@@ -199,6 +199,27 @@ async function localComponent(id: string, type: "COMPONENT" | "COMPONENT_SET"): 
 const TEXT_FONT_DEPENDENT = ["text", "fontSize", "lineHeight", "letterSpacing", "textCase", "textAlignHorizontal", "width",
   "height", "textAutoResize", "layoutSizingHorizontal", "layoutSizingVertical"];
 
+// Replace a node's prototype reactions. Cleared first, as prototyping.ts does:
+// Figma can refuse a replacement ("Reaction was invalid") that it accepts on an
+// empty list. If setting the new list fails, the old one is put back (best
+// effort) and the error thrown, so the node is left as it was. Throws, never
+// skips, when the node cannot take reactions.
+export async function replaceReactions(node: any, reactions: unknown[]): Promise<void> {
+  if (typeof node.setReactionsAsync !== "function") {
+    throw new Error(`reactions not written: ${node.type} node ${node.id} has no setReactionsAsync`);
+  }
+  const before = Array.isArray(node.reactions) ? JSON.parse(JSON.stringify(node.reactions)) : [];
+  if (before.length) await node.setReactionsAsync([]);
+  try {
+    await node.setReactionsAsync(reactions);
+  } catch (error) {
+    if (before.length) {
+      try { await node.setReactionsAsync(before); } catch { /* the error below is what matters */ }
+    }
+    throw error;
+  }
+}
+
 export interface UpdateResult {
   changed: boolean;
   changedProps: string[];
@@ -240,6 +261,11 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
   };
 
   // --- Common properties for all node types ---
+  // Prototype reactions first: if Figma rejects them, nothing else was written.
+  if (want("reactions") && Array.isArray(spec.reactions)) {
+    await replaceReactions(existingNode, spec.reactions);
+    changedProps.push("reactions");
+  }
   if (want("name") && spec.name !== undefined && existingNode.name !== spec.name) {
     existingNode.name = spec.name;
     changedProps.push("name");
@@ -903,6 +929,17 @@ async function createNodeAt(
     const node: any = await figma.getNodeByIdAsync(result.id);
     if (node && fillsParent) applyDeferredFill(node, props, undefined, { checkParent: true });
     if (node && props.visible !== undefined) node.visible = !!props.visible;
+  }
+  // Prototype reactions (spec sync; create_node_tree's schema has no such key).
+  // The node is kept when Figma rejects them, and the error reported.
+  if (Array.isArray(props.reactions) && props.reactions.length) {
+    try {
+      const node: any = await figma.getNodeByIdAsync(result.id);
+      if (node) await replaceReactions(node, props.reactions);
+    } catch (err: any) {
+      ctx.counters.errors++;
+      ctx.errors.push(withPath({ type, name: props.name || "(unnamed)", nodeId: result.id, error: "Reactions not set: " + (err.message || String(err)) }));
+    }
   }
 
   ctx.counters.created++;

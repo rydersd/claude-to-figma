@@ -4,14 +4,15 @@
 // be read faithfully is left out here (figma.mixed values, paint lists with
 // more than one visible paint or a non-solid paint, ambiguous variables,
 // non-pixel line height and letter spacing, fractional font sizes, disagreeing
-// stroke caps, multi-path vectors) and its key listed in the node's `$unread`,
+// stroke caps, multi-path vectors, prototype reactions with an action type the
+// Spec does not carry) and its key listed in the node's `$unread`,
 // so an absent key is never mistaken for its default; text with more than one
 // style is an OpaqueNode. The shared normaliser (src/shared/spec.ts) then drops
 // derived values and defaults.
 // `figma` is a global provided by the Figma plugin runtime.
 
 import { WALK_LIMITS } from "../../shared/walk";
-import { NO_PAINT, OPAQUE_TYPE, UNREAD_KEY, colorToHex, hashProps, lockNodesFromTree, lockProps, normalizeNode, round2, type ParentLayout, type SpecLockNode, type SpecType } from "../../shared/spec";
+import { NO_PAINT, OPAQUE_TYPE, UNREAD_KEY, canonicalValue, colorToHex, hashProps, lockNodesFromTree, lockProps, normalizeNode, round2, type ParentLayout, type SpecLockNode, type SpecType } from "../../shared/spec";
 import { getVariableByName, sendProgressUpdate } from "./utils";
 
 const SPEC_TYPE_OF: Record<string, SpecType> = {
@@ -246,7 +247,15 @@ async function readSpecValues(node: any, cache: SpecReadCache): Promise<{ props:
   const type = SPEC_TYPE_OF[node.type];
   const { unread, mark } = unreadList();
   const props = await readByType(node, type, cache, mark);
-  return props ? { props, unread } : { opaque: "main component missing" };
+  if (!props) return { opaque: "main component missing" };
+  props.reactions = mark("reactions", readReactions(node));
+  return { props, unread };
+}
+
+// Prototype reactions in canonical form, or undefined when one cannot be
+// written back faithfully (see canonicalReactions in src/shared/spec.ts).
+function readReactions(node: any): unknown {
+  return node.reactions === undefined ? [] : canonicalValue("reactions", node.reactions);
 }
 
 async function readByType(node: any, type: SpecType, cache: SpecReadCache, mark: Unread): Promise<Record<string, unknown> | null> {
@@ -437,7 +446,7 @@ function liveSize(node: any): { width: number; height: number } | undefined {
 }
 
 // read_spec_nodes {rootId, expect, baseHashes, truncated, sizeIds, maxNodes,
-// maxDepth, maxBytes}: for plan_spec, every live node under the root as
+// destinationIds, maxDepth, maxBytes}: for plan_spec, every live node under the root as
 // {propsHash, parentId, children}, read by the same walk as export_spec, so an
 // untouched node hashes the same as its SpecLock entry. `truncated` maps the
 // ids the SpecLock recorded as cut off to their recorded reason; they are read
@@ -445,9 +454,10 @@ function liveSize(node: any): { width: number; height: number } | undefined {
 // included only when propsHash differs from the baseHashes entry (or there is
 // none), so an unchanged design costs a hash per node. `size` is the live width
 // and height of the nodes in sizeIds (an update naming one dimension needs the
-// other). Writes nothing.
+// other). `destinations` describes each of destinationIds (the targets of the
+// prototype links the Spec adds). Writes nothing.
 export async function readSpecNodes(params: any) {
-  const { rootId, expect, baseHashes, truncated, sizeIds, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+  const { rootId, expect, baseHashes, truncated, sizeIds, destinationIds, maxNodes, maxDepth, maxBytes, commandId } = params || {};
   if (!rootId || typeof rootId !== "string") throw new Error("Missing rootId parameter");
   const bases: Record<string, string> = baseHashes && typeof baseHashes === "object" ? baseHashes : {};
   const forced = new Map<string, string>();
@@ -470,9 +480,24 @@ export async function readSpecNodes(params: any) {
     const size = liveSize(id === read.rootId ? read.root : await figma.getNodeByIdAsync(id));
     if (size) nodes[id].size = size;
   }
+  // Destinations of the prototype links the Spec adds: null when not a node in
+  // the file; else whether it is on this page, and a top-level frame there
+  // (directly on the page or in a section), which a NAVIGATE link needs.
+  const destinations: Record<string, { onPage: boolean; topLevelFrame: boolean } | null> = {};
+  for (const id of Array.isArray(destinationIds) ? destinationIds : []) {
+    if (typeof id !== "string") continue;
+    const target: any = await figma.getNodeByIdAsync(id);
+    const targetPage = target && !target.removed ? pageOf(target) : null;
+    if (!targetPage) { destinations[id] = null; continue; }
+    const parentType = target.parent ? target.parent.type : null;
+    destinations[id] = {
+      onPage: targetPage.id === read.pageId,
+      topLevelFrame: target.type === "FRAME" && (parentType === "PAGE" || parentType === "SECTION"),
+    };
+  }
   return {
     fileKey: read.fileKey, fileName: read.fileName, pageId: read.pageId, rootId: read.rootId, rootParentId: read.rootParentId,
-    rootParentLayoutMode: read.rootParentLayoutMode, truncated: read.truncated, nodeCount: Object.keys(nodes).length, nodes,
+    rootParentLayoutMode: read.rootParentLayoutMode, truncated: read.truncated, nodeCount: Object.keys(nodes).length, nodes, destinations,
   };
 }
 

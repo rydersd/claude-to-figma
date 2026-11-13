@@ -23449,7 +23449,7 @@ var SPEC_TYPES = ["frame", "text", "rectangle", "vector", "instance"];
 var OPAQUE_TYPE = "$opaque";
 var UNREAD_KEY = "$unread";
 var NO_PAINT = "#00000000";
-var COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning"];
+var COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning", "reactions"];
 var SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
 var PAINTED = ["fillColor", "strokeColor", "strokeWeight", "strokeAlign", "effects"];
 var AUTO_LAYOUT = [
@@ -23487,7 +23487,16 @@ var SPEC_VOCABULARY = {
   ],
   instance: [...COMMON, "componentKey", "componentId", "componentSetKey", "componentSetId", "properties", "width", "height", ...SIZING]
 };
-var BASE_DEFAULTS = { visible: true, x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED" };
+var BASE_DEFAULTS = {
+  visible: true,
+  x: 0,
+  y: 0,
+  opacity: 1,
+  layoutPositioning: "AUTO",
+  layoutSizingHorizontal: "FIXED",
+  layoutSizingVertical: "FIXED",
+  reactions: []
+};
 var PAINT_DEFAULTS = { fillColor: NO_PAINT, strokeColor: NO_PAINT, strokeWeight: 1, effects: [] };
 var SPEC_DEFAULTS = {
   frame: {
@@ -23609,6 +23618,7 @@ var KEY_ORDER = [
   "pathData",
   "pathHash",
   "properties",
+  "reactions",
   UNREAD_KEY
 ];
 var MAX_SHOWN_CHARS = 80;
@@ -23720,11 +23730,105 @@ function canonicalEffects(list) {
   }
   return out;
 }
+function plainJson(value) {
+  if (value === null || typeof value === "string" || typeof value === "boolean")
+    return value;
+  if (typeof value === "number")
+    return isFinite(value) ? value : undefined;
+  if (Array.isArray(value)) {
+    const out2 = [];
+    for (const item of value) {
+      const copy = plainJson(item);
+      if (copy === undefined)
+        return;
+      out2.push(copy);
+    }
+    return out2;
+  }
+  if (Object.prototype.toString.call(value) !== "[object Object]")
+    return;
+  const out = {};
+  for (const key of Object.keys(value).sort()) {
+    const item = value[key];
+    if (item === undefined)
+      continue;
+    const copy = plainJson(item);
+    if (copy === undefined)
+      return;
+    out[key] = copy;
+  }
+  return out;
+}
+var REACTION_ACTIONS = new Set(["NODE", "BACK", "CLOSE", "URL"]);
+var REACTION_KEYS = new Set(["trigger", "actions", "action"]);
+var isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+function canonicalReactions(list) {
+  if (!Array.isArray(list))
+    return;
+  const out = [];
+  for (const reaction of list) {
+    if (!isPlainObject(reaction))
+      return;
+    if (Object.keys(reaction).some((key) => reaction[key] !== undefined && !REACTION_KEYS.has(key)))
+      return;
+    const trigger = plainJson(reaction.trigger);
+    if (!isPlainObject(trigger) || typeof trigger.type !== "string")
+      return;
+    const actions = plainJson(reaction.actions !== undefined ? reaction.actions : reaction.action ? [reaction.action] : []);
+    if (!Array.isArray(actions) || !actions.every((action) => isPlainObject(action) && REACTION_ACTIONS.has(action.type)))
+      return;
+    out.push({ actions, trigger });
+  }
+  return out;
+}
+function reactionLinks(reactions) {
+  const links = [];
+  for (const reaction of Array.isArray(reactions) ? reactions : []) {
+    for (const action of Array.isArray(reaction?.actions) ? reaction.actions : []) {
+      if (action && action.type === "NODE" && typeof action.destinationId === "string") {
+        links.push({ destinationId: action.destinationId, navigation: String(action.navigation ?? "") });
+      }
+    }
+  }
+  return links;
+}
+function comparableAction(action) {
+  if (!action || typeof action !== "object")
+    return action;
+  if (action.type === "URL")
+    return { openInNewTab: true, ...action };
+  if (action.type !== "NODE")
+    return action;
+  const { preserveScrollPosition, ...rest } = action;
+  const out = { destinationId: null, transition: null, resetInteractiveComponents: false, resetVideoPosition: false, ...rest };
+  if (out.resetScrollPosition === undefined && typeof preserveScrollPosition === "boolean")
+    out.resetScrollPosition = !preserveScrollPosition;
+  return out;
+}
+var float32 = (value) => {
+  if (typeof value === "number")
+    return Math.fround(value);
+  if (Array.isArray(value))
+    return value.map(float32);
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, float32(v)]));
+  return value;
+};
+function comparableReactions(list) {
+  if (!Array.isArray(list))
+    return list;
+  return plainJson(float32(list.map((reaction) => ({
+    ...reaction,
+    actions: Array.isArray(reaction?.actions) ? reaction.actions.map(comparableAction) : reaction?.actions
+  }))));
+}
 function canonicalValue(key, value) {
   if (COLOR_KEYS.has(key))
     return canonicalColor(value);
   if (key === "effects")
     return canonicalEffects(value);
+  if (key === "reactions")
+    return canonicalReactions(value);
   if (NUMBER_KEYS.has(key)) {
     const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
     return typeof n === "number" && isFinite(n) ? round2(n) : undefined;
@@ -23904,9 +24008,10 @@ function hashProps(props) {
   return hashString(stableStringify(props));
 }
 function lockProps(props) {
-  if (typeof props.pathData !== "string")
-    return props;
-  const { pathData, ...rest } = props;
+  const out = Array.isArray(props.reactions) ? { ...props, reactions: comparableReactions(props.reactions) } : props;
+  if (typeof out.pathData !== "string")
+    return out;
+  const { pathData, ...rest } = out;
   return orderKeys({ ...rest, pathHash: hashString(pathData) });
 }
 function lockNodesFromTree(tree, rootParentId) {
@@ -24190,12 +24295,55 @@ function prepareSpec(spec, lock, rootParentLayout = {}) {
       truncated[id] = typeof node.props.reason === "string" ? node.props.reason : "node budget";
   }
   const sizeIds = [];
+  const destinations = new Map;
+  const linkErrors = [];
+  const linkFrom = (at, reactions, baseReactions) => {
+    const before = new Set(reactionLinks(baseReactions).map((link) => `${link.destinationId}
+${link.navigation}`));
+    for (const { destinationId, navigation } of reactionLinks(reactions)) {
+      if (before.has(`${destinationId}
+${navigation}`))
+        continue;
+      if (!seen.has(destinationId) && lock.nodes[destinationId]) {
+        linkErrors.push(`${at}: reactions link to ${showValue(destinationId)}, which this Spec removes; keep the destination, or link elsewhere`);
+        continue;
+      }
+      if (!destinations.has(destinationId))
+        destinations.set(destinationId, []);
+      destinations.get(destinationId).push({ at, navigation });
+    }
+  };
   for (const [id, node] of desired) {
     const base = lock.nodes[id].props;
     if (RESIZABLE.has(String(node.props.type)) && (!same(node.props.width, base.width) || !same(node.props.height, base.height)))
       sizeIds.push(id);
+    if (!same(lockProps(node.props).reactions, base.reactions))
+      linkFrom(`${where(node.path)} (${clip(id)})`, node.props.reactions, base.reactions);
   }
-  return { desired, desiredChildren, creates, baseHashes, truncated, sizeIds };
+  const linkSubtree = (node, path4) => {
+    linkFrom(where(path4), node.reactions, []);
+    (Array.isArray(node.children) ? node.children : []).forEach((child, i) => linkSubtree(child, [...path4, i]));
+  };
+  for (const op of creates)
+    linkSubtree(op.node, op.path);
+  if (linkErrors.length)
+    failWith(linkErrors);
+  return { desired, desiredChildren, creates, baseHashes, truncated, sizeIds, destinations };
+}
+function checkDestinations(prepared, found) {
+  const errors = [];
+  for (const [target, links] of prepared.destinations) {
+    const info = found[target] ?? null;
+    for (const { at, navigation } of links) {
+      if (!info) {
+        errors.push(`${at}: reactions link to destinationId ${showValue(target)}, which is not a node in this file. A node created in this apply has no id yet: apply it first, then link to it in a second plan`);
+      } else if (navigation === "NAVIGATE" && !(info.onPage && info.topLevelFrame)) {
+        errors.push(`${at}: a NAVIGATE link needs a top-level frame on this page as its destination, and ${showValue(target)} is not one`);
+      }
+    }
+  }
+  if (errors.length)
+    failWith(errors);
 }
 function stripIds(node) {
   const { id: _id, children, ...rest } = node;
@@ -24362,6 +24510,8 @@ function computePlan({ lock, live, prepared }) {
         }
         if (key === "pathHash")
           set2.pathData = want.props.pathData;
+        else if (key === "reactions")
+          set2.reactions = want.props.reactions ?? value;
         else
           set2[key] = value;
       } else if (!desiredChanged) {
@@ -24373,6 +24523,8 @@ function computePlan({ lock, live, prepared }) {
         if (value !== undefined && value !== UNREADABLE && b !== UNREADABLE && l !== UNREADABLE) {
           if (key === "pathHash")
             overwrite.pathData = want.props.pathData;
+          else if (key === "reactions")
+            overwrite.reactions = want.props.reactions ?? value;
           else
             overwrite[key] = value;
         }
@@ -24776,8 +24928,8 @@ function findPartial(sent, failed, created, readBack, spec) {
       if (op.fromLive?.includes(key) || skip.has(key))
         continue;
       if (key === "pathData") {
-        const want = canonicalValue("pathData", raw);
-        if (typeof want === "string" && live.props.pathHash !== hashString(want))
+        const want2 = canonicalValue("pathData", raw);
+        if (typeof want2 === "string" && live.props.pathHash !== hashString(want2))
           keys.push(key);
         continue;
       }
@@ -24791,7 +24943,8 @@ function findPartial(sent, failed, created, readBack, spec) {
       const got = orDefault(op.nodeType, key, live.props[key]);
       if (got === undefined)
         continue;
-      if (!same2(canonicalValue(key, raw), got))
+      const want = canonicalValue(key, raw);
+      if (!same2(key === "reactions" ? comparableReactions(want) : want, got))
         keys.push(key);
     }
     if (keys.length)
@@ -25088,12 +25241,17 @@ async function planSpec(args2, send, options = {}) {
     baseHashes: pre.baseHashes,
     truncated: pre.truncated,
     sizeIds: pre.sizeIds,
+    destinationIds: [...pre.destinations.keys()],
     maxNodes: WALK_LIMITS.maxNodes,
     maxDepth: WALK_LIMITS.maxDepth
   }, READ_TIMEOUT_MS);
   if (!live || typeof live !== "object" || !live.nodes || typeof live.nodes !== "object" || live.rootId !== lock.rootId) {
     throw new Error("The Figma plugin returned no node read. Rebuild and re-run the plugin (bun run build) so it knows read_spec_nodes.");
   }
+  if (pre.destinations.size && (!live.destinations || typeof live.destinations !== "object")) {
+    throw new Error("The Figma plugin did not check the Spec's prototype destinations. Rebuild and re-run the plugin (bun run build).");
+  }
+  checkDestinations(pre, live.destinations ?? {});
   const connectedKey = live.fileKey ?? (options.userFileKey ?? getChannelFileKey)() ?? null;
   if (lock.fileKey && connectedKey && lock.fileKey !== connectedKey) {
     throw new Error(`Wrong file: ${paths.specPath} is for file key ${clip(String(lock.fileKey))}, but the connected file's key is ${clip(String(connectedKey))}.`);
@@ -27952,7 +28110,7 @@ function serverInstructions(env = process.env) {
     "- Use components: before drawing a button, input, card, row or any other standard element, look for one (get_local_components, search_library_components) and place instances (create_component_instance, or instance nodes in create_node_tree); never redraw an existing component. When you have built the same element three times, make it a component and replace the copies with instances."
   ];
   if (isEnabled("SPEC_SYNC", env)) {
-    lines.push("- To change an existing frame (text, colours, sizes, spacing, order, adding or removing layers), use spec sync by default, not figma_eval scripts: pull_spec {nodeId, path} \u2192 edit the .l2f.json file \u2192 plan_spec {path} \u2192 apply_spec {planId} \u2192 plan_spec again (0 operations means done). Edit only the lines you need; for a large Spec, search the file instead of reading all of it. Removals need allowRemovals: true.", "- Use figma_eval or the batch tools instead for what a Spec cannot express: prototype links (reactions), layers inside instances, OpaqueNodes (groups, sections, ellipses, rotated nodes, mixed-style text), and building new screens from scratch (create_node_tree).");
+    lines.push("- To change an existing frame (text, colours, sizes, spacing, order, prototype links (reactions), adding or removing layers), use spec sync by default, not figma_eval scripts: pull_spec {nodeId, path} \u2192 edit the .l2f.json file \u2192 plan_spec {path} \u2192 apply_spec {planId} \u2192 plan_spec again (0 operations means done). Edit only the lines you need; for a large Spec, search the file instead of reading all of it. Removals need allowRemovals: true.", "- Use figma_eval or the batch tools instead for what a Spec cannot express: layers inside instances, OpaqueNodes (groups, sections, ellipses, rotated nodes, mixed-style text), and building new screens from scratch (create_node_tree).");
   }
   if (isEnabled("VERIFY", env)) {
     lines.push("- Before a bulk or structural edit outside spec sync, take snapshot_positions of the affected root; afterwards diff_positions shows anything missing, added or moved.");

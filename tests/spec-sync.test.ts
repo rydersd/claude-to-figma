@@ -73,6 +73,8 @@ function makeNode(type: string, extra: any = {}, parent: any = null): any {
     },
     insertChild(index: number, child: any) { child.parent = this; this.children.splice(index, 0, child); },
     remove() { this.removed = true; nodes.delete(this.id); if (this.parent) this.parent.children = this.parent.children.filter((c: any) => c !== this); },
+    reactions: [],
+    async setReactionsAsync(reactions: any[]) { this.reactions = JSON.parse(JSON.stringify(reactions)); },
     ...extra,
   };
   if (type === "TEXT") {
@@ -846,6 +848,7 @@ describe("spec sync (PR 11b)", () => {
       layoutPositioning: { value: "ABSOLUTE", parent: "auto" },
       layoutSizingHorizontal: { value: "FILL", parent: "auto" },
       layoutSizingVertical: { value: "FILL", parent: "auto" },
+      reactions: { value: [{ trigger: { type: "ON_CLICK" }, actions: [{ type: "NODE", destinationId: "9:9", navigation: "NAVIGATE" }] }] },
     });
     const painted = (): Record<string, Sample> => ({
       fillColor: { value: "#123456" }, strokeColor: { value: "#654321" }, strokeWeight: { value: 3 },

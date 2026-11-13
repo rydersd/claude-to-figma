@@ -559,6 +559,7 @@ export type CommandParams = {
     baseHashes: Record<string, string>;
     truncatedIds?: string[];
     sizeIds?: string[];
+    destinationIds?: string[];
     maxNodes?: number;
     maxDepth?: number;
   };

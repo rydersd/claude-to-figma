@@ -38,7 +38,9 @@ export const UNREAD_KEY = "$unread";
 // A colour with no paint: applyColorPaint writes alpha 0 as an empty paint list.
 export const NO_PAINT = "#00000000";
 
-const COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning"];
+// `reactions` (prototype links) is on every type: Figma's reaction objects in
+// canonicalReactions' form, written with setReactionsAsync.
+const COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning", "reactions"];
 const SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
 const PAINTED = ["fillColor", "strokeColor", "strokeWeight", "strokeAlign", "effects"];
 // Frame properties that only mean something while the frame has auto-layout.
@@ -61,7 +63,9 @@ export const SPEC_VOCABULARY: Record<SpecType, readonly string[]> = {
   instance: [...COMMON, "componentKey", "componentId", "componentSetKey", "componentSetId", "properties", "width", "height", ...SIZING],
 };
 
-const BASE_DEFAULTS = { visible: true, x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED" };
+const BASE_DEFAULTS = {
+  visible: true, x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED", reactions: [],
+};
 const PAINT_DEFAULTS = { fillColor: NO_PAINT, strokeColor: NO_PAINT, strokeWeight: 1, effects: [] };
 
 // What a property is when it is absent from a Spec: what create_node_tree ends
@@ -110,7 +114,7 @@ const KEY_ORDER = [
   "visible", "x", "y", "width", "height",
   "layoutPositioning", ...SIZING, "layoutMode", ...AUTO_LAYOUT, "clipsContent", "fillColor", "strokeColor", "strokeWeight",
   "strokeAlign", "strokeCap", "cornerRadius", "opacity", "effects", "fontFamily", "fontStyle", "fontSize", "fontColor",
-  "lineHeight", "letterSpacing", "textCase", "textAlignHorizontal", "textAutoResize", "pathData", "pathHash", "properties", UNREAD_KEY,
+  "lineHeight", "letterSpacing", "textCase", "textAlignHorizontal", "textAutoResize", "pathData", "pathHash", "properties", "reactions", UNREAD_KEY,
 ];
 
 // Errors quote user input; every value, key list and type string in one is
@@ -228,10 +232,122 @@ function canonicalEffects(list: unknown): unknown[] | undefined {
   return out;
 }
 
+// A value as plain JSON with sorted keys and no undefined fields, or undefined
+// when it holds anything JSON cannot carry (a symbol, a function, a non-finite
+// number, an object that is not a plain one).
+function plainJson(value: unknown): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") return isFinite(value) ? value : undefined;
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    for (const item of value) {
+      const copy = plainJson(item);
+      if (copy === undefined) return undefined;
+      out.push(copy);
+    }
+    return out;
+  }
+  if (Object.prototype.toString.call(value) !== "[object Object]") return undefined;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value as object).sort()) {
+    const item = (value as any)[key];
+    if (item === undefined) continue;
+    const copy = plainJson(item);
+    if (copy === undefined) return undefined;
+    out[key] = copy;
+  }
+  return out;
+}
+
+// Action types a Spec carries. The others (SET_VARIABLE, SET_VARIABLE_MODE,
+// CONDITIONAL, UPDATE_MEDIA_RUNTIME) hold variable, expression or media
+// references whose round trip through setReactionsAsync is not verified, so a
+// node holding one lists `reactions` in $unread.
+const REACTION_ACTIONS = new Set(["NODE", "BACK", "CLOSE", "URL"]);
+const REACTION_KEYS = new Set(["trigger", "actions", "action"]);
+const isPlainObject = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
+
+// Prototype reactions as Figma's own objects in one canonical form: each is
+// {actions, trigger} only (the deprecated singular `action` is dropped, or
+// stands in for `actions` when that is missing), with keys sorted and undefined
+// fields dropped, so the order Figma returns keys in never changes a hash.
+// Undefined when a reaction cannot be written back faithfully: no trigger, an
+// action type outside REACTION_ACTIONS, an unknown reaction key, or a value
+// that is not plain JSON.
+function canonicalReactions(list: unknown): unknown[] | undefined {
+  if (!Array.isArray(list)) return undefined;
+  const out: unknown[] = [];
+  for (const reaction of list) {
+    if (!isPlainObject(reaction)) return undefined;
+    if (Object.keys(reaction).some(key => reaction[key] !== undefined && !REACTION_KEYS.has(key))) return undefined;
+    const trigger = plainJson(reaction.trigger);
+    if (!isPlainObject(trigger) || typeof trigger.type !== "string") return undefined;
+    const actions = plainJson(reaction.actions !== undefined ? reaction.actions : reaction.action ? [reaction.action] : []);
+    if (!Array.isArray(actions) || !actions.every(action => isPlainObject(action) && REACTION_ACTIONS.has(action.type))) return undefined;
+    out.push({ actions, trigger });
+  }
+  return out;
+}
+
+// The NODE links a reactions value holds: each destination with its navigation
+// (NAVIGATE, OVERLAY, SWAP, SCROLL_TO, CHANGE_TO).
+export interface ReactionLink { destinationId: string; navigation: string }
+
+export function reactionLinks(reactions: unknown): ReactionLink[] {
+  const links: ReactionLink[] = [];
+  for (const reaction of Array.isArray(reactions) ? reactions : []) {
+    for (const action of Array.isArray(reaction?.actions) ? reaction.actions : []) {
+      if (action && action.type === "NODE" && typeof action.destinationId === "string") {
+        links.push({ destinationId: action.destinationId, navigation: String(action.navigation ?? "") });
+      }
+    }
+  }
+  return links;
+}
+
+// How Figma reads an action back, as measured live (setReactionsAsync, then
+// node.reactions): a NODE action gains resetVideoPosition: false, and
+// resetInteractiveComponents is absent unless written (so absent = false);
+// preserveScrollPosition is never returned, it is stored as resetScrollPosition
+// = !preserveScrollPosition (and resetScrollPosition stays absent when neither
+// was written); a URL action gains openInNewTab: true.
+function comparableAction(action: any): any {
+  if (!action || typeof action !== "object") return action;
+  if (action.type === "URL") return { openInNewTab: true, ...action };
+  if (action.type !== "NODE") return action;
+  const { preserveScrollPosition, ...rest } = action;
+  const out: Record<string, unknown> = { destinationId: null, transition: null, resetInteractiveComponents: false, resetVideoPosition: false, ...rest };
+  if (out.resetScrollPosition === undefined && typeof preserveScrollPosition === "boolean") out.resetScrollPosition = !preserveScrollPosition;
+  return out;
+}
+
+const float32 = (value: unknown): unknown => {
+  if (typeof value === "number") return Math.fround(value);
+  if (Array.isArray(value)) return value.map(float32);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, float32(v)]));
+  return value;
+};
+
+// Canonical reactions in the form they are COMPARED in (the SpecLock's form,
+// through lockProps): each action as Figma reads it back (comparableAction),
+// and every number as Figma stores it (float32), so a
+// hand-written link and Figma's read-back of it compare equal. Idempotent. The
+// value written to Figma is always the Spec's own, never this one.
+export function comparableReactions(list: unknown): unknown {
+  if (!Array.isArray(list)) return list;
+  return plainJson(float32(list.map((reaction: any) => ({
+    ...reaction,
+    actions: Array.isArray(reaction?.actions)
+      ? reaction.actions.map(comparableAction)
+      : reaction?.actions,
+  }))));
+}
+
 // One property's value in canonical form (undefined when it cannot be written).
 export function canonicalValue(key: string, value: unknown): unknown {
   if (COLOR_KEYS.has(key)) return canonicalColor(value);
   if (key === "effects") return canonicalEffects(value);
+  if (key === "reactions") return canonicalReactions(value);
   if (NUMBER_KEYS.has(key)) {
     const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
     return typeof n === "number" && isFinite(n) ? round2(n) : undefined;
@@ -414,12 +530,14 @@ export function hashProps(props: Record<string, unknown>): string {
 
 // The form a node's canonical properties take in a SpecLock: the same, except a
 // vector's pathData is replaced by pathHash (hashString of the canonical
-// pathData), so a lock stays small. propsHash is hashProps(lockProps(props));
+// pathData), so a lock stays small, and `reactions` is in comparableReactions'
+// form. propsHash is hashProps(lockProps(props));
 // compare a live or Spec node against a lock entry through lockProps too.
 export function lockProps(props: Record<string, unknown>): Record<string, unknown> {
-  if (typeof props.pathData !== "string") return props;
-  const { pathData, ...rest } = props;
-  return orderKeys({ ...rest, pathHash: hashString(pathData) });
+  const out = Array.isArray(props.reactions) ? { ...props, reactions: comparableReactions(props.reactions) } : props;
+  if (typeof out.pathData !== "string") return out;
+  const { pathData, ...rest } = out;
+  return orderKeys({ ...rest, pathHash: hashString(pathData as string) });
 }
 
 // One SpecLock entry: the node's canonical properties as Figma held them at the
