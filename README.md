@@ -53,7 +53,7 @@ You need the **Figma desktop app** (development plugins don't run in the browser
 curl -fsSL https://bun.sh/install | bash
 ```
 
-2. Clone this repo and run setup. `--user` registers the MCP server for your user, so Claude Code sees the tools in every project. Without it, the tools only load when Claude Code starts inside this repo.
+2. Clone this repo and run setup. `--user` registers the MCP server for your user, so Claude Code sees the tools in every project. Without it, the tools only load when Claude Code starts inside this repo. Setup also links the `draw-in-figma` skill (auto layout, real components, read before writing, reporting tool problems) into `~/.claude/skills`; it never replaces a folder that is already there.
 
 ```bash
 git clone https://github.com/rydersd/llm2figma.git ~/llm2figma
