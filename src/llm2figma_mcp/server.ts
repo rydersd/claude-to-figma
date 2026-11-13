@@ -42,12 +42,13 @@ import { registerSetupTools } from "./tools/setup.js";
 import { registerTools as registerReferenceCacheTools } from "./tools/reference-cache.js";
 import { registerTools as registerCodeMapTools } from "./tools/code-map.js";
 import { registerTools as registerDevModeTools } from "./tools/dev-mode.js";
+import { serverInstructions } from "./instructions.js";
 
 // Create MCP server
-const server = new McpServer({
-  name: "llm2figma",
-  version: "1.0.0",
-});
+const server = new McpServer(
+  { name: "llm2figma", version: "1.0.0" },
+  { instructions: serverInstructions() },
+);
 
 // Feature modules register through this and are skipped unless L2F_<FEATURE> is set
 // in the server environment (see src/shared/flags.ts).
