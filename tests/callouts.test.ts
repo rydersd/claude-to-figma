@@ -254,6 +254,33 @@ describe("numbered (dense) mode", () => {
     expect(run(grid(5), [], { denseThreshold: 4 }).mode).toBe("numbered");
   });
 
+  test("property: random dense layouts keep every invariant and number placed callouts 1..n in reading order", () => {
+    let withOverflow = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+      const r = rng(seed * 7919);
+      const base = randomScenario(seed);
+      const frame = base.frame;
+      const n = 13 + Math.floor(r() * 40);
+      const targets: CalloutTarget[] = [];
+      for (let i = 0; i < n; i++) {
+        const w = 10 + Math.round(r() * 120), h = 10 + Math.round(r() * 40);
+        targets.push(target(`d${i}`, frame.x + Math.round(r() * (frame.width - w)), frame.y + Math.round(r() * (frame.height - h)), w, h));
+      }
+      const labelSizes = targets.map(() => ({ width: 240, height: 24 + Math.round(r() * 40) }));
+      const layout = layoutCallouts(frame, targets, labelSizes, base.obstacles);
+      expect(layout.mode).toBe("numbered");
+      expect(layout.placed.length + layout.overflow.length).toBe(n);
+      if (layout.overflow.length) withOverflow++;
+      checkInvariants(layout, frame, base.obstacles);
+      const numbers = layout.placed.map(p => p.number!).sort((a, b) => a - b);
+      expect(numbers).toEqual(Array.from({ length: layout.placed.length }, (_, i) => i + 1));
+      // Numbers follow reading order among the placed callouts.
+      const order = readingOrder(targets.map(t => t.box)).filter(i => layout.placed.some(p => p.index === i));
+      expect(order.map(i => layout.placed.find(p => p.index === i)!.number)).toEqual(numbers);
+    }
+    expect(withOverflow).toBeGreaterThan(0);
+  });
+
   test("readingOrder groups rows by the first box's extent", () => {
     const boxes: Box[] = [
       { x: 300, y: 10, width: 50, height: 40 },

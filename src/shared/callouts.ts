@@ -503,7 +503,7 @@ function layoutNumbered(
     const t = targets[i].box;
     cursor = spot + along(r, s) + g.gap;
     placed.push({
-      key: "", index: i, rail: r, number: n + 1,
+      key: "", index: i, rail: r, number: placed.length + 1, // placed callouts only: no gaps
       label: boxFrom(point(g, r, spot, g.railOffset), point(g, r, spot + along(r, s), g.railOffset + across(r, s))),
       badge: { x: t.x - BADGE_SIZE / 2, y: t.y - BADGE_SIZE / 2, width: BADGE_SIZE, height: BADGE_SIZE },
     });
