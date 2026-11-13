@@ -17,6 +17,8 @@ import { formatError } from './utils';
 import { assertEditorAllowed } from './editor-gate';
 import { assertContained, snapshotPositions, diffPositions } from './verify';
 import { setDevStatus, getDevResources, addDevResource, addMeasurement, getMeasurements } from './dev-mode';
+import { exportSpec, readSpecNodes } from './spec';
+import { applySpecOps } from './spec-apply';
 import { startEventStreaming, stopEventStreaming, setPluginOperationGuard } from './events';
 
 // Plugin state
@@ -27,7 +29,10 @@ const state = {
 };
 
 // Show UI
-figma.showUI(__html__, { width: 350, height: 600 });
+const UI_WIDTH = 350;
+const UI_MIN_HEIGHT = 200;
+const UI_MAX_HEIGHT = 800;
+figma.showUI(__html__, { width: UI_WIDTH, height: 600 });
 
 // --- Uncaught error reporting ---
 // Every command goes through handleCommand's try/catch below, so a red "Plugin
@@ -73,6 +78,15 @@ figma.ui.onmessage = async (msg: any) => {
     case "close-plugin":
       figma.closePlugin();
       break;
+    case "resize-ui": {
+      // The UI reports its content height so the window shrinks when a
+      // section (such as MCP setup) collapses, and grows when one opens.
+      const height = Number(msg.height);
+      if (Number.isFinite(height)) {
+        figma.ui.resize(UI_WIDTH, Math.round(Math.min(UI_MAX_HEIGHT, Math.max(UI_MIN_HEIGHT, height))));
+      }
+      break;
+    }
     case "execute-command":
       // Execute commands received from UI (which gets them from WebSocket)
       // Wrap in plugin operation guard so event listeners can tag self-caused events
@@ -177,6 +191,12 @@ async function handleCommand(command: string, params: any) {
       return await snapshotPositions(params);
     case "diff_positions":
       return await diffPositions(params);
+    case "export_spec":
+      return await exportSpec(params);
+    case "read_spec_nodes":
+      return await readSpecNodes(params);
+    case "apply_spec_ops":
+      return await applySpecOps(params);
     case "delete_node":
       return await deleteNode(params);
     case "delete_multiple_nodes":

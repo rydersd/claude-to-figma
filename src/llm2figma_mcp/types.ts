@@ -162,6 +162,8 @@ export type FigmaCommand =
   | "place_image"
   | "assert_contained"
   | "snapshot_positions"
+  | "export_spec"
+  | "read_spec_nodes"
   | "diff_positions"
   | "set_dev_status"
   | "get_dev_resources"
@@ -545,6 +547,21 @@ export type CommandParams = {
     offset?: { type: "INNER"; relative: number } | { type: "OUTER"; fixed: number };
   };
   get_measurements: { nodeId?: string };
+  export_spec: {
+    nodeId: string;
+    expect?: { fileKey?: string | null; fileName?: string | null; pageId?: string | null };
+    maxNodes?: number;
+    maxDepth?: number;
+  };
+  read_spec_nodes: {
+    rootId: string;
+    expect?: { fileKey?: string | null; fileName?: string | null; pageId?: string | null };
+    baseHashes: Record<string, string>;
+    truncatedIds?: string[];
+    sizeIds?: string[];
+    maxNodes?: number;
+    maxDepth?: number;
+  };
   scan_node_styles: {
     nodeId: string;
     maxDepth?: number;

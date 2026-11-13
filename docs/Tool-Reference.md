@@ -58,6 +58,14 @@ Five flagged tools (`L2F_DEV_MODE=1`) hand frames to developers; details in [Too
 - `set_dev_status`, `get_dev_resources`, `add_dev_resource` — ready-for-dev or completed status and https links on nodes, in the design editor and in Dev Mode
 - `add_measurement`, `get_measurements` — measurements between node sides on the current page; adding is Dev Mode only, reading also works in the design editor
 
+## Spec sync
+
+Flagged tools that write a design to a file the model edits in place, and show what the edits would change; details in [Spec Sync](Spec-Sync.md):
+
+- `pull_spec {nodeId, path, maxNodes?, maxDepth?, replaceEdited?}` — writes the subtree to a Spec file (`.l2f.json`, create_node_tree node format, every node with its Figma id) and a SpecLock beside it, and returns only paths and counts (`L2F_SPEC_SYNC=1`; relative paths resolve against `L2F_SPEC_DIR`)
+- `plan_spec {path}` — compares the Spec, its SpecLock and live Figma property by property and returns a Plan: counts plus at most 100 operations (update, create, move, remove), drift and conflicts, under an explicit `planId` kept server-side for 30 minutes. Writes nothing (`L2F_SPEC_SYNC=1`)
+- `apply_spec {planId, allowRemovals?, onConflict?}` — carries out one Plan by node id (creates, updates of only the listed properties, moves, removals into a hidden `l2f/superseded` frame, never deleted), refusing with nothing written if anything it touches changed since the plan; then re-reads the subtree, writes created ids into the Spec and rewrites the SpecLock. One undo in Figma reverts it (`L2F_SPEC_SYNC=1`)
+
 ## MCP prompts
 
 The server also ships guided strategies invocable as MCP prompts:

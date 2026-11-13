@@ -5,6 +5,9 @@ import { FEATURES } from "../src/shared/flags";
 // Pass each L2F_* flag through from the shell that starts Claude Code. The :- default keeps an unset flag empty (off) instead of failing config expansion.
 const flagRefs = Object.fromEntries(FEATURES.map(f => [`L2F_${f}`, `\${L2F_${f}:-}`]));
 export const FLAG_ENV_KEYS = ["L2F_ALL", ...FEATURES.map(f => `L2F_${f}`)];
+// Settings that are not features (L2F_ALL never touches them), passed through the same way.
+export const SETTING_ENV_KEYS = ["L2F_SPEC_DIR"];
+const settingRefs = Object.fromEntries(SETTING_ENV_KEYS.map(k => [k, `\${${k}:-}`]));
 
 // Arguments after the server entry path that the server reads (--server=…).
 // The entry path is the first non-flag argument (after an optional runner
@@ -23,7 +26,7 @@ function connectionArgs(args: unknown): string[] {
  */
 export function migrateServerEntry(servers: any, bunPath: string, serverPath: string) {
   const previousServer = { ...servers?.ClaudeToFigma, ...servers?.LLM2Figma };
-  const env = { L2F_ALL: "${L2F_ALL:-}", ...flagRefs, ...servers?.ClaudeToFigma?.env, ...servers?.LLM2Figma?.env };
+  const env = { L2F_ALL: "${L2F_ALL:-}", ...flagRefs, ...settingRefs, ...servers?.ClaudeToFigma?.env, ...servers?.LLM2Figma?.env };
   // The Figma token lives in the macOS Keychain only; drop any copy an earlier setup left here.
   delete env.FIGMA_API_TOKEN;
   return {

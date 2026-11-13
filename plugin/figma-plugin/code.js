@@ -60,6 +60,432 @@
     };
   }
 
+  // src/shared/spec.ts
+  var SPEC_TYPES = ["frame", "text", "rectangle", "vector", "instance"];
+  var OPAQUE_TYPE = "$opaque";
+  var UNREAD_KEY = "$unread";
+  var NO_PAINT = "#00000000";
+  var COMMON = ["name", "visible", "x", "y", "opacity", "layoutPositioning"];
+  var SIZING = ["layoutSizingHorizontal", "layoutSizingVertical"];
+  var PAINTED = ["fillColor", "strokeColor", "strokeWeight", "strokeAlign", "effects"];
+  var AUTO_LAYOUT = [
+    "layoutWrap",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "primaryAxisAlignItems",
+    "counterAxisAlignItems",
+    "itemSpacing",
+    "counterAxisSpacing",
+    "itemReverseZIndex"
+  ];
+  var SPEC_VOCABULARY = {
+    frame: [...COMMON, "width", "height", ...PAINTED, "cornerRadius", "clipsContent", "layoutMode", ...AUTO_LAYOUT, ...SIZING],
+    rectangle: [...COMMON, "width", "height", ...PAINTED, "cornerRadius", ...SIZING],
+    vector: [...COMMON, "width", "height", ...PAINTED, "strokeCap", "pathData", ...SIZING],
+    text: [
+      ...COMMON,
+      "text",
+      "fontFamily",
+      "fontStyle",
+      "fontSize",
+      "fontColor",
+      "lineHeight",
+      "letterSpacing",
+      "textCase",
+      "textAlignHorizontal",
+      "textAutoResize",
+      "width",
+      "height",
+      "effects",
+      ...SIZING
+    ],
+    instance: [...COMMON, "componentKey", "componentId", "componentSetKey", "componentSetId", "properties", "width", "height", ...SIZING]
+  };
+  var BASE_DEFAULTS = { visible: true, x: 0, y: 0, opacity: 1, layoutPositioning: "AUTO", layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED" };
+  var PAINT_DEFAULTS = { fillColor: NO_PAINT, strokeColor: NO_PAINT, strokeWeight: 1, effects: [] };
+  var SPEC_DEFAULTS = {
+    frame: {
+      ...BASE_DEFAULTS,
+      ...PAINT_DEFAULTS,
+      fillColor: "#FFFFFF",
+      width: 100,
+      height: 100,
+      strokeAlign: "INSIDE",
+      cornerRadius: 0,
+      clipsContent: true,
+      layoutMode: "NONE",
+      layoutWrap: "NO_WRAP",
+      paddingTop: 10,
+      paddingRight: 10,
+      paddingBottom: 10,
+      paddingLeft: 10,
+      primaryAxisAlignItems: "MIN",
+      counterAxisAlignItems: "MIN",
+      itemSpacing: 0,
+      counterAxisSpacing: 0,
+      itemReverseZIndex: true
+    },
+    rectangle: { ...BASE_DEFAULTS, ...PAINT_DEFAULTS, fillColor: "#D9D9D9", width: 100, height: 100, strokeAlign: "INSIDE", cornerRadius: 0 },
+    vector: { ...BASE_DEFAULTS, ...PAINT_DEFAULTS, strokeAlign: "CENTER", strokeCap: "NONE" },
+    text: {
+      ...BASE_DEFAULTS,
+      effects: [],
+      fontFamily: "Inter",
+      fontStyle: "Regular",
+      fontSize: 14,
+      fontColor: "#000000",
+      letterSpacing: 0,
+      textCase: "ORIGINAL",
+      textAlignHorizontal: "LEFT"
+    },
+    instance: { ...BASE_DEFAULTS, properties: {} }
+  };
+  var NEVER_DROPPED = /* @__PURE__ */ new Set([
+    "name",
+    "text",
+    "textAutoResize",
+    "pathData",
+    "componentKey",
+    "componentId",
+    "componentSetKey",
+    "componentSetId",
+    "x",
+    "y",
+    "width",
+    "height",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "itemSpacing",
+    "counterAxisSpacing",
+    "itemReverseZIndex"
+  ]);
+  var DEFAULT_NAMES = { frame: "Frame", rectangle: "Rectangle", vector: "Vector" };
+  var COLOR_KEYS = /* @__PURE__ */ new Set(["fillColor", "strokeColor", "fontColor"]);
+  var BOOLEAN_KEYS = /* @__PURE__ */ new Set(["visible", "clipsContent", "itemReverseZIndex"]);
+  var NUMBER_KEYS = /* @__PURE__ */ new Set([
+    "x",
+    "y",
+    "width",
+    "height",
+    "opacity",
+    "strokeWeight",
+    "cornerRadius",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "itemSpacing",
+    "counterAxisSpacing",
+    "fontSize",
+    "lineHeight",
+    "letterSpacing"
+  ]);
+  var KEY_ORDER = [
+    "type",
+    "name",
+    "nodeType",
+    "truncated",
+    "reason",
+    "componentKey",
+    "componentId",
+    "componentSetKey",
+    "componentSetId",
+    "text",
+    "visible",
+    "x",
+    "y",
+    "width",
+    "height",
+    "layoutPositioning",
+    ...SIZING,
+    "layoutMode",
+    ...AUTO_LAYOUT,
+    "clipsContent",
+    "fillColor",
+    "strokeColor",
+    "strokeWeight",
+    "strokeAlign",
+    "strokeCap",
+    "cornerRadius",
+    "opacity",
+    "effects",
+    "fontFamily",
+    "fontStyle",
+    "fontSize",
+    "fontColor",
+    "lineHeight",
+    "letterSpacing",
+    "textCase",
+    "textAlignHorizontal",
+    "textAutoResize",
+    "pathData",
+    "pathHash",
+    "properties",
+    UNREAD_KEY
+  ];
+  var MAX_SHOWN_CHARS = 80;
+  var MAX_SHOWN_ITEMS = 10;
+  function clip(text, max = MAX_SHOWN_CHARS) {
+    return text.length > max ? text.slice(0, max - 3) + "..." : text;
+  }
+  function showValue(value) {
+    let text;
+    try {
+      text = JSON.stringify(value) ?? String(value);
+    } catch {
+      text = String(value);
+    }
+    return clip(text);
+  }
+  function showList(items) {
+    const shown = items.slice(0, MAX_SHOWN_ITEMS).map((item) => clip(String(item))).join(", ");
+    return items.length > MAX_SHOWN_ITEMS ? `${shown} and ${items.length - MAX_SHOWN_ITEMS} more` : shown;
+  }
+  function fontWeightToStyle(weight) {
+    switch (weight) {
+      case 100:
+        return "Thin";
+      case 200:
+        return "Extra Light";
+      case 300:
+        return "Light";
+      case 400:
+        return "Regular";
+      case 500:
+        return "Medium";
+      case 600:
+        return "Semi Bold";
+      case 700:
+        return "Bold";
+      case 800:
+        return "Extra Bold";
+      case 900:
+        return "Black";
+      default:
+        return "Regular";
+    }
+  }
+  function round2(n) {
+    const r = Math.round(n * 100) / 100;
+    return Object.is(r, -0) ? 0 : r;
+  }
+  var byte = (v) => Math.round(Math.min(1, Math.max(0, Number(v) || 0)) * 255);
+  var hex2 = (n) => n.toString(16).padStart(2, "0").toUpperCase();
+  function hexFromBytes(r, g, b, a) {
+    if (a === 0) return NO_PAINT;
+    return "#" + hex2(r) + hex2(g) + hex2(b) + (a === 255 ? "" : hex2(a));
+  }
+  function colorToHex(color, opacity = color.a ?? 1) {
+    return hexFromBytes(byte(color.r), byte(color.g), byte(color.b), byte(opacity));
+  }
+  function isVarPaint(value) {
+    return !!value && typeof value === "object" && typeof value.$var === "string";
+  }
+  function canonicalColor(value) {
+    if (isVarPaint(value)) {
+      const name = value.$var.startsWith("$var:") ? value.$var.slice(5) : value.$var;
+      const raw = value.opacity === void 0 ? 1 : Number(value.opacity);
+      if (!name || !isFinite(raw)) return void 0;
+      const opacity = round2(Math.min(1, Math.max(0, raw)));
+      return opacity >= 1 ? `$var:${name}` : { $var: name, opacity };
+    }
+    if (typeof value === "string") {
+      const s = value.trim();
+      const m = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s);
+      if (!m) return s;
+      let h = m[1];
+      if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+      const n = (i) => parseInt(h.slice(i, i + 2), 16);
+      return hexFromBytes(n(0), n(2), n(4), h.length === 8 ? n(6) : 255);
+    }
+    if (value && typeof value === "object" && "r" in value) return colorToHex(value);
+    return void 0;
+  }
+  function canonicalEffects(list) {
+    if (!Array.isArray(list)) return void 0;
+    const out = [];
+    for (const e of list) {
+      if (!e || typeof e !== "object") return void 0;
+      const visible = e.visible !== false;
+      if (e.type === "DROP_SHADOW" || e.type === "INNER_SHADOW") {
+        out.push({
+          type: e.type,
+          visible,
+          color: canonicalColor(e.color ?? { r: 0, g: 0, b: 0, a: 0.25 }),
+          offset: { x: round2(Number(e.offset?.x ?? 0)), y: round2(Number(e.offset?.y ?? 4)) },
+          radius: round2(Number(e.radius ?? 4)),
+          spread: round2(Number(e.spread ?? 0)),
+          blendMode: e.blendMode || "NORMAL"
+        });
+      } else if (e.type === "LAYER_BLUR" || e.type === "BACKGROUND_BLUR") {
+        out.push({ type: e.type, visible, radius: round2(Number(e.radius ?? 4)) });
+      } else {
+        return void 0;
+      }
+    }
+    return out;
+  }
+  function canonicalValue(key, value) {
+    if (COLOR_KEYS.has(key)) return canonicalColor(value);
+    if (key === "effects") return canonicalEffects(value);
+    if (NUMBER_KEYS.has(key)) {
+      const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+      return typeof n === "number" && isFinite(n) ? round2(n) : void 0;
+    }
+    if (BOOLEAN_KEYS.has(key)) return !!value;
+    if (key === "pathData") return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : void 0;
+    if (key === "properties") return value && typeof value === "object" && !Array.isArray(value) ? { ...value } : void 0;
+    return value;
+  }
+  var STRUCTURAL_KEYS = /* @__PURE__ */ new Set(["id", "type", "children", UNREAD_KEY]);
+  var SHORTHANDS = { text: ["fontWeight"] };
+  var OPAQUE_KEYS = /* @__PURE__ */ new Set(["id", "type", "name", "nodeType", "truncated", "reason", "children"]);
+  function strictProblem(node) {
+    const type = node.type;
+    if (type === OPAQUE_TYPE) {
+      const stray2 = Object.keys(node).filter((k) => !OPAQUE_KEYS.has(k));
+      return stray2.length ? `${showList(stray2)} cannot be written on a ${OPAQUE_TYPE} node` : null;
+    }
+    if (!SPEC_TYPES.includes(type)) return `Unknown Spec node type: ${showValue(type)}`;
+    const allowed = /* @__PURE__ */ new Set([...SPEC_VOCABULARY[type], ...SHORTHANDS[type] ?? []]);
+    const stray = Object.keys(node).filter((k) => !STRUCTURAL_KEYS.has(k) && !allowed.has(k));
+    if (stray.length) return `${showList(stray)} cannot be written on a ${type} node`;
+    const bad = [];
+    const unread = node[UNREAD_KEY];
+    if (unread !== void 0 && (!Array.isArray(unread) || unread.some((k) => typeof k !== "string"))) {
+      bad.push(`${UNREAD_KEY} ${showValue(unread)} must be the list of keys the pull recorded`);
+    }
+    for (const key of SPEC_VOCABULARY[type]) {
+      const value = node[key];
+      if (value === void 0) continue;
+      if (value === null) {
+        bad.push(`${key} is null (delete the key to mean its default)`);
+        continue;
+      }
+      if (COLOR_KEYS.has(key) && typeof value === "object" && !isVarPaint(value) && !("r" in value)) {
+        bad.push(`${key} ${showValue(value)} is not a colour`);
+      } else if (canonicalValue(key, value) === void 0) {
+        bad.push(`${key} ${showValue(value)} cannot be written`);
+      } else if (key === "fontSize" && !Number.isInteger(canonicalValue(key, value))) {
+        bad.push(`fontSize ${showValue(value)} must be a whole number of pixels`);
+      }
+    }
+    if (!bad.length) return null;
+    const more = bad.length > MAX_SHOWN_ITEMS ? `; and ${bad.length - MAX_SHOWN_ITEMS} more` : "";
+    return bad.slice(0, MAX_SHOWN_ITEMS).join("; ") + more;
+  }
+  var isAutoLayout = (layoutMode) => typeof layoutMode === "string" && layoutMode !== "NONE";
+  function orderKeys(props) {
+    const out = {};
+    for (const key of KEY_ORDER) if (props[key] !== void 0) out[key] = props[key];
+    for (const key of Object.keys(props).sort()) if (!(key in out) && props[key] !== void 0) out[key] = props[key];
+    return out;
+  }
+  function normalizeNode(node, parent = {}, options = {}) {
+    if (options.strict) {
+      const problem = strictProblem(node);
+      if (problem) throw new Error(problem);
+    }
+    if (node.type === OPAQUE_TYPE) {
+      return orderKeys({
+        type: OPAQUE_TYPE,
+        name: node.name,
+        nodeType: node.nodeType,
+        truncated: node.truncated === true ? true : void 0,
+        reason: typeof node.reason === "string" ? node.reason : void 0
+      });
+    }
+    const type = node.type;
+    if (!SPEC_TYPES.includes(type)) throw new Error(`Unknown Spec node type: ${showValue(node.type)}`);
+    const src = { ...node };
+    if (type === "text") {
+      if (src.fontStyle === void 0 && src.fontWeight !== void 0) src.fontStyle = fontWeightToStyle(Number(src.fontWeight));
+      if (src.text === void 0) src.text = "Text";
+      if (src.textAutoResize === void 0) src.textAutoResize = src.width !== void 0 ? "HEIGHT" : "WIDTH_AND_HEIGHT";
+      if (src.name === "") delete src.name;
+    } else if (src.name === void 0 && DEFAULT_NAMES[type]) {
+      src.name = DEFAULT_NAMES[type];
+    }
+    const out = { type };
+    for (const key of SPEC_VOCABULARY[type]) {
+      if (src[key] === void 0 || src[key] === null) continue;
+      const value = canonicalValue(key, src[key]);
+      if (value !== void 0) out[key] = value;
+    }
+    const unread = Array.isArray(src[UNREAD_KEY]) ? [...new Set(src[UNREAD_KEY].filter((k) => typeof k === "string"))].sort() : [];
+    if (unread.length) out[UNREAD_KEY] = unread;
+    if (isAutoLayout(parent.layoutMode) && out.layoutPositioning !== "ABSOLUTE") {
+      delete out.x;
+      delete out.y;
+    }
+    if (type === "text") {
+      const fixedBox = out.textAutoResize === "NONE" || out.textAutoResize === "TRUNCATE";
+      if (out.textAutoResize !== "HEIGHT" && !fixedBox) delete out.width;
+      if (!fixedBox) delete out.height;
+      for (const key of SIZING) if (out[key] !== "FILL") delete out[key];
+    }
+    if (out.layoutSizingHorizontal === "HUG" || out.layoutSizingHorizontal === "FILL") delete out.width;
+    if (out.layoutSizingVertical === "HUG" || out.layoutSizingVertical === "FILL") delete out.height;
+    if (type === "frame") {
+      if (!isAutoLayout(out.layoutMode)) for (const key of AUTO_LAYOUT) delete out[key];
+      if (out.layoutWrap !== "WRAP") delete out.counterAxisSpacing;
+    }
+    if (typeof out.fontSize === "number" && !Number.isInteger(out.fontSize)) delete out.fontSize;
+    const defaults = SPEC_DEFAULTS[type];
+    for (const key of Object.keys(out)) {
+      if (key === "type" || NEVER_DROPPED.has(key) || !(key in defaults) || unread.includes(key)) continue;
+      if (stableStringify(out[key]) === stableStringify(defaults[key])) delete out[key];
+    }
+    return orderKeys(out);
+  }
+  function stableStringify(value) {
+    if (typeof value === "number") return JSON.stringify(isFinite(value) ? round2(value) : null);
+    if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+    if (Array.isArray(value)) return "[" + value.map((v) => v === void 0 ? "null" : stableStringify(v)).join(",") + "]";
+    const keys = Object.keys(value).filter((k) => value[k] !== void 0).sort();
+    return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(value[k])).join(",") + "}";
+  }
+  function hashString(text) {
+    let h1 = 3735928559;
+    let h2 = 1103547991;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ h1 >>> 16, 2246822507);
+    h1 ^= Math.imul(h2 ^ h2 >>> 13, 3266489909);
+    h2 = Math.imul(h2 ^ h2 >>> 16, 2246822507);
+    h2 ^= Math.imul(h1 ^ h1 >>> 13, 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
+  }
+  function hashProps(props) {
+    return hashString(stableStringify(props));
+  }
+  function lockProps(props) {
+    if (typeof props.pathData !== "string") return props;
+    const { pathData, ...rest } = props;
+    return orderKeys({ ...rest, pathHash: hashString(pathData) });
+  }
+  function lockNodesFromTree(tree, rootParentId) {
+    const nodes = {};
+    const visit = (node, parentId) => {
+      const { id, children, ...props } = node;
+      if (typeof id !== "string" || !id) throw new Error("Every node in a pulled Spec needs an id");
+      if (nodes[id]) throw new Error(`Duplicate node id in Spec: ${id}`);
+      const kids = Array.isArray(children) ? children : [];
+      const stored = lockProps(props);
+      nodes[id] = { props: stored, propsHash: hashProps(stored), parentId, children: kids.map((child) => child.id) };
+      for (const child of kids) visit(child, id);
+    };
+    visit(tree, rootParentId);
+    return nodes;
+  }
+
   // src/llm2figma_plugin/src/utils.ts
   var loadFontCached = createFontLoader((font) => figma.loadFontAsync(font));
   async function sendProgressUpdate(commandId, commandType, status, progress, totalItems, processedItems, message, payload = null) {
@@ -433,30 +859,6 @@
     if (typeof val === "symbol") return "mixed";
     return val;
   }
-  function fontWeightToStyle(weight) {
-    switch (weight) {
-      case 100:
-        return "Thin";
-      case 200:
-        return "Extra Light";
-      case 300:
-        return "Light";
-      case 400:
-        return "Regular";
-      case 500:
-        return "Medium";
-      case 600:
-        return "Semi Bold";
-      case 700:
-        return "Bold";
-      case 800:
-        return "Extra Bold";
-      case 900:
-        return "Black";
-      default:
-        return "Regular";
-    }
-  }
   function isGradientValue(value) {
     if (value && typeof value === "object" && Array.isArray(value.stops)) return true;
     if (typeof value === "string" && /^(linear|radial)-gradient\(/.test(value.trim())) return true;
@@ -667,6 +1069,16 @@
         if (spec.y !== void 0) node.y = spec.y;
       }
     } catch (e) {
+    }
+  }
+  function applyLayoutSizing(node, spec) {
+    for (const key of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
+      if (spec[key] === void 0 || !(key in node) || node[key] === spec[key]) continue;
+      try {
+        node[key] = spec[key];
+      } catch (e) {
+        console.error("Error setting " + key + ":", e);
+      }
     }
   }
   async function loadAllFonts(textNode) {
@@ -2161,6 +2573,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
     await appendOrInsertChild(rect, parentId, params.insertAt);
     applyLayoutPositioning(rect, params);
+    applyLayoutSizing(rect, params);
     return {
       id: rect.id,
       name: rect.name,
@@ -2345,8 +2758,19 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       textNode.resize(width, textNode.height);
       textNode.textAutoResize = "HEIGHT";
     }
+    const autoResize = params.textAutoResize;
+    if (autoResize === "NONE" || autoResize === "TRUNCATE") {
+      textNode.resize(width || textNode.width, params.height || textNode.height);
+      textNode.textAutoResize = autoResize;
+    } else if (autoResize !== void 0 && textNode.textAutoResize !== autoResize) {
+      textNode.textAutoResize = autoResize;
+    }
+    if (params.effects && Array.isArray(params.effects)) {
+      textNode.effects = buildFigmaEffects(params.effects);
+    }
     await appendOrInsertChild(textNode, parentId, params.insertAt);
     applyLayoutPositioning(textNode, params);
+    applyLayoutSizing(textNode, params);
     return {
       id: textNode.id,
       name: textNode.name,
@@ -4212,14 +4636,20 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
   }
   async function createComponentInstance(params) {
-    const { componentKey, componentId, x = 0, y = 0, parentId } = params || {};
-    if (!componentKey && !componentId) {
+    const { componentKey, componentId, componentSetKey, componentSetId, x = 0, y = 0, parentId } = params || {};
+    if (!componentKey && !componentId && !componentSetKey && !componentSetId) {
       throw new Error("Missing componentKey or componentId parameter. Use componentId for local components (from get_local_components), or componentKey for published library components.");
     }
     let instance;
     try {
       let component;
-      if (componentId) {
+      if (componentSetKey || componentSetId) {
+        const set = componentSetKey ? await figma.importComponentSetByKeyAsync(componentSetKey) : await figma.getNodeByIdAsync(componentSetId);
+        if (!set || set.type !== "COMPONENT_SET") {
+          throw new Error(`Node ${componentSetKey || componentSetId} is not a COMPONENT_SET.`);
+        }
+        component = set.defaultVariant;
+      } else if (componentId) {
         const node = await figma.getNodeByIdAsync(componentId);
         if (!node) {
           throw new Error(`Component node not found with id: ${componentId}`);
@@ -4261,6 +4691,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
       if (params.textOverrides && typeof params.textOverrides === "object") {
         await applyTextOverrides(instance, params.textOverrides);
+      }
+      if (params.width !== void 0 || params.height !== void 0) {
+        instance.resize(params.width !== void 0 ? params.width : instance.width, params.height !== void 0 ? params.height : instance.height);
+        applyLayoutSizing(instance, params);
       }
       const mainComponent = await instance.getMainComponentAsync();
       return {
@@ -4952,8 +5386,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       windingRule: "NONZERO",
       data: pathData
     }];
-    if (width && height) {
-      vector.resize(width, height);
+    if (width || height) {
+      vector.resize(width || vector.width, height || vector.height);
     }
     vector.x = x;
     vector.y = y;
@@ -4981,7 +5415,15 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (params.opacity !== void 0) {
       vector.opacity = params.opacity;
     }
+    if (params.strokeAlign !== void 0) {
+      vector.strokeAlign = params.strokeAlign;
+    }
+    if (params.effects && Array.isArray(params.effects)) {
+      vector.effects = buildFigmaEffects(params.effects);
+    }
     await appendOrInsertChild(vector, parentId, params.insertAt);
+    applyLayoutPositioning(vector, params);
+    applyLayoutSizing(vector, params);
     return {
       id: vector.id,
       name: vector.name,
@@ -5950,9 +6392,9 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   function hexToSolid(hex) {
     const match = /^#([0-9a-f]{6})([0-9a-f]{2})?$/i.exec(hex);
     if (!match) throw new Error(`Invalid background: ${hex}. Use one solid colour as #RRGGBB or #RRGGBBAA.`);
-    const byte = (i) => parseInt(match[1].slice(i, i + 2), 16) / 255;
+    const byte2 = (i) => parseInt(match[1].slice(i, i + 2), 16) / 255;
     const opacity = match[2] ? parseInt(match[2], 16) / 255 : 1;
-    return { type: "SOLID", color: { r: byte(0), g: byte(2), b: byte(4) }, opacity };
+    return { type: "SOLID", color: { r: byte2(0), g: byte2(2), b: byte2(4) }, opacity };
   }
   function writableBackgroundPaints(paints) {
     if (paints.length > 1 || paints.length === 1 && paints[0].type !== "SOLID") return null;
@@ -6136,8 +6578,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const resolved = Object.assign({}, props);
     const bindings = [];
     for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
+      if (only && !only.has(colorProp)) continue;
       if (resolved[colorProp] != null) {
-        const colorValue = resolveColorValue(resolved[colorProp]);
+        const varPaint = isVarPaint(resolved[colorProp]) ? resolved[colorProp] : null;
+        const colorValue = varPaint ? { color: null, varRef: varPaint.$var.startsWith("$var:") ? varPaint.$var.slice(5) : varPaint.$var } : resolveColorValue(resolved[colorProp]);
         if (colorValue.varRef) {
           const variable = await getVariableByName(colorValue.varRef);
           if (variable && variable.resolvedType === "COLOR") {
@@ -6145,7 +6589,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
             if (modeIds.length > 0) {
               const val = variable.valuesByMode[modeIds[0]];
               if (val && typeof val === "object" && "r" in val) {
-                resolved[colorProp] = val;
+                resolved[colorProp] = varPaint && varPaint.opacity !== void 0 ? Object.assign({}, val, { a: Number(varPaint.opacity) }) : val;
               } else {
                 delete resolved[colorProp];
               }
@@ -6171,6 +6615,11 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       }
     };
   }
+  async function localComponent(id, type) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node || node.type !== type) throw new Error(`Node ${id} is not a ${type}`);
+    return node;
+  }
   var TEXT_FONT_DEPENDENT = [
     "text",
     "fontSize",
@@ -6179,6 +6628,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     "textCase",
     "textAlignHorizontal",
     "width",
+    "height",
     "textAutoResize",
     "layoutSizingHorizontal",
     "layoutSizingVertical"
@@ -6188,35 +6638,52 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const type = existingNode.type.toLowerCase();
     const consumed = /* @__PURE__ */ new Set();
     const want = (key) => {
+      if (!only) return true;
+      if (!only.has(key)) return false;
+      consumed.add(key);
       return true;
     };
     const wantAny = (...keys) => keys.map(want).some(Boolean);
-    if (want() && spec.name !== void 0 && existingNode.name !== spec.name) {
+    const setSizing = (key) => {
+      if (only && want(key) && spec[key] !== void 0 && existingNode[key] !== spec[key]) {
+        try {
+          existingNode[key] = spec[key];
+          changedProps.push(key);
+        } catch (e) {
+          console.error("Error setting " + key + " during update:", e);
+        }
+      }
+    };
+    if (want("name") && spec.name !== void 0 && existingNode.name !== spec.name) {
       existingNode.name = spec.name;
       changedProps.push("name");
     }
-    if (want() && spec.x !== void 0 && existingNode.x !== spec.x) {
+    if (want("x") && spec.x !== void 0 && existingNode.x !== spec.x) {
       existingNode.x = spec.x;
       changedProps.push("x");
     }
-    if (want() && spec.y !== void 0 && existingNode.y !== spec.y) {
+    if (want("y") && spec.y !== void 0 && existingNode.y !== spec.y) {
       existingNode.y = spec.y;
       changedProps.push("y");
     }
-    if (want() && spec.opacity !== void 0 && existingNode.opacity !== spec.opacity) {
+    if (want("opacity") && spec.opacity !== void 0 && existingNode.opacity !== spec.opacity) {
       existingNode.opacity = spec.opacity;
       changedProps.push("opacity");
     }
-    if ("effects" in existingNode && want() && spec.effects !== void 0) {
+    if (want("visible") && spec.visible !== void 0 && existingNode.visible !== !!spec.visible) {
+      existingNode.visible = !!spec.visible;
+      changedProps.push("visible");
+    }
+    if ("effects" in existingNode && want("effects") && spec.effects !== void 0) {
       existingNode.effects = buildFigmaEffects(spec.effects);
       changedProps.push("effects");
     }
-    if ("strokeAlign" in existingNode && want() && spec.strokeAlign !== void 0 && existingNode.strokeAlign !== spec.strokeAlign) {
+    if ("strokeAlign" in existingNode && want("strokeAlign") && spec.strokeAlign !== void 0 && existingNode.strokeAlign !== spec.strokeAlign) {
       existingNode.strokeAlign = spec.strokeAlign;
       changedProps.push("strokeAlign");
     }
-    if ("layoutPositioning" in existingNode && want() && spec.layoutPositioning !== void 0 && existingNode.layoutPositioning !== spec.layoutPositioning) {
-      applyLayoutPositioning(existingNode, spec);
+    if ("layoutPositioning" in existingNode && want("layoutPositioning") && spec.layoutPositioning !== void 0 && existingNode.layoutPositioning !== spec.layoutPositioning) {
+      applyLayoutPositioning(existingNode, only ? { layoutPositioning: spec.layoutPositioning, x: want("x") ? spec.x : void 0, y: want("y") ? spec.y : void 0 } : spec);
       changedProps.push("layoutPositioning");
     }
     if (type === "frame") {
@@ -6226,77 +6693,77 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push("size");
         }
       }
-      if (want() && spec.fillColor !== void 0) {
+      if (want("fillColor") && spec.fillColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fillColor);
         changedProps.push("fillColor");
       }
-      if (want() && spec.strokeColor !== void 0) {
+      if (want("strokeColor") && spec.strokeColor !== void 0) {
         applyColorPaint(existingNode, "strokes", spec.strokeColor);
         changedProps.push("strokeColor");
       }
-      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+      if (want("strokeWeight") && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
         existingNode.strokeWeight = spec.strokeWeight;
         changedProps.push("strokeWeight");
       }
-      if (want() && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
+      if (want("cornerRadius") && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
         existingNode.cornerRadius = spec.cornerRadius;
         changedProps.push("cornerRadius");
       }
-      if (want() && spec.clipsContent !== void 0 && existingNode.clipsContent !== !!spec.clipsContent) {
+      if (want("clipsContent") && spec.clipsContent !== void 0 && existingNode.clipsContent !== !!spec.clipsContent) {
         existingNode.clipsContent = !!spec.clipsContent;
         changedProps.push("clipsContent");
       }
-      if (want() && spec.layoutMode !== void 0 && existingNode.layoutMode !== spec.layoutMode) {
+      if (want("layoutMode") && spec.layoutMode !== void 0 && existingNode.layoutMode !== spec.layoutMode) {
         existingNode.layoutMode = spec.layoutMode;
         changedProps.push("layoutMode");
       }
-      if (want() && spec.layoutWrap !== void 0 && existingNode.layoutWrap !== spec.layoutWrap) {
+      if (want("layoutWrap") && spec.layoutWrap !== void 0 && existingNode.layoutWrap !== spec.layoutWrap) {
         existingNode.layoutWrap = spec.layoutWrap;
         changedProps.push("layoutWrap");
       }
-      if (want() && spec.paddingTop !== void 0 && existingNode.paddingTop !== spec.paddingTop) {
+      if (want("paddingTop") && spec.paddingTop !== void 0 && existingNode.paddingTop !== spec.paddingTop) {
         existingNode.paddingTop = spec.paddingTop;
         changedProps.push("paddingTop");
       }
-      if (want() && spec.paddingRight !== void 0 && existingNode.paddingRight !== spec.paddingRight) {
+      if (want("paddingRight") && spec.paddingRight !== void 0 && existingNode.paddingRight !== spec.paddingRight) {
         existingNode.paddingRight = spec.paddingRight;
         changedProps.push("paddingRight");
       }
-      if (want() && spec.paddingBottom !== void 0 && existingNode.paddingBottom !== spec.paddingBottom) {
+      if (want("paddingBottom") && spec.paddingBottom !== void 0 && existingNode.paddingBottom !== spec.paddingBottom) {
         existingNode.paddingBottom = spec.paddingBottom;
         changedProps.push("paddingBottom");
       }
-      if (want() && spec.paddingLeft !== void 0 && existingNode.paddingLeft !== spec.paddingLeft) {
+      if (want("paddingLeft") && spec.paddingLeft !== void 0 && existingNode.paddingLeft !== spec.paddingLeft) {
         existingNode.paddingLeft = spec.paddingLeft;
         changedProps.push("paddingLeft");
       }
-      if (want() && spec.primaryAxisAlignItems !== void 0 && existingNode.primaryAxisAlignItems !== spec.primaryAxisAlignItems) {
+      if (want("primaryAxisAlignItems") && spec.primaryAxisAlignItems !== void 0 && existingNode.primaryAxisAlignItems !== spec.primaryAxisAlignItems) {
         existingNode.primaryAxisAlignItems = spec.primaryAxisAlignItems;
         changedProps.push("primaryAxisAlignItems");
       }
-      if (want() && spec.counterAxisAlignItems !== void 0 && existingNode.counterAxisAlignItems !== spec.counterAxisAlignItems) {
+      if (want("counterAxisAlignItems") && spec.counterAxisAlignItems !== void 0 && existingNode.counterAxisAlignItems !== spec.counterAxisAlignItems) {
         existingNode.counterAxisAlignItems = spec.counterAxisAlignItems;
         changedProps.push("counterAxisAlignItems");
       }
-      if (want() && spec.itemSpacing !== void 0 && existingNode.itemSpacing !== spec.itemSpacing) {
+      if (want("itemSpacing") && spec.itemSpacing !== void 0 && existingNode.itemSpacing !== spec.itemSpacing) {
         existingNode.itemSpacing = spec.itemSpacing;
         changedProps.push("itemSpacing");
       }
-      if (want() && spec.counterAxisSpacing !== void 0 && existingNode.counterAxisSpacing !== spec.counterAxisSpacing) {
+      if (want("counterAxisSpacing") && spec.counterAxisSpacing !== void 0 && existingNode.counterAxisSpacing !== spec.counterAxisSpacing) {
         existingNode.counterAxisSpacing = spec.counterAxisSpacing;
         changedProps.push("counterAxisSpacing");
       }
-      if (want() && spec.itemReverseZIndex !== void 0 && existingNode.itemReverseZIndex !== !!spec.itemReverseZIndex) {
+      if (want("itemReverseZIndex") && spec.itemReverseZIndex !== void 0 && existingNode.itemReverseZIndex !== !!spec.itemReverseZIndex) {
         existingNode.itemReverseZIndex = !!spec.itemReverseZIndex;
         changedProps.push("itemReverseZIndex");
       }
-      if (spec.layoutSizingHorizontal !== "FILL" && want() && spec.layoutSizingHorizontal !== void 0) {
+      if (spec.layoutSizingHorizontal !== "FILL" && want("layoutSizingHorizontal") && spec.layoutSizingHorizontal !== void 0) {
         if (existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
           existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
           changedProps.push("layoutSizingHorizontal");
         }
       }
-      if (spec.layoutSizingVertical !== "FILL" && want() && spec.layoutSizingVertical !== void 0) {
+      if (spec.layoutSizingVertical !== "FILL" && want("layoutSizingVertical") && spec.layoutSizingVertical !== void 0) {
         if (existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
           existingNode.layoutSizingVertical = spec.layoutSizingVertical;
           changedProps.push("layoutSizingVertical");
@@ -6308,6 +6775,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         const currentFontName = existingNode.fontName;
         let userFontFamily = spec.fontFamily || "Inter";
         let userFontStyle = spec.fontStyle || fontWeightToStyle(spec.fontWeight || 400);
+        if (only && currentFontName && typeof currentFontName !== "symbol") {
+          userFontFamily = only.has("fontFamily") && spec.fontFamily ? spec.fontFamily : currentFontName.family;
+          userFontStyle = only.has("fontStyle") && spec.fontStyle ? spec.fontStyle : only.has("fontWeight") && spec.fontWeight ? fontWeightToStyle(spec.fontWeight) : currentFontName.style;
+        }
         if (!currentFontName || typeof currentFontName === "symbol" || currentFontName.family !== userFontFamily || currentFontName.style !== userFontStyle) {
           try {
             await loadFontCached({ family: userFontFamily, style: userFontStyle });
@@ -6330,38 +6801,54 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       } else if (TEXT_FONT_DEPENDENT.some((key) => only.has(key))) {
         await loadAllFonts(existingNode);
       }
-      if (want() && spec.text !== void 0 && existingNode.characters !== spec.text) {
+      if (want("text") && spec.text !== void 0 && existingNode.characters !== spec.text) {
         await setCharacters(existingNode, spec.text);
         changedProps.push("characters");
       }
-      if (want() && spec.fontSize !== void 0 && existingNode.fontSize !== parseInt(spec.fontSize)) {
+      if (want("fontSize") && spec.fontSize !== void 0 && existingNode.fontSize !== parseInt(spec.fontSize)) {
         existingNode.fontSize = parseInt(spec.fontSize);
         changedProps.push("fontSize");
       }
-      if (want() && spec.fontColor !== void 0) {
+      if (want("fontColor") && spec.fontColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fontColor);
         changedProps.push("fontColor");
       }
-      if (want() && spec.textAlignHorizontal !== void 0 && existingNode.textAlignHorizontal !== spec.textAlignHorizontal) {
+      if (want("textAlignHorizontal") && spec.textAlignHorizontal !== void 0 && existingNode.textAlignHorizontal !== spec.textAlignHorizontal) {
         existingNode.textAlignHorizontal = spec.textAlignHorizontal;
         changedProps.push("textAlignHorizontal");
       }
-      if (want() && spec.lineHeight !== void 0) {
+      if (want("lineHeight") && spec.lineHeight !== void 0) {
         existingNode.lineHeight = { value: spec.lineHeight, unit: "PIXELS" };
         changedProps.push("lineHeight");
       }
-      if (want() && spec.letterSpacing !== void 0) {
+      if (want("letterSpacing") && spec.letterSpacing !== void 0) {
         existingNode.letterSpacing = { value: spec.letterSpacing, unit: "PIXELS" };
         changedProps.push("letterSpacing");
       }
-      if (want() && spec.textCase !== void 0 && existingNode.textCase !== spec.textCase) {
+      if (want("textCase") && spec.textCase !== void 0 && existingNode.textCase !== spec.textCase) {
         existingNode.textCase = spec.textCase;
         changedProps.push("textCase");
       }
-      if (want() && spec.width !== void 0) {
+      const fixedBox = spec.textAutoResize === "NONE" || spec.textAutoResize === "TRUNCATE";
+      if (only && fixedBox && (only.has("width") || only.has("height"))) {
+        wantAny("width", "height");
+        const w = spec.width !== void 0 ? spec.width : existingNode.width;
+        const h = spec.height !== void 0 ? spec.height : existingNode.height;
+        if (existingNode.width !== w || existingNode.height !== h) {
+          existingNode.resize(w, h);
+          changedProps.push("size");
+        }
+        if (existingNode.textAutoResize !== spec.textAutoResize) existingNode.textAutoResize = spec.textAutoResize;
+      } else if (want("width") && spec.width !== void 0) {
         existingNode.resize(spec.width, existingNode.height);
         existingNode.textAutoResize = "HEIGHT";
         changedProps.push("width");
+      }
+      setSizing("layoutSizingHorizontal");
+      setSizing("layoutSizingVertical");
+      if (only && want("textAutoResize") && spec.textAutoResize !== void 0 && existingNode.textAutoResize !== spec.textAutoResize) {
+        existingNode.textAutoResize = spec.textAutoResize;
+        changedProps.push("textAutoResize");
       }
     }
     if (type === "rectangle") {
@@ -6371,22 +6858,24 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push("size");
         }
       }
-      if (want() && spec.fillColor !== void 0) {
+      if (want("fillColor") && spec.fillColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fillColor);
         changedProps.push("fillColor");
       }
-      if (want() && spec.strokeColor !== void 0) {
+      if (want("strokeColor") && spec.strokeColor !== void 0) {
         applyColorPaint(existingNode, "strokes", spec.strokeColor);
         changedProps.push("strokeColor");
       }
-      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+      if (want("strokeWeight") && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
         existingNode.strokeWeight = spec.strokeWeight;
         changedProps.push("strokeWeight");
       }
-      if (want() && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
+      if (want("cornerRadius") && spec.cornerRadius !== void 0 && existingNode.cornerRadius !== spec.cornerRadius) {
         existingNode.cornerRadius = spec.cornerRadius;
         changedProps.push("cornerRadius");
       }
+      setSizing("layoutSizingHorizontal");
+      setSizing("layoutSizingVertical");
     }
     if (type === "vector") {
       if (wantAny("width", "height") && spec.width !== void 0 && spec.height !== void 0) {
@@ -6395,35 +6884,41 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push("size");
         }
       }
-      if (want() && spec.fillColor !== void 0) {
+      if (want("fillColor") && spec.fillColor !== void 0) {
         applyColorPaint(existingNode, "fills", spec.fillColor);
         changedProps.push("fillColor");
       }
-      if (want() && spec.strokeColor !== void 0) {
+      if (want("strokeColor") && spec.strokeColor !== void 0) {
         applyColorPaint(existingNode, "strokes", spec.strokeColor);
         changedProps.push("strokeColor");
       }
-      if (want() && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
+      if (want("strokeWeight") && spec.strokeWeight !== void 0 && existingNode.strokeWeight !== spec.strokeWeight) {
         existingNode.strokeWeight = spec.strokeWeight;
         changedProps.push("strokeWeight");
       }
-      if (want() && spec.pathData !== void 0) {
+      if (want("pathData") && spec.pathData !== void 0) {
         existingNode.vectorPaths = [{ windingRule: "NONZERO", data: normalizeSvgPath(spec.pathData) }];
         changedProps.push("pathData");
       }
-      if (want() && spec.strokeCap !== void 0) {
+      if (want("strokeCap") && spec.strokeCap !== void 0) {
         var network = existingNode.vectorNetwork;
         if (network && network.vertices) {
           var updatedVertices = network.vertices.map(function(v) {
             return Object.assign({}, v, { strokeCap: spec.strokeCap });
           });
-          existingNode.vectorNetwork = Object.assign({}, network, { vertices: updatedVertices });
+          if (only && typeof existingNode.setVectorNetworkAsync === "function") {
+            await existingNode.setVectorNetworkAsync(Object.assign({}, network, { vertices: updatedVertices }));
+          } else {
+            existingNode.vectorNetwork = Object.assign({}, network, { vertices: updatedVertices });
+          }
           changedProps.push("strokeCap");
         }
       }
+      setSizing("layoutSizingHorizontal");
+      setSizing("layoutSizingVertical");
     }
     if (type === "instance") {
-      if (want() && spec.componentKey) {
+      if (want("componentKey") && spec.componentKey) {
         const mainComponent = await existingNode.getMainComponentAsync();
         if (!mainComponent || mainComponent.key !== spec.componentKey) {
           const component = await figma.importComponentByKeyAsync(spec.componentKey);
@@ -6431,15 +6926,40 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           changedProps.push("componentKey");
         }
       }
-      if (want() && spec.properties !== void 0) {
+      if (want("componentId") && spec.componentId) {
+        const mainComponent = await existingNode.getMainComponentAsync();
+        if (!mainComponent || mainComponent.id !== spec.componentId) {
+          existingNode.swapComponent(await localComponent(spec.componentId, "COMPONENT"));
+          changedProps.push("componentId");
+        }
+      }
+      if (wantAny("componentSetKey", "componentSetId") && (spec.componentSetKey || spec.componentSetId)) {
+        const mainComponent = await existingNode.getMainComponentAsync();
+        const set = mainComponent && mainComponent.parent && mainComponent.parent.type === "COMPONENT_SET" ? mainComponent.parent : null;
+        const same = set && (spec.componentSetKey ? set.key === spec.componentSetKey : set.id === spec.componentSetId);
+        if (!same) {
+          const target = spec.componentSetKey ? await figma.importComponentSetByKeyAsync(spec.componentSetKey) : await localComponent(spec.componentSetId, "COMPONENT_SET");
+          existingNode.swapComponent(target.defaultVariant);
+          changedProps.push(spec.componentSetKey ? "componentSetKey" : "componentSetId");
+        }
+      }
+      if (want("properties") && spec.properties !== void 0) {
         existingNode.setProperties(spec.properties);
         changedProps.push("properties");
       }
-      if (want() && spec.textOverrides !== void 0) {
+      if (want("textOverrides") && spec.textOverrides !== void 0) {
         await applyTextOverrides(existingNode, spec.textOverrides);
         changedProps.push("textOverrides");
       }
-      if (want() && spec.layoutSizingHorizontal !== void 0 && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
+      if (wantAny("width", "height") && (spec.width !== void 0 || spec.height !== void 0)) {
+        const w = spec.width !== void 0 ? spec.width : existingNode.width;
+        const h = spec.height !== void 0 ? spec.height : existingNode.height;
+        if (existingNode.width !== w || existingNode.height !== h) {
+          existingNode.resize(w, h);
+          changedProps.push("size");
+        }
+      }
+      if (want("layoutSizingHorizontal") && spec.layoutSizingHorizontal !== void 0 && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
         try {
           existingNode.layoutSizingHorizontal = spec.layoutSizingHorizontal;
           changedProps.push("layoutSizingHorizontal");
@@ -6447,7 +6967,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
           console.error("Error setting layoutSizingHorizontal during sync:", e);
         }
       }
-      if (want() && spec.layoutSizingVertical !== void 0 && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
+      if (want("layoutSizingVertical") && spec.layoutSizingVertical !== void 0 && existingNode.layoutSizingVertical !== spec.layoutSizingVertical) {
         try {
           existingNode.layoutSizingVertical = spec.layoutSizingVertical;
           changedProps.push("layoutSizingVertical");
@@ -6459,23 +6979,30 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     var cornerProps = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
     for (var ci = 0; ci < cornerProps.length; ci++) {
       var cp = cornerProps[ci];
-      if (cp in existingNode && want() && spec[cp] !== void 0 && existingNode[cp] !== spec[cp]) {
+      if (cp in existingNode && want(cp) && spec[cp] !== void 0 && existingNode[cp] !== spec[cp]) {
         existingNode[cp] = spec[cp];
         changedProps.push(cp);
       }
     }
-    if ("fills" in existingNode && want() && spec.fillImage && spec.fillImage.base64) {
+    if ("fills" in existingNode && want("fillImage") && spec.fillImage && spec.fillImage.base64) {
       applyImageFill(existingNode, spec.fillImage);
       changedProps.push("fillImage");
     }
     const unhandled = only ? Array.from(only).filter((key) => !consumed.has(key)) : [];
     return { changed: changedProps.length > 0, changedProps, unhandled };
   }
-  function applyDeferredFill(node, spec, only) {
+  function applyDeferredFill(node, spec, only, options = {}) {
     const applied = [];
-    if (node.type !== "FRAME" || !node.layoutMode || node.layoutMode === "NONE") return applied;
+    if (node.type !== "FRAME") return applied;
+    if (options.checkParent) {
+      const parent = node.parent;
+      if (!parent || !parent.layoutMode || parent.layoutMode === "NONE" || parent.layoutMode === "GRID") return applied;
+    } else if (!node.layoutMode || node.layoutMode === "NONE") {
+      return applied;
+    }
     for (const key of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
-      if (spec[key] === "FILL") {
+      if (options.checkParent && node[key] === "FILL") continue;
+      if ((!only || only.has(key)) && spec[key] === "FILL") {
         try {
           node[key] = "FILL";
           applied.push(key);
@@ -6677,6 +7204,13 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         return created;
       }
     }
+    const noOwnLayout = type === "frame" && (!props.layoutMode || props.layoutMode === "NONE");
+    const fillsParent = noOwnLayout && (props.layoutSizingHorizontal === "FILL" || props.layoutSizingVertical === "FILL");
+    if (props.visible !== void 0 || fillsParent) {
+      const node = await figma.getNodeByIdAsync(result.id);
+      if (node && fillsParent) applyDeferredFill(node, props, void 0, { checkParent: true });
+      if (node && props.visible !== void 0) node.visible = !!props.visible;
+    }
     ctx.counters.created++;
     created.push({ path, id: result.id });
     ctx.nodes.push({
@@ -6736,16 +7270,16 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       return false;
     }
     warnRepeatWithoutAutoLayout(tree, treeHadRepeat(rawTree));
-    function countNodes(node) {
+    function countNodes2(node) {
       let count = 1;
       if (node.children && Array.isArray(node.children)) {
         for (const child of node.children) {
-          count += countNodes(child);
+          count += countNodes2(child);
         }
       }
       return count;
     }
-    const totalNodes = countNodes(tree);
+    const totalNodes = countNodes2(tree);
     const ctx = createNodeTreeContext({ totalNodes, firstOnTop, commandId, prune });
     if (commandId) {
       await sendProgressUpdate(
@@ -8347,7 +8881,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     // L2F_VERIFY: snapshots live in a plugin-side store, never in the document.
     "assert_contained",
     "snapshot_positions",
-    "diff_positions"
+    "diff_positions",
+    // L2F_SPEC_SYNC: read a subtree; the Spec file is written by the server.
+    "export_spec",
+    "read_spec_nodes"
   ]);
   var COMMAND_EDITORS = {
     // L2F_DEV_MODE. What is known: the plugin typings mark addMeasurement as available
@@ -8568,6 +9105,782 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     };
   }
 
+  // src/llm2figma_plugin/src/spec.ts
+  var SPEC_TYPE_OF = {
+    FRAME: "frame",
+    TEXT: "text",
+    RECTANGLE: "rectangle",
+    VECTOR: "vector",
+    INSTANCE: "instance"
+  };
+  var PROGRESS_EVERY = 50;
+  var MAX_SPEC_BYTES = 8 * 1024 * 1024;
+  var isMixed = (value) => typeof value === "symbol";
+  var isRotated2 = (node) => typeof node.rotation === "number" && Math.abs(node.rotation) > 0.01;
+  var TEXT_STYLE_KEYS = ["fontName", "fontSize", "fills", "letterSpacing", "lineHeight", "textDecoration", "textCase"];
+  function opaqueReason(node) {
+    if (!SPEC_TYPE_OF[node.type]) return "unsupported type";
+    if (isRotated2(node)) return "rotated";
+    if (node.type === "FRAME" && node.layoutMode === "GRID") return "grid layout";
+    if (node.type === "TEXT" && TEXT_STYLE_KEYS.some((key) => isMixed(node[key]))) return "mixed-style text";
+    return null;
+  }
+  function pageOf2(node) {
+    let current = node;
+    while (current && current.type !== "PAGE") current = current.parent;
+    return current || null;
+  }
+  async function resolveSpecTarget(nodeId, expect = {}) {
+    const fileKey = figma.fileKey ?? null;
+    const fileName = figma.root ? figma.root.name : null;
+    if (expect.fileKey && fileKey) {
+      if (expect.fileKey !== fileKey) throw new Error(`Wrong file: expected file key ${expect.fileKey}, but the connected file's key is ${fileKey}.`);
+    } else if (expect.fileName != null && expect.fileName !== fileName) {
+      throw new Error(`Wrong file: expected "${expect.fileName}", but the connected file is "${fileName}".`);
+    }
+    let page = null;
+    if (expect.pageId) {
+      page = await figma.getNodeByIdAsync(expect.pageId);
+      if (!page || page.type !== "PAGE") throw new Error(`Wrong file or page: page ${expect.pageId} is not in the connected file.`);
+      if (typeof page.loadAsync === "function") await page.loadAsync();
+    }
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
+    const nodePage = pageOf2(node);
+    if (!nodePage) throw new Error(`Node ${nodeId} is not on a page.`);
+    if (page && nodePage.id !== page.id) throw new Error(`Wrong page: node ${nodeId} is on page ${nodePage.id}, expected ${page.id}.`);
+    if (!page) {
+      page = nodePage;
+      if (typeof page.loadAsync === "function") await page.loadAsync();
+    }
+    return { node, page, fileKey, fileName };
+  }
+  var SpecReadCache = class {
+    constructor() {
+      __publicField(this, "refs", /* @__PURE__ */ new Map());
+      __publicField(this, "collections", /* @__PURE__ */ new Map());
+      __publicField(this, "mains", /* @__PURE__ */ new Map());
+      __publicField(this, "sources", /* @__PURE__ */ new Map());
+    }
+    mainComponent(instance) {
+      if (!this.mains.has(instance.id)) this.mains.set(instance.id, Promise.resolve().then(() => instance.getMainComponentAsync()).catch(() => null));
+      return this.mains.get(instance.id);
+    }
+    // How a Spec names an instance's main component. A variant is named by its
+    // set (componentSetKey, or componentSetId for a local set, which has no
+    // importable key), with the VARIANT values in `properties` choosing the
+    // variant; any other component by componentKey (library) or componentId (local).
+    componentSource(main) {
+      if (!this.sources.has(main.id)) {
+        const parent = main.parent;
+        const set = parent && parent.type === "COMPONENT_SET" ? parent : null;
+        const source = set ? main.remote ? { componentSetKey: set.key } : { componentSetId: set.id } : main.remote ? { componentKey: main.key } : { componentId: main.id };
+        this.sources.set(main.id, source);
+      }
+      return this.sources.get(main.id);
+    }
+    // The `Collection/Name` that resolves back to exactly this variable through
+    // the same lookup a write uses (getVariableByName), or null when it does not
+    // (another variable shares the name, or the name is ambiguous).
+    variableRef(id) {
+      if (!this.refs.has(id)) this.refs.set(id, this.resolveRef(id));
+      return this.refs.get(id);
+    }
+    collection(id) {
+      if (!this.collections.has(id)) this.collections.set(id, figma.variables.getVariableCollectionByIdAsync(id).catch(() => null));
+      return this.collections.get(id);
+    }
+    async resolveRef(id) {
+      try {
+        const variable = await figma.variables.getVariableByIdAsync(id);
+        if (!variable || !variable.variableCollectionId) return null;
+        const collection = await this.collection(variable.variableCollectionId);
+        if (!collection) return null;
+        const ref = `${collection.name}/${variable.name}`;
+        const resolved = await getVariableByName(ref);
+        return resolved && resolved.id === id ? ref : null;
+      } catch {
+        return null;
+      }
+    }
+  };
+  async function solidColor(paints, cache) {
+    if (isMixed(paints) || !Array.isArray(paints)) return void 0;
+    if (paints.length === 0) return NO_PAINT;
+    if (paints.length !== 1) return void 0;
+    const paint = paints[0];
+    if (paint.type !== "SOLID" || paint.visible === false || paint.blendMode && paint.blendMode !== "NORMAL") return void 0;
+    const alias = paint.boundVariables && paint.boundVariables.color;
+    if (alias && alias.id) {
+      const ref = await cache.variableRef(alias.id);
+      if (!ref) return void 0;
+      const opacity = round2(paint.opacity ?? 1);
+      return opacity < 1 ? { $var: ref, opacity } : `$var:${ref}`;
+    }
+    return colorToHex(paint.color, paint.opacity ?? 1);
+  }
+  function readEffects(effects) {
+    if (isMixed(effects) || !Array.isArray(effects)) return void 0;
+    for (const e of effects) {
+      if (!["DROP_SHADOW", "INNER_SHADOW", "LAYER_BLUR", "BACKGROUND_BLUR"].includes(e.type)) return void 0;
+      if (e.boundVariables && Object.keys(e.boundVariables).length) return void 0;
+      if (e.showShadowBehindNode === true || e.blurType && e.blurType !== "NORMAL") return void 0;
+    }
+    return effects;
+  }
+  var notMixed = (value) => isMixed(value) ? void 0 : value;
+  var pixels = (value) => value && value.unit === "PIXELS" ? value.value : void 0;
+  function common(node, type) {
+    return {
+      type,
+      name: node.name,
+      visible: node.visible,
+      x: node.x,
+      y: node.y,
+      opacity: node.opacity,
+      layoutPositioning: node.layoutPositioning,
+      layoutSizingHorizontal: node.layoutSizingHorizontal,
+      layoutSizingVertical: node.layoutSizingVertical
+    };
+  }
+  function unreadList() {
+    const unread = [];
+    return { unread, mark: (key, value) => {
+      if (value === void 0) unread.push(key);
+      return value;
+    } };
+  }
+  async function paintedProps(node, cache, mark) {
+    return {
+      width: node.width,
+      height: node.height,
+      fillColor: mark("fillColor", await solidColor(node.fills, cache)),
+      strokeColor: mark("strokeColor", await solidColor(node.strokes, cache)),
+      strokeWeight: mark("strokeWeight", notMixed(node.strokeWeight)),
+      strokeAlign: node.strokeAlign,
+      effects: mark("effects", readEffects(node.effects))
+    };
+  }
+  function sharedStrokeCap(node) {
+    try {
+      const vertices = node.vectorNetwork && node.vectorNetwork.vertices;
+      if (!Array.isArray(vertices) || !vertices.length) return void 0;
+      const caps = new Set(vertices.map((v) => v.strokeCap || "NONE"));
+      return caps.size === 1 ? [...caps][0] : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function singlePath(node) {
+    const paths = node.vectorPaths;
+    if (!Array.isArray(paths) || paths.length !== 1) return void 0;
+    if (paths[0].windingRule && paths[0].windingRule !== "NONZERO") return void 0;
+    return paths[0].data;
+  }
+  function flatProperties(node) {
+    const out = {};
+    const props = node.componentProperties || {};
+    for (const key of Object.keys(props)) {
+      if (props[key] && props[key].type !== "INSTANCE_SWAP") out[key] = props[key].value;
+    }
+    return out;
+  }
+  async function readSpecNode(node, cache) {
+    const read = await readSpecValues(node, cache);
+    if ("props" in read && read.unread.length) read.props[UNREAD_KEY] = [...read.unread].sort();
+    return "props" in read ? { props: read.props } : read;
+  }
+  async function readSpecValues(node, cache) {
+    const reason = opaqueReason(node);
+    if (reason) return { opaque: reason };
+    const type = SPEC_TYPE_OF[node.type];
+    const { unread, mark } = unreadList();
+    const props = await readByType(node, type, cache, mark);
+    return props ? { props, unread } : { opaque: "main component missing" };
+  }
+  async function readByType(node, type, cache, mark) {
+    switch (type) {
+      case "frame":
+        return {
+          ...common(node, type),
+          ...await paintedProps(node, cache, mark),
+          cornerRadius: mark("cornerRadius", notMixed(node.cornerRadius)),
+          clipsContent: node.clipsContent,
+          layoutMode: node.layoutMode,
+          layoutWrap: node.layoutWrap,
+          paddingTop: node.paddingTop,
+          paddingRight: node.paddingRight,
+          paddingBottom: node.paddingBottom,
+          paddingLeft: node.paddingLeft,
+          primaryAxisAlignItems: node.primaryAxisAlignItems,
+          counterAxisAlignItems: node.counterAxisAlignItems,
+          itemSpacing: node.itemSpacing,
+          counterAxisSpacing: node.counterAxisSpacing,
+          itemReverseZIndex: node.itemReverseZIndex
+        };
+      case "rectangle":
+        return { ...common(node, type), ...await paintedProps(node, cache, mark), cornerRadius: mark("cornerRadius", notMixed(node.cornerRadius)) };
+      case "vector":
+        return {
+          ...common(node, type),
+          ...await paintedProps(node, cache, mark),
+          strokeCap: mark("strokeCap", sharedStrokeCap(node)),
+          pathData: mark("pathData", singlePath(node))
+        };
+      case "text": {
+        const letterSpacing = node.letterSpacing && node.letterSpacing.unit === "PERCENT" && node.letterSpacing.value === 0 ? 0 : pixels(node.letterSpacing);
+        const lineHeight = node.lineHeight && node.lineHeight.unit === "AUTO" ? void 0 : mark("lineHeight", pixels(node.lineHeight));
+        const fontSize = typeof node.fontSize === "number" && Number.isInteger(round2(node.fontSize)) ? node.fontSize : mark("fontSize", void 0);
+        return {
+          ...common(node, type),
+          // An auto-renamed layer follows its characters: its name is not its own.
+          name: node.autoRename === true ? void 0 : node.name,
+          text: node.characters,
+          textAlignHorizontal: node.textAlignHorizontal,
+          textAutoResize: node.textAutoResize,
+          width: node.width,
+          height: node.height,
+          effects: mark("effects", readEffects(node.effects)),
+          fontFamily: node.fontName && node.fontName.family,
+          fontStyle: node.fontName && node.fontName.style,
+          fontSize,
+          fontColor: mark("fontColor", await solidColor(node.fills, cache)),
+          lineHeight,
+          letterSpacing: mark("letterSpacing", letterSpacing),
+          textCase: node.textCase
+        };
+      }
+      case "instance": {
+        const main = await cache.mainComponent(node);
+        if (!main) return null;
+        return {
+          ...common(node, type),
+          ...cache.componentSource(main),
+          properties: flatProperties(node),
+          width: node.width,
+          height: node.height
+        };
+      }
+    }
+  }
+  function opaqueNode(node, reason, truncated = false) {
+    return { id: node.id, type: OPAQUE_TYPE, name: node.name, nodeType: node.type, ...truncated ? { truncated: true } : {}, reason };
+  }
+  function countNodes(node) {
+    return 1 + (Array.isArray(node.children) ? node.children.reduce((n, child) => n + countNodes(child), 0) : 0);
+  }
+  var clamp = (value, fallback, min, max) => Math.min(max, Math.max(min, Math.floor(typeof value === "number" && isFinite(value) ? value : fallback)));
+  async function readSubtree2(params, options) {
+    const { nodeId, expect, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+    const { commandType } = options;
+    const forced = options.forced ?? /* @__PURE__ */ new Map();
+    if (!nodeId || typeof nodeId !== "string") throw new Error("Missing nodeId parameter");
+    if (nodeId.includes(";")) throw new Error(`Cannot pull ${nodeId}: it is inside an instance. Pull a node outside the instance; instances are exported as leaves.`);
+    const { node: root, page, fileKey, fileName } = await resolveSpecTarget(nodeId, expect || {});
+    const rootReason = opaqueReason(root);
+    if (rootReason) {
+      throw new Error(`Cannot pull ${nodeId}: a Spec root must be a frame, text, rectangle, vector or instance without rotation, grid layout or mixed text styles (this node: ${root.type}, ${rootReason}).`);
+    }
+    const nodeBudget = clamp(maxNodes, WALK_LIMITS.defaultNodes, 1, WALK_LIMITS.maxNodes);
+    const depthLimit = clamp(maxDepth, WALK_LIMITS.defaultDepth, 0, WALK_LIMITS.maxDepth);
+    const byteBudget = clamp(maxBytes, MAX_SPEC_BYTES, 1, MAX_SPEC_BYTES);
+    const cache = new SpecReadCache();
+    let read = 0;
+    let bytes = 0;
+    let opaqueCount = 0;
+    let truncatedCount = 0;
+    if (commandId) await sendProgressUpdate(commandId, commandType, "started", 0, nodeBudget, 0, `Reading up to ${nodeBudget} nodes`);
+    const placeholder = (node, reason) => {
+      opaqueCount++;
+      truncatedCount++;
+      return opaqueNode(node, reason, true);
+    };
+    const readOne = async (node, parent2) => {
+      read++;
+      if (commandId && read % PROGRESS_EVERY === 0) {
+        await sendProgressUpdate(commandId, commandType, "in_progress", Math.min(99, Math.round(read / nodeBudget * 100)), nodeBudget, read, `Read ${read} nodes`);
+      }
+      const result = await readSpecNode(node, cache);
+      const raw = "props" in result ? result.props : opaqueNode(node, result.opaque);
+      const out = { id: node.id, ...normalizeNode(raw, parent2) };
+      const frame = out.type === "frame";
+      return { out, frame, layoutMode: "props" in result ? result.props.layoutMode : void 0, size: JSON.stringify(out).length + 1 + (frame ? 14 : 0) };
+    };
+    const placeholderSize = (node) => JSON.stringify(opaqueNode(node, "node budget", true)).length + 1;
+    const childrenSize = (node) => (node.children || []).reduce((sum, child) => sum + placeholderSize(child), 0);
+    let reserved = 0;
+    const parent = root.parent;
+    const top = await readOne(root, { layoutMode: parent && parent.type !== "PAGE" ? parent.layoutMode : void 0 });
+    if (top.size > byteBudget) throw new Error(`Cannot pull ${nodeId}: the node alone is larger than the ${byteBudget}-byte Spec budget.`);
+    if (top.out.type === OPAQUE_TYPE) throw new Error(`Cannot pull ${nodeId}: ${top.out.reason}.`);
+    bytes = top.size;
+    if (top.frame) reserved = childrenSize(root);
+    const queue = [];
+    if (top.frame) queue.push({ node: root, out: top.out, depth: 0, layoutMode: top.layoutMode });
+    let stoppedBy = null;
+    for (let i = 0; i < queue.length; i++) {
+      const { node, out, depth, layoutMode } = queue[i];
+      out.children = [];
+      for (const child of node.children || []) {
+        const recorded = forced.get(child.id);
+        if (recorded !== void 0) {
+          opaqueCount++;
+          out.children.push(opaqueNode(child, recorded, true));
+          continue;
+        }
+        if (depth >= depthLimit) {
+          out.children.push(placeholder(child, "depth limit"));
+          continue;
+        }
+        if (!stoppedBy && read >= nodeBudget) stoppedBy = "node budget";
+        if (stoppedBy) {
+          out.children.push(placeholder(child, stoppedBy));
+          continue;
+        }
+        const one = await readOne(child, { layoutMode: layoutMode ?? "NONE" });
+        const own = placeholderSize(child);
+        const below = one.frame ? childrenSize(child) : 0;
+        if (bytes + reserved - own + one.size + below > byteBudget) {
+          stoppedBy = "byte budget";
+          out.children.push(placeholder(child, stoppedBy));
+          continue;
+        }
+        bytes += one.size;
+        reserved += below - own;
+        if (one.out.type === OPAQUE_TYPE) opaqueCount++;
+        out.children.push(one.out);
+        if (one.frame) queue.push({ node: child, out: one.out, depth: depth + 1, layoutMode: one.layoutMode });
+      }
+    }
+    const tree = top.out;
+    if (commandId) await sendProgressUpdate(commandId, commandType, "completed", 100, nodeBudget, read, `Read ${read} nodes`);
+    return {
+      root,
+      fileKey,
+      fileName,
+      pageId: page.id,
+      rootId: root.id,
+      rootParentId: parent ? parent.id : null,
+      rootParentLayoutMode: parent && parent.type !== "PAGE" ? parent.layoutMode : null,
+      tree,
+      opaqueCount,
+      truncated: truncatedCount > 0
+    };
+  }
+  async function exportSpec(params) {
+    const read = await readSubtree2(params, { commandType: "export_spec" });
+    return {
+      fileKey: read.fileKey,
+      fileName: read.fileName,
+      pageId: read.pageId,
+      rootId: read.rootId,
+      rootParentId: read.rootParentId,
+      tree: read.tree,
+      nodeCount: countNodes(read.tree),
+      opaqueCount: read.opaqueCount,
+      truncated: read.truncated
+    };
+  }
+  function liveSize(node) {
+    return node && typeof node.width === "number" && typeof node.height === "number" ? { width: round2(node.width), height: round2(node.height) } : void 0;
+  }
+  async function readSpecNodes(params) {
+    const { rootId, expect, baseHashes, truncated, sizeIds, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+    if (!rootId || typeof rootId !== "string") throw new Error("Missing rootId parameter");
+    const bases = baseHashes && typeof baseHashes === "object" ? baseHashes : {};
+    const forced = /* @__PURE__ */ new Map();
+    if (truncated && typeof truncated === "object") {
+      for (const [id, reason] of Object.entries(truncated)) if (typeof reason === "string") forced.set(id, reason);
+    }
+    const read = await readSubtree2(
+      { nodeId: rootId, expect, maxNodes, maxDepth, maxBytes, commandId },
+      { commandType: "read_spec_nodes", forced }
+    );
+    const entries = lockNodesFromTree(read.tree, read.rootParentId);
+    const nodes = {};
+    for (const [id, entry] of Object.entries(entries)) {
+      const out = { propsHash: entry.propsHash, parentId: entry.parentId, children: entry.children };
+      if (bases[id] !== entry.propsHash) out.props = entry.props;
+      nodes[id] = out;
+    }
+    for (const id of Array.isArray(sizeIds) ? sizeIds : []) {
+      if (!nodes[id]) continue;
+      const size = liveSize(id === read.rootId ? read.root : await figma.getNodeByIdAsync(id));
+      if (size) nodes[id].size = size;
+    }
+    return {
+      fileKey: read.fileKey,
+      fileName: read.fileName,
+      pageId: read.pageId,
+      rootId: read.rootId,
+      rootParentId: read.rootParentId,
+      rootParentLayoutMode: read.rootParentLayoutMode,
+      truncated: read.truncated,
+      nodeCount: Object.keys(nodes).length,
+      nodes
+    };
+  }
+  function forcedReasons(truncated) {
+    const forced = /* @__PURE__ */ new Map();
+    if (truncated && typeof truncated === "object") {
+      for (const [id, reason] of Object.entries(truncated)) if (typeof reason === "string") forced.set(id, reason);
+    }
+    return forced;
+  }
+  async function readLockEntry(node, cache, forced) {
+    const parent = node.parent;
+    const layout = { layoutMode: parent && parent.type !== "PAGE" ? parent.layoutMode : void 0 };
+    const recorded = forced.get(node.id);
+    let raw;
+    if (recorded !== void 0) raw = opaqueNode(node, recorded, true);
+    else {
+      const result = await readSpecNode(node, cache);
+      raw = "props" in result ? result.props : opaqueNode(node, result.opaque);
+    }
+    const props = lockProps(normalizeNode(raw, layout));
+    const children = props.type === "frame" && Array.isArray(node.children) ? node.children.map((child) => child.id) : [];
+    return { props, propsHash: hashProps(props), parentId: parent ? parent.id : null, children };
+  }
+  async function readLiveLock(params, commandType) {
+    const { rootId, expect, truncated, maxNodes, maxDepth, maxBytes, commandId } = params || {};
+    const read = await readSubtree2({ nodeId: rootId, expect, maxNodes, maxDepth, maxBytes, commandId }, { commandType, forced: forcedReasons(truncated) });
+    return {
+      rootId: read.rootId,
+      rootParentId: read.rootParentId,
+      rootParentLayoutMode: read.rootParentLayoutMode,
+      truncated: read.truncated,
+      nodes: lockNodesFromTree(read.tree, read.rootParentId)
+    };
+  }
+
+  // src/llm2figma_plugin/src/spec-apply.ts
+  var COMMAND = "apply_spec_ops";
+  var PROGRESS_EVERY2 = 50;
+  var SUPERSEDED_NAME = "l2f/superseded";
+  var POSITION_TOLERANCE = 0.5;
+  var MAX_STALE_LISTED = 10;
+  function multiply(a, b) {
+    return [
+      [a[0][0] * b[0][0] + a[0][1] * b[1][0], a[0][0] * b[0][1] + a[0][1] * b[1][1], a[0][0] * b[0][2] + a[0][1] * b[1][2] + a[0][2]],
+      [a[1][0] * b[0][0] + a[1][1] * b[1][0], a[1][0] * b[0][1] + a[1][1] * b[1][1], a[1][0] * b[0][2] + a[1][1] * b[1][2] + a[1][2]]
+    ];
+  }
+  function invert(m) {
+    const [[a, c, e], [b, d, f]] = m;
+    const det = a * d - b * c;
+    if (!det) throw new Error("the parent's transform cannot be inverted");
+    return [[d / det, -c / det, (c * f - d * e) / det], [-b / det, a / det, (b * e - a * f) / det]];
+  }
+  var IDENTITY = [[1, 0, 0], [0, 1, 0]];
+  var absoluteOf = (node) => node && node.type !== "PAGE" && node.absoluteTransform ? node.absoluteTransform : IDENTITY;
+  function keepAbsolute(node, absolute) {
+    node.relativeTransform = multiply(invert(absoluteOf(node.parent)), absolute);
+    const now = absoluteOf(node);
+    if (Math.abs(now[0][2] - absolute[0][2]) > POSITION_TOLERANCE || Math.abs(now[1][2] - absolute[1][2]) > POSITION_TOLERANCE) {
+      throw new Error(`absolute position not kept (was ${absolute[0][2]}, ${absolute[1][2]}; now ${now[0][2]}, ${now[1][2]})`);
+    }
+  }
+  var autoLayout = (node) => !!node && typeof node.layoutMode === "string" && node.layoutMode !== "NONE";
+  var CREATE_SKIPS = /* @__PURE__ */ new Set(["x", "y", "width", "height", "layoutPositioning", "layoutSizingHorizontal", "layoutSizingVertical", "properties"]);
+  var AUTO_LAYOUT_KEYS = /* @__PURE__ */ new Set([
+    "layoutWrap",
+    "paddingTop",
+    "paddingRight",
+    "paddingBottom",
+    "paddingLeft",
+    "primaryAxisAlignItems",
+    "counterAxisAlignItems",
+    "itemSpacing",
+    "counterAxisSpacing",
+    "itemReverseZIndex"
+  ]);
+  function withCreateDefaults(node) {
+    const out = { ...node };
+    const defaults = SPEC_DEFAULTS[node.type] || {};
+    for (const [key, value] of Object.entries(defaults)) {
+      if (out[key] !== void 0 || CREATE_SKIPS.has(key)) continue;
+      if (AUTO_LAYOUT_KEYS.has(key) && !autoLayout(out)) continue;
+      if (key === "counterAxisSpacing" && out.layoutWrap !== "WRAP") continue;
+      out[key] = value;
+    }
+    if (Array.isArray(node.children)) out.children = node.children.map(withCreateDefaults);
+    return out;
+  }
+  var pathKey = (path) => path.join(".");
+  function specAt(node, rest) {
+    let current = node;
+    for (const i of rest) current = current && Array.isArray(current.children) ? current.children[i] : void 0;
+    return current;
+  }
+  async function applySpecOps(params) {
+    const {
+      rootId,
+      expect,
+      operations,
+      expectedHashes,
+      allowRemovals,
+      orders,
+      truncated,
+      supersededFrameId,
+      date,
+      maxNodes,
+      maxDepth,
+      commandId
+    } = params || {};
+    if (!rootId || typeof rootId !== "string") throw new Error("Missing rootId parameter");
+    if (!Array.isArray(operations)) throw new Error("Missing operations parameter");
+    const forced = forcedReasons(truncated);
+    let page;
+    try {
+      page = (await resolveSpecTarget(rootId, expect || {})).page;
+    } catch (error) {
+      return { refused: error instanceof Error ? error.message : String(error) };
+    }
+    const cache = new SpecReadCache();
+    const stale = [];
+    const liveUnread = /* @__PURE__ */ new Map();
+    for (const [id, want] of Object.entries(expectedHashes || {})) {
+      const node = await figma.getNodeByIdAsync(id);
+      if (!node) {
+        stale.push(`${id} (gone)`);
+        continue;
+      }
+      const entry = await readLockEntry(node, cache, forced);
+      const what = [];
+      if (entry.propsHash !== want.propsHash) what.push("properties");
+      if (entry.parentId !== want.parentId) what.push("parent");
+      if (entry.children.join("\n") !== (want.children || []).join("\n")) what.push("children");
+      if (what.length) stale.push(`${id} (${what.join(", ")})`);
+      if (Array.isArray(entry.props[UNREAD_KEY])) liveUnread.set(id, new Set(entry.props[UNREAD_KEY]));
+    }
+    if (stale.length) {
+      const shown = stale.slice(0, MAX_STALE_LISTED).join(", ") + (stale.length > MAX_STALE_LISTED ? ` and ${stale.length - MAX_STALE_LISTED} more` : "");
+      return { refused: `Figma changed since the plan: ${shown}. Nothing was written; run plan_spec again.`, stale: stale.length };
+    }
+    const created = [];
+    const updated = [];
+    const moved = [];
+    const removed = [];
+    const failed = [];
+    const partial = [];
+    const total = operations.length;
+    let done = 0;
+    const step = async () => {
+      done++;
+      if (commandId && done % PROGRESS_EVERY2 === 0) {
+        await sendProgressUpdate(commandId, COMMAND, "in_progress", Math.min(99, Math.round(done / Math.max(1, total) * 100)), total, done, `Applied ${done}/${total} operations`);
+      }
+    };
+    const message = (error) => error instanceof Error ? error.message : String(error);
+    if (commandId) await sendProgressUpdate(commandId, COMMAND, "started", 0, total, 0, `Applying ${total} operations`);
+    let holderId = typeof supersededFrameId === "string" ? supersededFrameId : null;
+    let writeError = null;
+    if (typeof figma.commitUndo === "function") figma.commitUndo();
+    try {
+      const creates = operations.filter((op) => op.op === "create");
+      const createdTop = /* @__PURE__ */ new Map();
+      const ctx = createNodeTreeContext({ totalNodes: creates.length, firstOnTop: true, commandId, progressLabel: COMMAND, progressEvery: PROGRESS_EVERY2 });
+      for (const op of creates) {
+        const spec = withCreateDefaults(op.node);
+        const before = ctx.errors.length;
+        try {
+          const made = await createNode(spec, op.parentId, 1, ctx, { onBindFailure: "keep", path: op.path });
+          for (const entry of made) {
+            created.push(entry);
+            if (pathKey(entry.path) === pathKey(op.path)) createdTop.set(pathKey(op.path), entry.id);
+            const source = specAt(op.node, entry.path.slice(op.path.length));
+            if (source && source.type === "text" && source.name === void 0) {
+              const node = await figma.getNodeByIdAsync(entry.id);
+              if (node && "autoRename" in node) node.autoRename = true;
+            }
+          }
+        } catch (error) {
+          failed.push({ op: "create", path: op.path, error: message(error) });
+        }
+        for (const error of ctx.errors.slice(before)) failed.push({ op: "create", path: error.path, error: error.error });
+        await step();
+      }
+      const moving = new Set(operations.filter((op) => op.op === "move").map((op) => op.id));
+      const afterMove = /* @__PURE__ */ new Map();
+      for (const op of operations.filter((o) => o.op === "update")) {
+        const unread = liveUnread.get(op.id) || /* @__PURE__ */ new Set();
+        const set = {};
+        for (const [key, value] of Object.entries(op.set || {})) if (key !== UNREAD_KEY && !unread.has(key)) set[key] = value;
+        if (moving.has(op.id)) {
+          const later = {};
+          for (const key of PARENT_DEPENDENT) if (key in set) {
+            later[key] = set[key];
+            delete set[key];
+          }
+          if (Object.keys(later).length) afterMove.set(op.id, later);
+        }
+        const keys = Object.keys(set);
+        if (keys.length) {
+          try {
+            const node = await figma.getNodeByIdAsync(op.id);
+            if (!node) throw new Error("node not found");
+            const unwritten = await writeProps(node, set);
+            if (unwritten.length) failed.push({ op: "update", id: op.id, keys: unwritten, error: "not written for this node type" });
+            updated.push({ id: op.id, keys: keys.filter((k) => !unwritten.includes(k)) });
+          } catch (error) {
+            failed.push({ op: "update", id: op.id, keys, error: message(error) });
+          }
+        }
+        await step();
+      }
+      const toPlace = /* @__PURE__ */ new Map();
+      const place = (parentId, id) => {
+        if (!toPlace.has(parentId)) toPlace.set(parentId, /* @__PURE__ */ new Set());
+        toPlace.get(parentId).add(id);
+      };
+      for (const op of operations) {
+        if (op.op === "move") place(op.parentId, op.id);
+        if (op.op === "create" && createdTop.has(pathKey(op.path))) place(op.parentId, createdTop.get(pathKey(op.path)));
+      }
+      const moveOps = new Map(operations.filter((op) => op.op === "move").map((op) => [op.id, op]));
+      for (const order of Array.isArray(orders) ? orders : []) {
+        const wanted = toPlace.get(order.parentId);
+        if (!wanted) continue;
+        const ids = order.children.map((entry) => typeof entry === "string" ? entry : createdTop.get(pathKey(entry)) ?? null);
+        const inOrder = new Set(ids.filter((id) => !!id));
+        let previous = null;
+        for (const id of ids) {
+          if (!id) continue;
+          const node = await figma.getNodeByIdAsync(id);
+          if (!node) continue;
+          if (!wanted.has(id)) {
+            if (node.parent && node.parent.id === order.parentId) previous = node;
+            continue;
+          }
+          const op = moveOps.has(id) ? "move" : "create";
+          let arrived = false;
+          try {
+            const parent = await figma.getNodeByIdAsync(order.parentId);
+            if (!parent || !Array.isArray(parent.children)) throw new Error(`parent ${order.parentId} not found`);
+            const isReparent = !node.parent || node.parent.id !== parent.id;
+            const absolute = isReparent ? absoluteOf(node) : null;
+            const siblings = parent.children.filter((child) => child.id !== id);
+            const first = siblings.findIndex((child) => inOrder.has(child.id));
+            const target = previous ? siblings.indexOf(previous) + 1 : first >= 0 ? first : siblings.length;
+            if (isReparent || parent.children.indexOf(node) !== target) {
+              await appendOrInsertChild(node, parent.id, target);
+              arrived = true;
+              let at = parent.children.indexOf(node);
+              if (at !== target && at >= 0) {
+                parent.insertChild(at < target ? target + 1 : target, node);
+                at = parent.children.indexOf(node);
+              }
+              if (at !== target) throw new Error(`placed at index ${at}, expected ${target}`);
+              if (absolute && (!autoLayout(parent) || node.layoutPositioning === "ABSOLUTE")) keepAbsolute(node, absolute);
+            }
+            arrived = true;
+            if (moveOps.has(id)) moved.push(id);
+            previous = node;
+          } catch (error) {
+            if (arrived && node.parent && node.parent.id === order.parentId) {
+              partial.push({ id, keys: ["parent"], detail: `moved into ${order.parentId}, but ${message(error)}` });
+              if (moveOps.has(id)) moved.push(id);
+              previous = node;
+            } else {
+              failed.push({ op, id, error: message(error) });
+            }
+          }
+          const later = afterMove.get(id);
+          if (later) {
+            afterMove.delete(id);
+            if (node.parent && node.parent.id === order.parentId) {
+              try {
+                const unwritten = await writeProps(node, later);
+                if (unwritten.length) failed.push({ op: "update", id, keys: unwritten, error: "not written for this node type" });
+                const done2 = Object.keys(later).filter((k) => !unwritten.includes(k));
+                const entry = updated.find((u) => u.id === id);
+                if (entry) entry.keys.push(...done2);
+                else updated.push({ id, keys: done2 });
+              } catch (error) {
+                failed.push({ op: "update", id, keys: Object.keys(later), error: message(error) });
+              }
+            } else {
+              failed.push({ op: "update", id, keys: Object.keys(later), error: "not written: the move to its new parent failed" });
+            }
+          }
+          if (moveOps.has(id)) await step();
+        }
+      }
+      for (const [id, later] of afterMove) failed.push({ op: "update", id, keys: Object.keys(later), error: "not written: the node was not moved" });
+      const removals = operations.filter((op) => op.op === "remove");
+      if (allowRemovals === true && removals.length) {
+        const holder = await supersededHolder(page, holderId);
+        holderId = holder.id;
+        for (const op of removals) {
+          const node = await figma.getNodeByIdAsync(op.id);
+          if (!node) {
+            failed.push({ op: "remove", id: op.id, error: "node not found" });
+            await step();
+            continue;
+          }
+          const name = `${node.name} (superseded ${typeof date === "string" ? date : (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)})`;
+          let arrived = false;
+          try {
+            const absolute = absoluteOf(node);
+            holder.appendChild(node);
+            arrived = node.parent === holder;
+            node.name = name;
+            keepAbsolute(node, absolute);
+            removed.push(op.id);
+          } catch (error) {
+            if (arrived || node.parent === holder) {
+              if (node.name !== name) node.name = name;
+              removed.push(op.id);
+              partial.push({ id: op.id, keys: ["position"], detail: `moved into ${SUPERSEDED_NAME}, but ${message(error)}` });
+            } else {
+              failed.push({ op: "remove", id: op.id, error: message(error) });
+            }
+          }
+          await step();
+        }
+      }
+    } catch (error) {
+      writeError = message(error);
+    }
+    if (typeof figma.commitUndo === "function") figma.commitUndo();
+    const outcome = { created, updated, moved, removed, failed, partial, supersededFrameId: holderId };
+    if (writeError) return { ...outcome, writeError };
+    try {
+      const readBack = await readLiveLock({ rootId, expect, truncated, maxNodes, maxDepth, commandId }, COMMAND);
+      if (commandId) await sendProgressUpdate(commandId, COMMAND, "completed", 100, total, done, `Applied ${done} operations`);
+      return { ...outcome, readBack };
+    } catch (error) {
+      return { ...outcome, writeError: `the read-back failed: ${message(error)}` };
+    }
+  }
+  var PARENT_DEPENDENT = ["x", "y", "layoutPositioning", "layoutSizingHorizontal", "layoutSizingVertical", "layoutGrow", "layoutAlign", "constraints"];
+  async function supersededHolder(page, recordedId) {
+    const recorded = recordedId ? await figma.getNodeByIdAsync(recordedId) : null;
+    if (recorded && recorded.type === "FRAME" && !recorded.removed && recorded.parent === page && (!recorded.layoutMode || recorded.layoutMode === "NONE")) {
+      return recorded;
+    }
+    const taken = new Set((page.children || []).map((child) => child.name));
+    let name = SUPERSEDED_NAME;
+    for (let n = 2; taken.has(name); n++) name = `${SUPERSEDED_NAME} ${n}`;
+    const holder = figma.createFrame();
+    page.appendChild(holder);
+    holder.name = name;
+    if (holder.layoutMode !== "NONE") holder.layoutMode = "NONE";
+    holder.clipsContent = false;
+    holder.fills = [];
+    holder.resize(1, 1);
+    holder.visible = false;
+    return holder;
+  }
+  async function writeProps(node, set) {
+    const only = new Set(Object.keys(set));
+    const colors = await resolveAndBind(set, only);
+    const result = await updateNodeProperties(node, colors.resolved, only);
+    const filled = applyDeferredFill(node, colors.resolved, only, { checkParent: true });
+    await colors.bind(node);
+    return result.unhandled.filter((key) => !filled.includes(key) && !(node.type === "FRAME" && set[key] === "FILL"));
+  }
+
   // src/llm2figma_plugin/src/events.ts
   function debounce(fn, ms) {
     let timer = null;
@@ -8721,7 +10034,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     autoConnect: true
     // Auto-connect on plugin launch
   };
-  figma.showUI(__html__, { width: 350, height: 600 });
+  var UI_WIDTH = 350;
+  var UI_MIN_HEIGHT = 200;
+  var UI_MAX_HEIGHT = 800;
+  figma.showUI(__html__, { width: UI_WIDTH, height: 600 });
   function reportUncaught(source, error) {
     const detail = formatError(error);
     console.error(`[llm2figma] uncaught ${source}:
@@ -8756,6 +10072,13 @@ ${detail}`);
       case "close-plugin":
         figma.closePlugin();
         break;
+      case "resize-ui": {
+        const height = Number(msg.height);
+        if (Number.isFinite(height)) {
+          figma.ui.resize(UI_WIDTH, Math.round(Math.min(UI_MAX_HEIGHT, Math.max(UI_MIN_HEIGHT, height))));
+        }
+        break;
+      }
       case "execute-command":
         setPluginOperationGuard(true);
         try {
@@ -8844,6 +10167,12 @@ ${detail}`);
         return await snapshotPositions(params);
       case "diff_positions":
         return await diffPositions(params);
+      case "export_spec":
+        return await exportSpec(params);
+      case "read_spec_nodes":
+        return await readSpecNodes(params);
+      case "apply_spec_ops":
+        return await applySpecOps(params);
       case "delete_node":
         return await deleteNode(params);
       case "delete_multiple_nodes":

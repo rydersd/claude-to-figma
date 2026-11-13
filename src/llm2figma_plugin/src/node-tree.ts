@@ -3,6 +3,7 @@ import { setCharacters } from './text';
 import { createFrame, createText, createRectangle } from './creation';
 import { createVector, normalizeSvgPath } from './vectors';
 import { createComponentInstance, applyTextOverrides } from './components';
+import { isVarPaint } from '../../shared/spec';
 
 function expandRepeats(node: any): any {
   if (!node || typeof node !== "object") return node;
@@ -139,13 +140,18 @@ export interface ResolvedColors {
 // the write to create the real variable bindings; it throws on a bad ref.
 // With `only`, a colour key not in the set is left as it is in the copy: it is
 // neither resolved nor bound, so a fill update never rebinds the stroke.
+// {"$var": "Collection/Name", "opacity": 0.3} (a Spec's bound paint below full
+// opacity) binds like "$var:Collection/Name" and writes the paint at that opacity.
 export async function resolveAndBind(props: any, only?: Set<string>): Promise<ResolvedColors> {
   const resolved: any = Object.assign({}, props);
   const bindings: { colorProp: string; figmaField: string; varRef: string }[] = [];
   for (const [colorProp, figmaField] of Object.entries(COLOR_FIELDS)) {
     if (only && !only.has(colorProp)) continue;
     if (resolved[colorProp] != null) {
-      const colorValue = resolveColorValue(resolved[colorProp]);
+      const varPaint = isVarPaint(resolved[colorProp]) ? resolved[colorProp] : null;
+      const colorValue = varPaint
+        ? { color: null, varRef: varPaint.$var.startsWith("$var:") ? varPaint.$var.slice(5) : varPaint.$var }
+        : resolveColorValue(resolved[colorProp]);
       if (colorValue.varRef) {
         // For $var: refs, use the first mode's value as the written colour,
         // and queue the binding for after the write
@@ -155,7 +161,7 @@ export async function resolveAndBind(props: any, only?: Set<string>): Promise<Re
           if (modeIds.length > 0) {
             const val = variable.valuesByMode[modeIds[0]];
             if (val && typeof val === "object" && "r" in val) {
-              resolved[colorProp] = val;
+              resolved[colorProp] = varPaint && varPaint.opacity !== undefined ? Object.assign({}, val, { a: Number(varPaint.opacity) }) : val;
             } else {
               delete resolved[colorProp];
             }
@@ -182,9 +188,16 @@ export async function resolveAndBind(props: any, only?: Set<string>): Promise<Re
   };
 }
 
+// A local component (or component set) by node id, for a swap.
+async function localComponent(id: string, type: "COMPONENT" | "COMPONENT_SET"): Promise<any> {
+  const node: any = await figma.getNodeByIdAsync(id);
+  if (!node || node.type !== type) throw new Error(`Node ${id} is not a ${type}`);
+  return node;
+}
+
 // Text properties whose setters need the node's font loaded.
 const TEXT_FONT_DEPENDENT = ["text", "fontSize", "lineHeight", "letterSpacing", "textCase", "textAlignHorizontal", "width",
-  "textAutoResize", "layoutSizingHorizontal", "layoutSizingVertical"];
+  "height", "textAutoResize", "layoutSizingHorizontal", "layoutSizingVertical"];
 
 export interface UpdateResult {
   changed: boolean;
@@ -242,6 +255,10 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
   if (want("opacity") && spec.opacity !== undefined && existingNode.opacity !== spec.opacity) {
     existingNode.opacity = spec.opacity;
     changedProps.push("opacity");
+  }
+  if (want("visible") && spec.visible !== undefined && existingNode.visible !== !!spec.visible) {
+    existingNode.visible = !!spec.visible;
+    changedProps.push("visible");
   }
   if ("effects" in existingNode && want("effects") && spec.effects !== undefined) {
     existingNode.effects = buildFigmaEffects(spec.effects);
@@ -411,7 +428,18 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
       existingNode.textCase = spec.textCase;
       changedProps.push("textCase");
     }
-    if (want("width") && spec.width !== undefined) {
+    const fixedBox = spec.textAutoResize === "NONE" || spec.textAutoResize === "TRUNCATE";
+    if (only && fixedBox && (only.has("width") || only.has("height"))) {
+      // A fixed text box (NONE / TRUNCATE): width and height, the box kept as it is
+      wantAny("width", "height");
+      const w = spec.width !== undefined ? spec.width : existingNode.width;
+      const h = spec.height !== undefined ? spec.height : existingNode.height;
+      if (existingNode.width !== w || existingNode.height !== h) {
+        existingNode.resize(w, h);
+        changedProps.push("size");
+      }
+      if (existingNode.textAutoResize !== spec.textAutoResize) existingNode.textAutoResize = spec.textAutoResize;
+    } else if (want("width") && spec.width !== undefined) {
       existingNode.resize(spec.width, existingNode.height);
       existingNode.textAutoResize = "HEIGHT";
       changedProps.push("width");
@@ -482,7 +510,14 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
         var updatedVertices = network.vertices.map(function(v: any) {
           return Object.assign({}, v, { strokeCap: spec.strokeCap });
         });
-        existingNode.vectorNetwork = Object.assign({}, network, { vertices: updatedVertices });
+        if (only && typeof existingNode.setVectorNetworkAsync === "function") {
+          // The vectorNetwork setter is not available with dynamic-page access;
+          // the spec path writes through setVectorNetworkAsync. create_node_tree's
+          // sync mode (no `only`) keeps its old assignment.
+          await existingNode.setVectorNetworkAsync(Object.assign({}, network, { vertices: updatedVertices }));
+        } else {
+          existingNode.vectorNetwork = Object.assign({}, network, { vertices: updatedVertices });
+        }
         changedProps.push("strokeCap");
       }
     }
@@ -500,6 +535,27 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
         changedProps.push("componentKey");
       }
     }
+    if (want("componentId") && spec.componentId) {
+      const mainComponent = await existingNode.getMainComponentAsync();
+      if (!mainComponent || mainComponent.id !== spec.componentId) {
+        existingNode.swapComponent(await localComponent(spec.componentId, "COMPONENT"));
+        changedProps.push("componentId");
+      }
+    }
+    // A variant is named by its set: swap only when the instance is in another
+    // set, to the set's default variant; `properties` then picks the variant.
+    if (wantAny("componentSetKey", "componentSetId") && (spec.componentSetKey || spec.componentSetId)) {
+      const mainComponent = await existingNode.getMainComponentAsync();
+      const set = mainComponent && mainComponent.parent && mainComponent.parent.type === "COMPONENT_SET" ? mainComponent.parent : null;
+      const same = set && (spec.componentSetKey ? set.key === spec.componentSetKey : set.id === spec.componentSetId);
+      if (!same) {
+        const target = spec.componentSetKey
+          ? await (figma as any).importComponentSetByKeyAsync(spec.componentSetKey)
+          : await localComponent(spec.componentSetId, "COMPONENT_SET");
+        existingNode.swapComponent(target.defaultVariant);
+        changedProps.push(spec.componentSetKey ? "componentSetKey" : "componentSetId");
+      }
+    }
     if (want("properties") && spec.properties !== undefined) {
       existingNode.setProperties(spec.properties);
       changedProps.push("properties");
@@ -507,6 +563,16 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
     if (want("textOverrides") && spec.textOverrides !== undefined) {
       await applyTextOverrides(existingNode, spec.textOverrides);
       changedProps.push("textOverrides");
+    }
+    // After the swap and properties, which can reset an instance's size; a
+    // missing dimension keeps the live one.
+    if (wantAny("width", "height") && (spec.width !== undefined || spec.height !== undefined)) {
+      const w = spec.width !== undefined ? spec.width : existingNode.width;
+      const h = spec.height !== undefined ? spec.height : existingNode.height;
+      if (existingNode.width !== w || existingNode.height !== h) {
+        existingNode.resize(w, h);
+        changedProps.push("size");
+      }
     }
     if (want("layoutSizingHorizontal") && spec.layoutSizingHorizontal !== undefined && existingNode.layoutSizingHorizontal !== spec.layoutSizingHorizontal) {
       try {
@@ -545,10 +611,22 @@ export async function updateNodeProperties(existingNode: any, spec: any, only?: 
 // FILL sizing on an auto-layout frame, set after its children exist (syncNode
 // runs it after reconciling children). With `only`, an axis not named is
 // skipped. A setter that throws is ignored, as before. Returns the axes set.
-export function applyDeferredFill(node: any, spec: any, only?: Set<string>): string[] {
+// With {checkParent: true} (the spec path, and createNode for a frame without
+// auto-layout of its own) the test is the one Figma applies: FILL needs an
+// auto-layout PARENT, whatever the frame's own layoutMode; an axis already FILL
+// is not written again. Without it, today's test (the frame's own layoutMode)
+// is kept.
+export function applyDeferredFill(node: any, spec: any, only?: Set<string>, options: { checkParent?: boolean } = {}): string[] {
   const applied: string[] = [];
-  if (node.type !== "FRAME" || !node.layoutMode || node.layoutMode === "NONE") return applied;
+  if (node.type !== "FRAME") return applied;
+  if (options.checkParent) {
+    const parent = node.parent;
+    if (!parent || !parent.layoutMode || parent.layoutMode === "NONE" || parent.layoutMode === "GRID") return applied;
+  } else if (!node.layoutMode || node.layoutMode === "NONE") {
+    return applied;
+  }
   for (const key of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
+    if (options.checkParent && node[key] === "FILL") continue;
     if ((!only || only.has(key)) && spec[key] === "FILL") {
       try {
         node[key] = "FILL";
@@ -815,6 +893,16 @@ async function createNodeAt(
       }
       return created;
     }
+  }
+
+  // Properties the per-type create functions do not take: visibility, and FILL
+  // on a frame without auto-layout of its own inside an auto-layout parent.
+  const noOwnLayout = type === "frame" && (!props.layoutMode || props.layoutMode === "NONE");
+  const fillsParent = noOwnLayout && (props.layoutSizingHorizontal === "FILL" || props.layoutSizingVertical === "FILL");
+  if (props.visible !== undefined || fillsParent) {
+    const node: any = await figma.getNodeByIdAsync(result.id);
+    if (node && fillsParent) applyDeferredFill(node, props, undefined, { checkParent: true });
+    if (node && props.visible !== undefined) node.visible = !!props.visible;
   }
 
   ctx.counters.created++;

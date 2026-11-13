@@ -1,4 +1,4 @@
-import { sendProgressUpdate, generateCommandId, customBase64Encode, appendOrInsertChild, loadAllFonts, applyLayoutPositioning } from './utils';
+import { sendProgressUpdate, generateCommandId, customBase64Encode, appendOrInsertChild, loadAllFonts, applyLayoutPositioning, applyLayoutSizing } from './utils';
 import { setCharacters } from './text';
 
 export async function getStyles() {
@@ -114,9 +114,9 @@ export async function applyTextOverrides(node: any, overrides: Record<string, st
 }
 
 export async function createComponentInstance(params: any) {
-  const { componentKey, componentId, x = 0, y = 0, parentId } = params || {};
+  const { componentKey, componentId, componentSetKey, componentSetId, x = 0, y = 0, parentId } = params || {};
 
-  if (!componentKey && !componentId) {
+  if (!componentKey && !componentId && !componentSetKey && !componentSetId) {
     throw new Error("Missing componentKey or componentId parameter. Use componentId for local components (from get_local_components), or componentKey for published library components.");
   }
 
@@ -124,7 +124,17 @@ export async function createComponentInstance(params: any) {
   try {
     let component: any;
 
-    if (componentId) {
+    if (componentSetKey || componentSetId) {
+      // A variant named by its set: start from the default variant; the
+      // VARIANT values in `properties` then choose the variant.
+      const set: any = componentSetKey
+        ? await (figma as any).importComponentSetByKeyAsync(componentSetKey)
+        : await figma.getNodeByIdAsync(componentSetId);
+      if (!set || set.type !== "COMPONENT_SET") {
+        throw new Error(`Node ${componentSetKey || componentSetId} is not a COMPONENT_SET.`);
+      }
+      component = set.defaultVariant;
+    } else if (componentId) {
       // Local component: get node directly by ID
       const node = await figma.getNodeByIdAsync(componentId);
       if (!node) {
@@ -181,6 +191,13 @@ export async function createComponentInstance(params: any) {
     // Apply text overrides by child name if provided
     if (params.textOverrides && typeof params.textOverrides === "object") {
       await applyTextOverrides(instance, params.textOverrides);
+    }
+
+    // A size of its own, after the variant is chosen; a missing dimension keeps
+    // the instance's. Resizing fixes both axes, so the sizing is set again.
+    if (params.width !== undefined || params.height !== undefined) {
+      instance.resize(params.width !== undefined ? params.width : instance.width, params.height !== undefined ? params.height : instance.height);
+      applyLayoutSizing(instance, params);
     }
 
     const mainComponent = await instance.getMainComponentAsync();

@@ -169,6 +169,34 @@
         display: none;
       }
 
+      /* Collapsible first-time setup (MCP config) */
+      details > summary {
+        font-size: 14px;
+        font-weight: 600;
+        color: #ffffff;
+        cursor: pointer;
+        list-style: none;
+        margin: 20px 0 8px;
+      }
+      details > summary::-webkit-details-marker {
+        display: none;
+      }
+      details > summary::before {
+        content: "▸";
+        display: inline-block;
+        width: 14px;
+        transition: transform 0.15s;
+      }
+      details[open] > summary::before {
+        transform: rotate(90deg);
+      }
+      .summary-hint {
+        font-size: 11px;
+        font-weight: 400;
+        color: #888888;
+        margin-left: 6px;
+      }
+
       .logo {
         width: 50px;
         height: 50px;
@@ -322,8 +350,8 @@
           <div style="font-size: 11px; color: #666; text-align: right;">v1.3.0</div>
         </div>
 
-        <div id="mcp-config" class="section hidden">
-          <h2>MCP Configuration</h2>
+        <details id="mcp-config" class="section hidden">
+          <summary>MCP setup <span class="summary-hint">first time only</span></summary>
           <p>
             Copy this configuration to your <code>mcp.json</code> file:
           </p>
@@ -343,7 +371,7 @@
             "
           ></textarea>
           <button id="btn-copy" class="secondary">Copy to Clipboard</button>
-        </div>
+        </details>
 
         <!-- Add Progress Bar Section -->
         <div id="progress-container" class="section hidden">
@@ -491,13 +519,30 @@
         // Attach click-to-copy on channel name
         const channelEl = connectionStatus.querySelector(".channel-name");
         if (channelEl) {
+          const channel = channelEl.textContent;
           channelEl.addEventListener("click", () => {
-            const text = `channel changed to '${channelEl.textContent}'`;
-            navigator.clipboard.writeText(text).then(() => {
-              const original = channelEl.textContent;
-              channelEl.textContent = "Copied!";
-              setTimeout(() => { channelEl.textContent = original; }, 1500);
-            });
+            const text = `l2f channel is up: ${channel}`;
+            // Figma's plugin iframe often blocks navigator.clipboard, so fall
+            // back to a hidden textarea and execCommand("copy").
+            const fallback = () => {
+              const area = document.createElement("textarea");
+              area.value = text;
+              area.style.position = "fixed";
+              area.style.opacity = "0";
+              document.body.appendChild(area);
+              area.select();
+              const ok = document.execCommand("copy");
+              area.remove();
+              return ok;
+            };
+            const show = (label) => {
+              channelEl.textContent = label;
+              setTimeout(() => { channelEl.textContent = channel; }, 1500);
+            };
+            const copied = navigator.clipboard
+              ? navigator.clipboard.writeText(text).then(() => true, fallback)
+              : Promise.resolve(fallback());
+            copied.then((ok) => show(ok ? "Copied!" : "Copy failed"));
           });
         }
 
@@ -556,7 +601,7 @@
                   const channelName = data.channel;
                   updateConnectionStatus(
                     true,
-                    `Connected to server in channel: <strong class="channel-name" style="cursor:pointer; text-decoration:underline; text-decoration-style:dotted;" title="Click to copy channel to clipboard">${channelName}</strong>`
+                    `Connected to server in channel: <strong class="channel-name" style="cursor:pointer; text-decoration:underline; text-decoration-style:dotted;" title="Click to copy 'l2f channel is up: …'">${channelName}</strong>`
                   );
 
                   // Notify the plugin code
@@ -751,6 +796,23 @@
         }
         return result;
       }
+
+      // Fit the plugin window to its content, so collapsing a section
+      // (MCP setup) shrinks the window and opening one grows it.
+      let lastReportedHeight = 0;
+      let resizeQueued = false;
+      function reportUiHeight() {
+        resizeQueued = false;
+        const height = Math.ceil(document.body.getBoundingClientRect().height);
+        if (height === lastReportedHeight) return;
+        lastReportedHeight = height;
+        parent.postMessage({ pluginMessage: { type: "resize-ui", height } }, "*");
+      }
+      new ResizeObserver(() => {
+        if (resizeQueued) return;
+        resizeQueued = true;
+        requestAnimationFrame(reportUiHeight);
+      }).observe(document.body);
 
       // Settings toggles
       const settingFirstOnTop = document.getElementById("setting-first-on-top");

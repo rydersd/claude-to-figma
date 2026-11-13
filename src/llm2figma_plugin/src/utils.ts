@@ -452,6 +452,15 @@ async function importLibraryVariableByName(namePath: any) {
   }
 }
 
+// Tests only: forget both variable indexes so the next lookup rebuilds them
+// from the current `figma` global. They are module state, shared by every test
+// file in one `bun test` run, and Bun does not run files in the listed order.
+export function resetVariableIndexesForTests(): void {
+  _localVariableIndexPromise = null;
+  _variableCache = Object.create(null);
+  _libraryVariableIndexPromise = null;
+}
+
 // Every variable name resolvable right now, local and library, for error
 // messages and for the get_library_variables tool.
 export async function listResolvableVariableNames(): Promise<string[]> {
@@ -528,21 +537,9 @@ export function safeMixed(val: any) {
   return val;
 }
 
-// Map common font weight numbers to Figma font style strings
-export function fontWeightToStyle(weight: number): string {
-  switch (weight) {
-    case 100: return "Thin";
-    case 200: return "Extra Light";
-    case 300: return "Light";
-    case 400: return "Regular";
-    case 500: return "Medium";
-    case 600: return "Semi Bold";
-    case 700: return "Bold";
-    case 800: return "Extra Bold";
-    case 900: return "Black";
-    default: return "Regular";
-  }
-}
+// Map common font weight numbers to Figma font style strings. Lives in the
+// shared spec module so a Spec's fontWeight resolves the same way on the server.
+export { fontWeightToStyle } from "../../shared/spec";
 
 // Detect a gradient value: object with a stops array, or a CSS gradient string
 export function isGradientValue(value: any): boolean {
@@ -782,6 +779,20 @@ export function applyLayoutPositioning(node: any, spec: any) {
     }
   } catch (e) {
     // ABSOLUTE requires an auto-layout parent — leave the node in flow if it fails
+  }
+}
+
+// Set layoutSizingHorizontal/Vertical from a spec on a node already parented
+// (FILL needs an auto-layout parent, HUG an auto-layout frame or text). A setter
+// that throws leaves that axis as it was.
+export function applyLayoutSizing(node: any, spec: any) {
+  for (const key of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
+    if (spec[key] === undefined || !(key in node) || node[key] === spec[key]) continue;
+    try {
+      node[key] = spec[key];
+    } catch (e) {
+      console.error("Error setting " + key + ":", e);
+    }
   }
 }
 

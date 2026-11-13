@@ -23,6 +23,8 @@ const READ_ONLY = new Set([
   "subscribe_events", "unsubscribe_events", "set_focus", "set_selections",
   // L2F_VERIFY: snapshots live in a plugin-side store, never in the document.
   "assert_contained", "snapshot_positions", "diff_positions",
+  // L2F_SPEC_SYNC: read a subtree; the Spec file is written by the server.
+  "export_spec", "read_spec_nodes",
 ]);
 
 // Per-command overrides. Later commands that need a narrower set (for example
