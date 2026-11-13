@@ -91,12 +91,29 @@ export interface PositionMove {
   boxChanged: boolean;
   from: { parentId: string | null; box: Box | null };
   to: { parentId: string | null; box: Box | null };
+  // Descendants that moved only because this node did (same offset, same
+  // size, same parent); counted here instead of listed.
+  carried?: number;
+}
+
+// A move that only follows its parent: not reparented, same size, and shifted
+// by exactly the parent's own offset, so its position inside the parent is
+// unchanged. Moving one screen otherwise lists every layer inside it.
+function followsParent(move: PositionMove, parent: PositionMove | undefined, tolerance: number): boolean {
+  if (!parent || move.reparented || !move.boxChanged || !parent.boxChanged) return false;
+  const a = move.from.box, b = move.to.box, pa = parent.from.box, pb = parent.to.box;
+  if (!a || !b || !pa || !pb) return false;
+  if (Math.abs(a.width - b.width) > tolerance || Math.abs(a.height - b.height) > tolerance) return false;
+  return Math.abs((b.x - a.x) - (pb.x - pa.x)) <= tolerance && Math.abs((b.y - a.y) - (pb.y - pa.y)) <= tolerance;
 }
 
 // `before` is a snapshot; `after` holds the same subtree read now, plus any
 // snapshot id that still exists elsewhere in the document (a reparent out of the
 // subtree). An id absent from `after` no longer exists (deleted or absorbed).
-export function diffPositionEntries(before: PositionEntry[], after: PositionEntry[], tolerance = CONTAINMENT_TOLERANCE) {
+// By default a move that only follows its parent (see followsParent) is left
+// out of `moved` and counted in `movedWithParent` and on the listed ancestor's
+// `carried`; `includeCarried` lists every moved node as before.
+export function diffPositionEntries(before: PositionEntry[], after: PositionEntry[], tolerance = CONTAINMENT_TOLERANCE, opts: { includeCarried?: boolean } = {}) {
   const now = new Map(after.map(e => [e.id, e]));
   const then = new Set(before.map(e => e.id));
   const missing: string[] = [];
@@ -111,5 +128,27 @@ export function diffPositionEntries(before: PositionEntry[], after: PositionEntr
     }
   }
   const added = after.filter(e => !then.has(e.id)).map(e => e.id);
-  return { missing, added, moved };
+  const movedTotal = moved.length;
+  if (opts.includeCarried) return { missing, added, moved, movedTotal, movedWithParent: 0 };
+
+  // Attribute each follower to its nearest listed ancestor (memoised, so a
+  // deep chain of followers resolves in one pass).
+  const byId = new Map(moved.map(m => [m.id, m]));
+  const owner = new Map<string, PositionMove | null>();
+  const ownerOf = (m: PositionMove): PositionMove | null => {
+    if (owner.has(m.id)) return owner.get(m.id)!;
+    const parent = m.from.parentId ? byId.get(m.from.parentId) : undefined;
+    const result = followsParent(m, parent, tolerance) ? (ownerOf(parent!) ?? parent!) : null;
+    owner.set(m.id, result);
+    return result;
+  };
+  const listed: PositionMove[] = [];
+  const carried = new Map<string, number>();
+  for (const m of moved) {
+    const top = ownerOf(m);
+    if (top) carried.set(top.id, (carried.get(top.id) || 0) + 1);
+    else listed.push(m);
+  }
+  const independent = listed.map(m => (carried.has(m.id) ? { ...m, carried: carried.get(m.id)! } : m));
+  return { missing, added, moved: independent, movedTotal, movedWithParent: movedTotal - listed.length };
 }

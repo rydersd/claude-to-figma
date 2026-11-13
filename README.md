@@ -394,7 +394,7 @@ Maps Figma components to the components of a code repository you name on every c
 - `screenshot_region` - Captures a PNG screenshot of a rectangular canvas region at optional scale
 - `assert_contained` (`L2F_VERIFY=1`) - Checks each direct child's `absoluteBoundingBox` against its parent's (0.5px tolerance); a child with no box is `unmeasurable`, rotated children are listed. Containment alone does not prove placement, because sections auto-grow around displaced children, so pass `expected` (a snapshot id or `{childId: {x, y}}` offsets) to check positions
 - `snapshot_positions` (`L2F_VERIFY=1`) - Records id, name, parent and absolute box for a subtree in a bounded plugin-side store and returns a `snapshotId` (30-minute expiry, 64 snapshots, lost on plugin reload)
-- `diff_positions` (`L2F_VERIFY=1`) - Compares a snapshot with the document now: `missing` (deleted or absorbed), `added` (for example auto-generated wrappers) and `moved` (box changed or reparented). An unknown or expired id is an error, never an empty diff
+- `diff_positions` (`L2F_VERIFY=1`) - Compares a snapshot with the document now: `missing` (deleted or absorbed), `added` (for example auto-generated wrappers) and `moved` (box changed or reparented). A node that only moved with its parent (same parent, same size, same offset as the parent) is counted in `counts.movedWithParent` and in its listed ancestor's `carried` rather than listed, so moving a screen lists the screen, not every layer in it; `includeCarried: true` lists them all. An unknown or expired id is an error, never an empty diff
 
 ### Spec Sync (flagged)
 
