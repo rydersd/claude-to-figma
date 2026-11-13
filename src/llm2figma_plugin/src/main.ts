@@ -19,6 +19,7 @@ import { assertContained, snapshotPositions, diffPositions } from './verify';
 import { setDevStatus, getDevResources, addDevResource, addMeasurement, getMeasurements } from './dev-mode';
 import { exportSpec, readSpecNodes } from './spec';
 import { applySpecOps } from './spec-apply';
+import { placeCallouts } from './callouts';
 import { startEventStreaming, stopEventStreaming, setPluginOperationGuard } from './events';
 
 // Plugin state
@@ -576,6 +577,11 @@ async function handleCommand(command: string, params: any) {
       return await addMeasurement(params);
     case "get_measurements":
       return await getMeasurements(params || {});
+    case "place_callouts":
+      if (!params || !params.frameId || !Array.isArray(params.callouts)) {
+        throw new Error("Missing required parameters: frameId and callouts");
+      }
+      return await placeCallouts(params);
     // Event streaming commands
     case "subscribe_events":
       startEventStreaming();

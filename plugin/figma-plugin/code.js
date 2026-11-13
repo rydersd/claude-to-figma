@@ -2330,7 +2330,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
   async function setTextAlign(params) {
     var nodeId = params.nodeId;
     var horizontal = params.horizontal;
-    var vertical = params.vertical;
+    var vertical2 = params.vertical;
     var node = await figma.getNodeByIdAsync(nodeId);
     if (!node) throw new Error("Node not found with ID: " + nodeId);
     if (node.type !== "TEXT") throw new Error("Node is not a TEXT node (type: " + node.type + ")");
@@ -2339,10 +2339,10 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       if (validH.indexOf(horizontal) === -1) throw new Error("Invalid horizontal alignment: " + horizontal + ". Must be one of: " + validH.join(", "));
       node.textAlignHorizontal = horizontal;
     }
-    if (vertical !== void 0) {
+    if (vertical2 !== void 0) {
       var validV = ["TOP", "CENTER", "BOTTOM"];
-      if (validV.indexOf(vertical) === -1) throw new Error("Invalid vertical alignment: " + vertical + ". Must be one of: " + validV.join(", "));
-      node.textAlignVertical = vertical;
+      if (validV.indexOf(vertical2) === -1) throw new Error("Invalid vertical alignment: " + vertical2 + ". Must be one of: " + validV.join(", "));
+      node.textAlignVertical = vertical2;
     }
     return {
       id: node.id,
@@ -10033,6 +10033,751 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     return result.unhandled.filter((key) => !filled.includes(key) && !(node.type === "FRAME" && set[key] === "FILL"));
   }
 
+  // src/shared/callouts.ts
+  var RAILS = ["left", "right", "top", "bottom"];
+  var DEFAULTS = { gap: 12, railOffset: 48, width: 240, denseThreshold: 12 };
+  var ANCHOR = 14;
+  var MIN_ATTACH_SEPARATION = 4;
+  var BADGE_SIZE = 20;
+  var STRAIGHT_TOLERANCE = 1;
+  var EPS = 1e-6;
+  function calloutMode(count, denseThreshold = DEFAULTS.denseThreshold) {
+    return count > denseThreshold ? "numbered" : "leaders";
+  }
+  function readingOrder(boxes) {
+    const byTop = boxes.map((b, i) => i).sort((a, b) => boxes[a].y - boxes[b].y || boxes[a].x - boxes[b].x || a - b);
+    const rows = [];
+    for (const i of byTop) {
+      const row = rows[rows.length - 1];
+      const head = row ? boxes[row[0]] : null;
+      const cy = boxes[i].y + boxes[i].height / 2;
+      if (head && cy >= head.y && cy <= head.y + head.height) row.push(i);
+      else rows.push([i]);
+    }
+    return rows.flatMap((row) => row.sort((a, b) => boxes[a].x - boxes[b].x || a - b));
+  }
+  var vertical = (rail) => rail === "left" || rail === "right";
+  function point(g, rail, u, d) {
+    const f = g.frame;
+    switch (rail) {
+      case "left":
+        return { x: f.x - d, y: u };
+      case "right":
+        return { x: f.x + f.width + d, y: u };
+      case "top":
+        return { x: u, y: f.y - d };
+      case "bottom":
+        return { x: u, y: f.y + f.height + d };
+    }
+  }
+  function boxFrom(a, b) {
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+    return { x, y, width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) };
+  }
+  var along = (rail, s) => vertical(rail) ? s.height : s.width;
+  var across = (rail, s) => vertical(rail) ? s.width : s.height;
+  var alongStart = (rail, b) => vertical(rail) ? b.y : b.x;
+  var alongSize = (rail, b) => vertical(rail) ? b.height : b.width;
+  function railExtent(g, rail) {
+    const f = g.frame;
+    return vertical(rail) ? [f.y, f.y + f.height] : [f.x, f.x + f.width];
+  }
+  function railDepth(g, rail) {
+    return vertical(rail) ? g.width : g.bandHeight;
+  }
+  function railBox(g, rail) {
+    const [a, b] = railExtent(g, rail);
+    return boxFrom(point(g, rail, a, g.railOffset), point(g, rail, b, g.railOffset + railDepth(g, rail)));
+  }
+  function bandBox(g, rail) {
+    const [a, b] = railExtent(g, rail);
+    return boxFrom(point(g, rail, a, 0), point(g, rail, b, g.railOffset + railDepth(g, rail)));
+  }
+  function boxesOverlap(a, b) {
+    return a.x < b.x + b.width - EPS && b.x < a.x + a.width - EPS && a.y < b.y + b.height - EPS && b.y < a.y + a.height - EPS;
+  }
+  function freeIntervals(g, rail, obstacles) {
+    const band = bandBox(g, rail);
+    const [start, end] = railExtent(g, rail);
+    let free = [[start, end]];
+    for (const o of obstacles) {
+      if (!boxesOverlap(o, band)) continue;
+      const lo = alongStart(rail, o) - g.gap, hi = alongStart(rail, o) + alongSize(rail, o) + g.gap;
+      free = free.flatMap(([a, b]) => {
+        if (hi <= a || lo >= b) return [[a, b]];
+        const parts = [];
+        if (lo > a) parts.push([a, lo]);
+        if (hi < b) parts.push([hi, b]);
+        return parts;
+      });
+    }
+    return free;
+  }
+  function snapForward(p, size, free) {
+    for (const [a, b] of free) {
+      const q = Math.max(p, a);
+      if (q + size <= b + EPS) return q;
+    }
+    return null;
+  }
+  function snapBackward(p, size, free) {
+    for (let k = free.length - 1; k >= 0; k--) {
+      const [a, b] = free[k];
+      const q = Math.min(p, b - size);
+      if (q >= a - EPS) return q;
+    }
+    return null;
+  }
+  function tightPack(sizes, free, gap) {
+    const pos = [];
+    for (let i = 0; i < sizes.length; i++) {
+      const p = snapForward(i ? pos[i - 1] + sizes[i - 1] + gap : -Infinity, sizes[i], free);
+      if (p === null) return null;
+      pos.push(p);
+    }
+    return pos;
+  }
+  function settleRail(ideal, sizes, free, gap) {
+    const n = ideal.length;
+    if (!n) return [];
+    let pos = ideal.slice();
+    for (let iteration = 0; iteration < 20; iteration++) {
+      const next = pos.slice();
+      let ok = true;
+      for (let i = 0; i < n; i++) {
+        const lo = i ? next[i - 1] + sizes[i - 1] + gap : -Infinity;
+        const want = Math.max(ideal[i], lo);
+        next[i] = snapForward(want, sizes[i], free) ?? want;
+      }
+      for (let i = n - 1; i >= 0 && ok; i--) {
+        const hi = i < n - 1 ? next[i + 1] - gap - sizes[i] : Infinity;
+        if (next[i] <= hi + EPS && inFree(next[i], sizes[i], free)) continue;
+        const p = snapBackward(Math.min(next[i], hi), sizes[i], free);
+        if (p === null) ok = false;
+        else next[i] = p;
+      }
+      if (!ok || !validRail(next, sizes, free, gap)) return tightPack(sizes, free, gap);
+      const moved = next.some((p, i) => Math.abs(p - pos[i]) > EPS);
+      pos = next;
+      if (!moved) break;
+    }
+    return pos;
+  }
+  function inFree(p, size, free) {
+    return free.some(([a, b]) => p >= a - EPS && p + size <= b + EPS);
+  }
+  function validRail(pos, sizes, free, gap) {
+    for (let i = 0; i < pos.length; i++) {
+      if (!inFree(pos[i], sizes[i], free)) return false;
+      if (i && pos[i] < pos[i - 1] + sizes[i - 1] + gap - EPS) return false;
+    }
+    return true;
+  }
+  function leaderSegments(points) {
+    const segs = [];
+    for (let i = 1; i < points.length; i++) segs.push([points[i - 1], points[i]]);
+    return segs;
+  }
+  function segmentsIntersect([a1, a2], [b1, b2]) {
+    const ax0 = Math.min(a1.x, a2.x), ax1 = Math.max(a1.x, a2.x), ay0 = Math.min(a1.y, a2.y), ay1 = Math.max(a1.y, a2.y);
+    const bx0 = Math.min(b1.x, b2.x), bx1 = Math.max(b1.x, b2.x), by0 = Math.min(b1.y, b2.y), by1 = Math.max(b1.y, b2.y);
+    return ax0 <= bx1 + EPS && bx0 <= ax1 + EPS && ay0 <= by1 + EPS && by0 <= ay1 + EPS;
+  }
+  function segmentHitsBox([a, b], box) {
+    return boxesOverlap({ x: Math.min(a.x, b.x) - EPS, y: Math.min(a.y, b.y) - EPS, width: Math.abs(a.x - b.x) + 2 * EPS, height: Math.abs(a.y - b.y) + 2 * EPS }, box);
+  }
+  function leadersIntersect(a, b) {
+    return leaderSegments(a).some((s) => leaderSegments(b).some((t) => segmentsIntersect(s, t)));
+  }
+  function attachFor(g, rail, t) {
+    const f = g.frame;
+    const u = vertical(rail) ? t.y + t.height / 2 : t.x + t.width / 2;
+    const [uMin, uMax] = vertical(rail) ? [t.y, t.y + t.height] : [t.x, t.x + t.width];
+    let depth;
+    switch (rail) {
+      case "left":
+        depth = t.x - f.x;
+        break;
+      case "right":
+        depth = f.x + f.width - (t.x + t.width);
+        break;
+      case "top":
+        depth = t.y - f.y;
+        break;
+      case "bottom":
+        depth = f.y + f.height - (t.y + t.height);
+        break;
+    }
+    return { u, depth: Math.max(0, depth), uMin, uMax };
+  }
+  var anchorOffset = (rail, s) => vertical(rail) ? Math.min(s.height / 2, ANCHOR) : s.width / 2;
+  function railMembers(g, rail, indices, targets) {
+    const raw = indices.map((index) => ({ index, ...attachFor(g, rail, targets[index].box) }));
+    raw.sort((a, b) => a.u - b.u || a.index - b.index);
+    const members = [];
+    for (const m of raw) {
+      let u = m.u;
+      const prev = members[members.length - 1];
+      if (prev && u < prev.attachU + MIN_ATTACH_SEPARATION) u = Math.min(prev.attachU + MIN_ATTACH_SEPARATION, Math.max(m.uMin, m.uMax - 1));
+      members.push({ index: m.index, attachU: u, depth: m.depth });
+    }
+    return members;
+  }
+  function planRail(g, rail, members, sizes, free) {
+    const lengths = members.map((m) => along(rail, sizes[m.index]));
+    const ideal = members.map((m) => Math.round(m.attachU - anchorOffset(rail, sizes[m.index])));
+    return settleRail(ideal, lengths, free, g.gap);
+  }
+  function fits(g, rail, indices, targets, sizes, free) {
+    const members = railMembers(g, rail, indices, targets);
+    return tightPack(members.map((m) => along(rail, sizes[m.index])), free, g.gap) !== null;
+  }
+  function distanceFromRail(g, rail, t) {
+    const f = g.frame, cx = t.x + t.width / 2, cy = t.y + t.height / 2;
+    switch (rail) {
+      case "left":
+        return cx - f.x;
+      case "right":
+        return f.x + f.width - cx;
+      case "top":
+        return cy - f.y;
+      case "bottom":
+        return f.y + f.height - cy;
+    }
+  }
+  function buildLeaders(g, rail, members, pos, sizes) {
+    const anchors = members.map((m, i) => pos[i] + anchorOffset(rail, sizes[m.index]));
+    const straight = members.map((m, i) => Math.abs(anchors[i] - m.attachU) <= STRAIGHT_TOLERANCE);
+    const down = members.map((m, i) => i).filter((i) => !straight[i] && members[i].attachU > anchors[i]);
+    const up = members.map((m, i) => i).filter((i) => !straight[i] && members[i].attachU < anchors[i]).reverse();
+    const lanes = [...down, ...up];
+    const laneD = /* @__PURE__ */ new Map();
+    lanes.forEach((i, k) => laneD.set(i, Math.round(g.railOffset * (k + 1) / (lanes.length + 1) * 2) / 2));
+    return members.map((m, i) => {
+      const s = sizes[m.index];
+      const label = boxFrom(point(g, rail, pos[i], g.railOffset), point(g, rail, pos[i] + along(rail, s), g.railOffset + across(rail, s)));
+      const end = point(g, rail, m.attachU, -m.depth);
+      const leader = straight[i] ? [point(g, rail, m.attachU, g.railOffset), end] : [point(g, rail, anchors[i], g.railOffset), point(g, rail, anchors[i], laneD.get(i)), point(g, rail, m.attachU, laneD.get(i)), end];
+      return { key: "", index: m.index, rail, label, leader, dot: end };
+    });
+  }
+  function validate(targets, sizes) {
+    if (targets.length !== sizes.length) throw new Error(`targets (${targets.length}) and labelSizes (${sizes.length}) differ in length`);
+    const seen = /* @__PURE__ */ new Set();
+    for (const t of targets) {
+      if (seen.has(t.key)) throw new Error(`duplicate callout key: ${t.key}`);
+      seen.add(t.key);
+    }
+  }
+  function resolveOptions(opts) {
+    const rails = RAILS.filter((r) => (opts.rails ?? RAILS).includes(r));
+    return {
+      rails,
+      gap: opts.gap ?? DEFAULTS.gap,
+      railOffset: opts.railOffset ?? DEFAULTS.railOffset,
+      width: opts.width ?? DEFAULTS.width,
+      denseThreshold: opts.denseThreshold ?? DEFAULTS.denseThreshold
+    };
+  }
+  function layoutCallouts(frameBox, targets, labelSizes, obstacles, opts = {}) {
+    validate(targets, labelSizes);
+    const o = resolveOptions(opts);
+    const g = {
+      frame: frameBox,
+      gap: o.gap,
+      railOffset: o.railOffset,
+      width: Math.max(o.width, ...labelSizes.map((s) => s.width)),
+      bandHeight: Math.max(0, ...labelSizes.map((s) => s.height))
+    };
+    const free = Object.fromEntries(o.rails.map((r) => [r, freeIntervals(g, r, obstacles)]));
+    const result = calloutMode(targets.length, o.denseThreshold) === "numbered" ? layoutNumbered(g, o.rails, targets, labelSizes, free) : layoutLeaders(g, o.rails, targets, labelSizes, free, obstacles);
+    for (const p of result.placed) p.key = targets[p.index].key;
+    result.placed.sort((a, b) => a.index - b.index);
+    result.overflow.sort((a, b) => a.index - b.index);
+    const rails = {};
+    for (const r of o.rails) if (result.placed.some((p) => p.rail === r)) rails[r] = railBox(g, r);
+    return { ...result, rails };
+  }
+  function layoutLeaders(g, allowed, targets, sizes, free, obstacles) {
+    const assigned = { left: [], right: [], top: [], bottom: [] };
+    const overflow = [];
+    const has = (r) => allowed.includes(r);
+    const fitsIn = (r, list) => fits(g, r, list, targets, sizes, free[r]);
+    const cx = g.frame.x + g.frame.width / 2, cy = g.frame.y + g.frame.height / 2;
+    const centre = (i) => ({ x: targets[i].box.x + targets[i].box.width / 2, y: targets[i].box.y + targets[i].box.height / 2 });
+    const trim = (r) => {
+      const dropped = [];
+      while (assigned[r].length && !fitsIn(r, assigned[r])) {
+        const victim = assigned[r].reduce((best, i) => {
+          const d = distanceFromRail(g, r, targets[i].box), bd = distanceFromRail(g, r, targets[best].box);
+          return d > bd + EPS || Math.abs(d - bd) <= EPS && i > best ? i : best;
+        });
+        assigned[r] = assigned[r].filter((i) => i !== victim);
+        dropped.push(victim);
+      }
+      return dropped;
+    };
+    const offer = (r, list) => {
+      if (!has(r)) return list;
+      const rest = [];
+      const byNearest = list.slice().sort((a, b) => distanceFromRail(g, r, targets[a].box) - distanceFromRail(g, r, targets[b].box) || a - b);
+      for (const i of byNearest) {
+        if (fitsIn(r, [...assigned[r], i])) assigned[r].push(i);
+        else rest.push(i);
+      }
+      return rest.sort((a, b) => a - b);
+    };
+    const pool = [];
+    targets.forEach((_, i) => {
+      const near = centre(i).x <= cx ? "left" : "right";
+      const far = near === "left" ? "right" : "left";
+      if (has(near)) assigned[near].push(i);
+      else if (has(far)) assigned[far].push(i);
+      else pool.push(i);
+    });
+    const fromLeft = trim("left"), fromRight = trim("right");
+    pool.push(...offer("right", fromLeft), ...offer("left", fromRight));
+    const toTop = pool.filter((i) => centre(i).y <= cy), toBottom = pool.filter((i) => centre(i).y > cy);
+    const leftover = [...offer("top", toTop), ...offer("bottom", toBottom)];
+    const last = [...offer("bottom", leftover.filter((i) => centre(i).y <= cy)), ...offer("top", leftover.filter((i) => centre(i).y > cy))];
+    for (const i of last) overflow.push({ key: targets[i].key, index: i, reason: "no room" });
+    const priority = ["bottom", "top", "right", "left"];
+    for (let guard = 0; guard <= targets.length; guard++) {
+      const placed = [];
+      for (const r of RAILS) {
+        if (!assigned[r].length) continue;
+        const members = railMembers(g, r, assigned[r], targets);
+        const pos = planRail(g, r, members, sizes, free[r]);
+        if (!pos) throw new Error(`internal: rail ${r} did not fit after the capacity check`);
+        placed.push(...buildLeaders(g, r, members, pos, sizes));
+      }
+      const blocked = placed.find((p) => leaderSegments(p.leader).some((s) => obstacles.some((b) => segmentHitsBox(s, b))));
+      let victim = blocked;
+      let reason = "blocked";
+      if (!victim) {
+        outer: for (let a = 0; a < placed.length; a++) {
+          for (let b = a + 1; b < placed.length; b++) {
+            if (!leadersIntersect(placed[a].leader, placed[b].leader)) continue;
+            const [pa, pb] = [placed[a], placed[b]];
+            const ra = priority.indexOf(pa.rail), rb = priority.indexOf(pb.rail);
+            victim = ra < rb ? pa : rb < ra ? pb : pa.index > pb.index ? pa : pb;
+            reason = "crossing";
+            break outer;
+          }
+        }
+      }
+      if (!victim) return { mode: "leaders", placed, overflow };
+      assigned[victim.rail] = assigned[victim.rail].filter((i) => i !== victim.index);
+      overflow.push({ key: targets[victim.index].key, index: victim.index, reason });
+    }
+    throw new Error("internal: leader crossing guard did not converge");
+  }
+  function layoutNumbered(g, allowed, targets, sizes, free) {
+    const order = readingOrder(targets.map((t) => t.box));
+    const placed = [];
+    const overflow = [];
+    let railIndex = 0;
+    let cursor = -Infinity;
+    for (let n = 0; n < order.length; n++) {
+      const i = order[n];
+      let spot = null;
+      while (railIndex < allowed.length) {
+        const r2 = allowed[railIndex];
+        spot = snapForward(cursor, along(r2, sizes[i]), free[r2]);
+        if (spot !== null) break;
+        railIndex++;
+        cursor = -Infinity;
+      }
+      if (spot === null) {
+        overflow.push({ key: targets[i].key, index: i, reason: "no room" });
+        continue;
+      }
+      const r = allowed[railIndex];
+      const s = sizes[i];
+      const t = targets[i].box;
+      cursor = spot + along(r, s) + g.gap;
+      placed.push({
+        key: "",
+        index: i,
+        rail: r,
+        number: n + 1,
+        label: boxFrom(point(g, r, spot, g.railOffset), point(g, r, spot + along(r, s), g.railOffset + across(r, s))),
+        badge: { x: t.x - BADGE_SIZE / 2, y: t.y - BADGE_SIZE / 2, width: BADGE_SIZE, height: BADGE_SIZE }
+      });
+    }
+    return { mode: "numbered", placed, overflow };
+  }
+
+  // src/llm2figma_plugin/src/callouts.ts
+  var GROUP_DATA = "l2f-callouts";
+  var PART_DATA = "l2f-callout";
+  var ACCENT = { r: 0.478, g: 0.353, b: 0.973 };
+  var LABEL_FILL = { r: 1, g: 1, b: 1 };
+  var LABEL_STROKE = { r: 0.816, g: 0.835, b: 0.867 };
+  var LABEL_TEXT = { r: 0.114, g: 0.161, b: 0.224 };
+  var REGULAR = { family: "Inter", style: "Regular" };
+  var BOLD = { family: "Inter", style: "Bold" };
+  var DOT = 6;
+  var FAR = 1e5;
+  var NO_CONNECTOR_TEMPLATE = 'leaderStyle "connector" needs a connector to clone, and Figma Design cannot create one (figma.createConnector works only in FigJam). Paste any FigJam connector into this file once, select it and call set_default_connector, then run place_callouts again.';
+  var OWN_ANNOTATION = /^\**Callout (.+?):\**\s/;
+  function annotationMarkdown(key, text) {
+    return `**Callout ${key}:** ${text}`;
+  }
+  function annotationKey(a) {
+    const s = a && (a.labelMarkdown || a.label) || "";
+    const m = OWN_ANNOTATION.exec(s);
+    return m ? m[1] : null;
+  }
+  function copyAnnotation(a) {
+    const out = {};
+    if (a.labelMarkdown) out.labelMarkdown = a.labelMarkdown;
+    else if (a.label) out.label = a.label;
+    if (a.properties && a.properties.length) out.properties = a.properties.map((p) => ({ type: p.type }));
+    if (a.categoryId) out.categoryId = a.categoryId;
+    return out;
+  }
+  function upsertAnnotation(node, key, text) {
+    const labelMarkdown = annotationMarkdown(key, text);
+    const current = Array.from(node.annotations || []);
+    const at = current.findIndex((a) => annotationKey(a) === key);
+    if (at >= 0 && current[at].labelMarkdown === labelMarkdown) return "unchanged";
+    const next = current.map(copyAnnotation);
+    if (at >= 0) next[at] = { ...next[at], label: void 0, labelMarkdown };
+    else next.push({ labelMarkdown });
+    for (const a of next) if (a.label === void 0) delete a.label;
+    node.annotations = next;
+    return at >= 0 ? "updated" : "added";
+  }
+  function originOf(container) {
+    let c = container;
+    while (c && (c.type === "GROUP" || c.type === "BOOLEAN_OPERATION")) c = c.parent;
+    if (!c || c.type === "PAGE" || c.type === "DOCUMENT") return { x: 0, y: 0 };
+    const t = c.absoluteTransform;
+    return { x: t[0][2], y: t[1][2] };
+  }
+  function placeAt(node, container, x, y) {
+    const o = originOf(container);
+    node.x = x - o.x;
+    node.y = y - o.y;
+  }
+  function boxOf(node) {
+    return "absoluteBoundingBox" in node ? toBox(node.absoluteBoundingBox) : null;
+  }
+  function isInside(node, ancestor) {
+    for (let n = node; n; n = n.parent) if (n === ancestor) return true;
+    return false;
+  }
+  function groupFrameId(node) {
+    if (!node || typeof node.getPluginData !== "function") return null;
+    const raw = node.getPluginData(GROUP_DATA);
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw).frameId ?? null;
+    } catch {
+      return null;
+    }
+  }
+  function tag(node, key, part, targetId) {
+    node.setPluginData(PART_DATA, JSON.stringify({ key, part, targetId }));
+  }
+  async function findConnectorTemplate() {
+    const id = await figma.clientStorage.getAsync("defaultConnectorId");
+    if (id) {
+      const node = await figma.getNodeByIdAsync(id);
+      if (node && node.type === "CONNECTOR") return node;
+    }
+    const page = figma.currentPage;
+    if (typeof page.findAllWithCriteria === "function") return page.findAllWithCriteria({ types: ["CONNECTOR"] })[0] ?? null;
+    return page.findOne((n) => n.type === "CONNECTOR");
+  }
+  async function resolveLeaderStyle(style = "auto") {
+    if (style === "vector") return { style: "vector", template: null };
+    const template = await findConnectorTemplate();
+    if (template) return { style: "connector", template };
+    if (style === "connector") throw new Error(NO_CONNECTOR_TEMPLATE);
+    return { style: "vector", template: null };
+  }
+  var FACING_MAGNET = { left: "RIGHT", right: "LEFT", top: "BOTTOM", bottom: "TOP" };
+  function wireConnector(c, key, labelId, rail, targetId) {
+    c.name = `leader/${key}`;
+    c.connectorStart = { endpointNodeId: labelId, magnet: FACING_MAGNET[rail] };
+    c.connectorEnd = { endpointNodeId: targetId, magnet: "AUTO" };
+    c.connectorLineType = "ELBOWED";
+    c.connectorStartStrokeCap = "NONE";
+    c.connectorEndStrokeCap = "CIRCLE_FILLED";
+    c.strokes = [{ type: "SOLID", color: ACCENT }];
+  }
+  function createConnectorLeader(template, key, labelId, rail, targetId, parent) {
+    const c = template.clone();
+    parent.appendChild(c);
+    wireConnector(c, key, labelId, rail, targetId);
+    return c;
+  }
+  async function createLabel(key, text, width) {
+    await loadFontCached(REGULAR);
+    const label = figma.createFrame();
+    label.name = `callout/${key}`;
+    label.layoutMode = "VERTICAL";
+    label.resize(width, 32);
+    label.counterAxisSizingMode = "FIXED";
+    label.primaryAxisSizingMode = "AUTO";
+    label.paddingLeft = label.paddingRight = 10;
+    label.paddingTop = label.paddingBottom = 6;
+    label.fills = [{ type: "SOLID", color: LABEL_FILL }];
+    label.strokes = [{ type: "SOLID", color: LABEL_STROKE }];
+    label.strokeWeight = 1;
+    label.strokeAlign = "INSIDE";
+    label.cornerRadius = 6;
+    label.clipsContent = false;
+    const t = figma.createText();
+    t.name = `callout/${key}/text`;
+    t.fontName = REGULAR;
+    t.fontSize = 12;
+    t.lineHeight = { value: 16, unit: "PIXELS" };
+    t.fills = [{ type: "SOLID", color: LABEL_TEXT }];
+    t.characters = text;
+    label.appendChild(t);
+    t.layoutSizingHorizontal = "FILL";
+    t.textAutoResize = "HEIGHT";
+    return label;
+  }
+  function createRail(rail, box, parent) {
+    const f = figma.createFrame();
+    f.name = `rail/${rail}`;
+    f.fills = [];
+    f.clipsContent = false;
+    f.resize(Math.max(1, box.width), Math.max(1, box.height));
+    parent.appendChild(f);
+    placeAt(f, parent, box.x, box.y);
+    return f;
+  }
+  function createLeader(key, points, parent) {
+    const v = figma.createVector();
+    v.name = `leader/${key}`;
+    const minX = Math.min(...points.map((p) => p.x)), minY = Math.min(...points.map((p) => p.y));
+    const data = points.map((p, i) => `${i ? "L" : "M"} ${p.x - minX} ${p.y - minY}`).join(" ");
+    v.vectorPaths = [{ windingRule: "NONE", data }];
+    v.fills = [];
+    v.strokes = [{ type: "SOLID", color: ACCENT }];
+    v.strokeWeight = 1;
+    v.strokeCap = "ROUND";
+    v.strokeJoin = "ROUND";
+    parent.appendChild(v);
+    placeAt(v, parent, minX, minY);
+    return v;
+  }
+  function createDot(key, at, parent) {
+    const d = figma.createEllipse();
+    d.name = `dot/${key}`;
+    d.resize(DOT, DOT);
+    d.fills = [{ type: "SOLID", color: ACCENT }];
+    parent.appendChild(d);
+    placeAt(d, parent, at.x - DOT / 2, at.y - DOT / 2);
+    return d;
+  }
+  async function createBadge(n, box, parent) {
+    await loadFontCached(BOLD);
+    const b = figma.createFrame();
+    b.name = `badge/${n}`;
+    b.layoutMode = "HORIZONTAL";
+    b.primaryAxisAlignItems = "CENTER";
+    b.counterAxisAlignItems = "CENTER";
+    b.resize(box.width, box.height);
+    b.primaryAxisSizingMode = "FIXED";
+    b.counterAxisSizingMode = "FIXED";
+    b.cornerRadius = box.width / 2;
+    b.fills = [{ type: "SOLID", color: ACCENT }];
+    const t = figma.createText();
+    t.name = `badge/${n}/number`;
+    t.fontName = BOLD;
+    t.fontSize = 11;
+    t.fills = [{ type: "SOLID", color: LABEL_FILL }];
+    t.characters = String(n);
+    b.appendChild(t);
+    parent.appendChild(b);
+    placeAt(b, parent, box.x, box.y);
+    return b;
+  }
+  function validateParams(params) {
+    if (!params || typeof params.frameId !== "string" || !params.frameId) throw new Error("Missing required parameter: frameId");
+    if (!Array.isArray(params.callouts) || !params.callouts.length) throw new Error("callouts must be a non-empty array");
+    const keys = /* @__PURE__ */ new Set();
+    for (const c of params.callouts) {
+      if (!c || typeof c.targetId !== "string" || !c.targetId || typeof c.text !== "string" || !c.text) {
+        throw new Error("each callout needs a targetId and a text");
+      }
+      const key = c.key ?? c.targetId;
+      if (keys.has(key)) throw new Error(`duplicate callout key: ${key} (give callouts on the same target distinct keys)`);
+      keys.add(key);
+    }
+  }
+  async function placeCallouts(params) {
+    validateParams(params);
+    const width = params.width ?? DEFAULTS.width;
+    const denseThreshold = params.denseThreshold ?? DEFAULTS.denseThreshold;
+    const native = params.native !== false;
+    const frame = await figma.getNodeByIdAsync(params.frameId);
+    if (!frame) throw new Error(`Node not found: ${params.frameId}`);
+    const frameBox = boxOf(frame);
+    if (!frameBox) throw new Error(`${frame.type} ${frame.id} has no bounding box`);
+    const parent = frame.parent;
+    if (!parent || parent.type !== "SECTION" && parent.type !== "PAGE") {
+      throw new Error(`place_callouts needs a frame placed directly on a page or in a section (${frame.id} is inside ${parent ? parent.type : "nothing"})`);
+    }
+    const existing = parent.children.find((c) => groupFrameId(c) === frame.id);
+    if (existing) {
+      throw new Error(`callouts already placed for ${frame.id} (${existing.id}); updating them in place is not supported yet`);
+    }
+    const resolved = [];
+    const unresolved = [];
+    for (let i = 0; i < params.callouts.length; i++) {
+      const c = params.callouts[i];
+      const key = c.key ?? c.targetId;
+      const node = await figma.getNodeByIdAsync(c.targetId);
+      const box = node ? boxOf(node) : null;
+      if (!node) unresolved.push({ key, reason: "target not found" });
+      else if (!isInside(node, frame)) unresolved.push({ key, reason: "target not in frame" });
+      else if (!box) unresolved.push({ key, reason: "target has no bounding box" });
+      else resolved.push({ index: i, key, targetId: c.targetId, text: c.text, node, box });
+    }
+    const obstacles = [];
+    for (const sibling of parent.children) {
+      if (sibling === frame || sibling.visible === false || groupFrameId(sibling) === frame.id) continue;
+      const b = boxOf(sibling);
+      if (b) obstacles.push(b);
+    }
+    const sectionBox = parent.type === "SECTION" ? boxOf(parent) : null;
+    if (sectionBox) {
+      const s = sectionBox;
+      obstacles.push(
+        { x: s.x - FAR, y: s.y - FAR, width: FAR, height: s.height + 2 * FAR },
+        { x: s.x + s.width, y: s.y - FAR, width: FAR, height: s.height + 2 * FAR },
+        { x: s.x - FAR, y: s.y - FAR, width: s.width + 2 * FAR, height: FAR },
+        { x: s.x - FAR, y: s.y + s.height, width: s.width + 2 * FAR, height: FAR }
+      );
+    }
+    const mode = calloutMode(resolved.length, denseThreshold);
+    const leaders = mode === "leaders" ? await resolveLeaderStyle(params.leaderStyle) : { style: "vector", template: null };
+    const numberOf = /* @__PURE__ */ new Map();
+    if (mode === "numbered") readingOrder(resolved.map((r) => r.box)).forEach((ri, n) => numberOf.set(ri, n + 1));
+    const labels = [];
+    for (let ri = 0; ri < resolved.length; ri++) {
+      const r = resolved[ri];
+      const text = mode === "numbered" ? `${numberOf.get(ri)}. ${r.text}` : r.text;
+      const label = await createLabel(r.key, text, width);
+      parent.appendChild(label);
+      label.visible = false;
+      labels.push(label);
+    }
+    const layout = layoutCallouts(
+      frameBox,
+      resolved.map((r) => ({ key: r.key, box: r.box })),
+      labels.map((l) => ({ width: l.width, height: l.height })),
+      obstacles,
+      { rails: params.rails, gap: params.gap, railOffset: params.railOffset, width, denseThreshold }
+    );
+    const parts = [];
+    const railNodes = {};
+    for (const rail of Object.keys(layout.rails)) {
+      railNodes[rail] = createRail(rail, layout.rails[rail], parent);
+      parts.push(railNodes[rail]);
+    }
+    const placed = [];
+    const connectors = [];
+    const placedLabels = /* @__PURE__ */ new Map();
+    for (const p of layout.placed) {
+      const r = resolved[p.index];
+      const label = labels[p.index];
+      railNodes[p.rail].appendChild(label);
+      placeAt(label, railNodes[p.rail], p.label.x, p.label.y);
+      label.visible = true;
+      tag(label, r.key, "label", r.targetId);
+      placedLabels.set(r.key, label);
+      const entry = { key: r.key, rail: p.rail, x: p.label.x - frameBox.x, y: p.label.y - frameBox.y, labelId: label.id };
+      if (p.leader && leaders.style === "connector") {
+        const connector = createConnectorLeader(leaders.template, r.key, label.id, p.rail, r.targetId, parent);
+        tag(connector, r.key, "leader", r.targetId);
+        connectors.push(connector);
+        entry.leaderId = connector.id;
+      } else if (p.leader) {
+        const leader = createLeader(r.key, p.leader, parent);
+        tag(leader, r.key, "leader", r.targetId);
+        const dot = createDot(r.key, p.dot, parent);
+        tag(dot, r.key, "dot", r.targetId);
+        parts.push(leader, dot);
+        entry.leaderId = leader.id;
+      }
+      if (p.badge) {
+        const badge = await createBadge(p.number, p.badge, parent);
+        tag(badge, r.key, "badge", r.targetId);
+        parts.push(badge);
+        entry.number = p.number;
+      }
+      placed.push(entry);
+    }
+    for (const o of layout.overflow) labels[o.index].remove();
+    let group = null;
+    let connectorsOutsideGroup = false;
+    if (parts.length || connectors.length) {
+      try {
+        group = figma.group([...parts, ...connectors], parent);
+      } catch (error) {
+        if (!connectors.length || !parts.length) throw error;
+        group = figma.group(parts, parent);
+        connectorsOutsideGroup = true;
+      }
+      group.name = `callouts/${frame.name}`;
+      group.setPluginData(GROUP_DATA, JSON.stringify({ frameId: frame.id }));
+    }
+    const annotations = { added: 0, updated: 0, unchanged: 0, skipped: [] };
+    if (native) {
+      for (const r of resolved) {
+        if (!("annotations" in r.node)) {
+          annotations.skipped.push({ key: r.key, reason: `${r.node.type} does not support annotations` });
+          continue;
+        }
+        try {
+          annotations[upsertAnnotation(r.node, r.key, r.text)]++;
+        } catch (error) {
+          annotations.skipped.push({ key: r.key, reason: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    }
+    return {
+      groupId: group ? group.id : null,
+      mode: layout.mode,
+      leaderStyle: layout.mode === "numbered" ? null : leaders.style,
+      ...connectorsOutsideGroup ? { connectorsOutsideGroup } : {},
+      placed,
+      overflow: [...unresolved, ...layout.overflow.map((o) => ({ key: o.key, reason: o.reason }))],
+      annotations: native ? annotations : null,
+      verification: verify(layout, railNodes, placedLabels, frameBox, obstacles, group, sectionBox)
+    };
+  }
+  function verify(layout, railNodes, labels, frameBox, obstacles, group, sectionBox) {
+    const problems = [];
+    const overlaps = (a, b) => a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5;
+    for (const p of layout.placed) {
+      const label = labels.get(p.key);
+      const actual = label ? boxOf(label) : null;
+      const rail = railNodes[p.rail] ? boxOf(railNodes[p.rail]) : null;
+      if (!actual || !rail) {
+        problems.push(`${p.key}: label not measurable`);
+        continue;
+      }
+      if (Math.abs(actual.x - p.label.x) > 0.5 || Math.abs(actual.y - p.label.y) > 0.5) {
+        problems.push(`${p.key}: label at ${actual.x},${actual.y}, planned ${p.label.x},${p.label.y}`);
+      }
+      if (boxOverflow(rail, actual)) problems.push(`${p.key}: label outside rail/${p.rail}`);
+      if (overlaps(actual, frameBox)) problems.push(`${p.key}: label overlaps the frame`);
+      if (obstacles.some((o) => overlaps(actual, o))) problems.push(`${p.key}: label overlaps a sibling or leaves the section`);
+    }
+    const groupBox = group ? boxOf(group) : null;
+    if (groupBox && sectionBox && boxOverflow(sectionBox, groupBox)) problems.push("callout group is not contained in its section");
+    return { ok: problems.length === 0, problems };
+  }
+
   // src/llm2figma_plugin/src/events.ts
   function debounce(fn, ms) {
     let timer = null;
@@ -10690,6 +11435,11 @@ ${detail}`);
         return await addMeasurement(params);
       case "get_measurements":
         return await getMeasurements(params || {});
+      case "place_callouts":
+        if (!params || !params.frameId || !Array.isArray(params.callouts)) {
+          throw new Error("Missing required parameters: frameId and callouts");
+        }
+        return await placeCallouts(params);
       // Event streaming commands
       case "subscribe_events":
         startEventStreaming();

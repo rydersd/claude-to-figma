@@ -4,6 +4,7 @@
 export const FEATURES = [
   "FILE_KEY", "COMMENTS", "COMMENTS_WRITE", "FLOWS", "VARIABLES_WRITE",
   "COMPONENT_PROPERTIES", "GRID_LAYOUT", "VERIFY", "SPEC_SYNC", "CODE_MAP", "DEV_MODE", "SLIDES", "TEXT_PATH",
+  "CALLOUTS",
 ] as const;
 
 export type Feature = (typeof FEATURES)[number];

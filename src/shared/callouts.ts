@@ -52,7 +52,7 @@ export interface CalloutLayout {
 export const DEFAULTS = { gap: 12, railOffset: 48, width: 240, denseThreshold: 12 } as const;
 // The leader meets a label this far below its top edge (or at its middle, if shorter):
 // level with the first line of text rather than the middle of a long paragraph.
-export const ANCHOR = 12;
+export const ANCHOR = 14;
 // Neighbouring leaders in one rail end at least this far apart on their targets.
 export const MIN_ATTACH_SEPARATION = 4;
 export const BADGE_SIZE = 20;
