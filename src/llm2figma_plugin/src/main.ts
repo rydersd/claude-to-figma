@@ -16,6 +16,7 @@ import { screenshotRegion, batchMutate, scanNodeStyles, introspectNode, setPrope
 import { formatError } from './utils';
 import { assertEditorAllowed } from './editor-gate';
 import { assertContained, snapshotPositions, diffPositions } from './verify';
+import { setDevStatus, getDevResources, addDevResource, addMeasurement, getMeasurements } from './dev-mode';
 import { exportSpec, readSpecNodes } from './spec';
 import { applySpecOps } from './spec-apply';
 import { startEventStreaming, stopEventStreaming, setPluginOperationGuard } from './events';
@@ -550,6 +551,28 @@ async function handleCommand(command: string, params: any) {
         throw new Error("Missing required parameters: pageId and flows");
       }
       return await setFlows(params);
+    case "set_dev_status":
+      if (!params || !Array.isArray(params.nodeIds) || !("status" in params)) {
+        throw new Error("Missing required parameters: nodeIds and status");
+      }
+      return await setDevStatus(params);
+    case "get_dev_resources":
+      if (!params || !params.nodeId) {
+        throw new Error("Missing required parameter: nodeId");
+      }
+      return await getDevResources(params);
+    case "add_dev_resource":
+      if (!params || !params.nodeId || !params.url) {
+        throw new Error("Missing required parameters: nodeId and url");
+      }
+      return await addDevResource(params);
+    case "add_measurement":
+      if (!params || !params.startNodeId || !params.startSide || !params.endNodeId || !params.endSide) {
+        throw new Error("Missing required parameters: startNodeId, startSide, endNodeId and endSide");
+      }
+      return await addMeasurement(params);
+    case "get_measurements":
+      return await getMeasurements(params || {});
     // Event streaming commands
     case "subscribe_events":
       startEventStreaming();

@@ -1,6 +1,9 @@
 // Editor-type gate: the one place commands declare which Figma editors they run in.
-// Dev Mode is read-only, so every command that changes the document is refused there.
+// Dev Mode is read-only, so every command that changes the document is refused there,
+// except the Dev Mode writes declared in COMMAND_EDITORS.
 
+// "figjam" stays in these lists although the manifest no longer declares FigJam (not
+// supported for now): the gate does not depend on which editors the manifest lists.
 type EditorType = "figma" | "figjam" | "slides" | "buzz" | "dev";
 
 const ALL_EDITORS: EditorType[] = ["figma", "figjam", "slides", "buzz", "dev"];
@@ -26,10 +29,24 @@ const READ_ONLY = new Set([
 
 // Per-command overrides. Later commands that need a narrower set (for example
 // slide-only commands) declare it here.
-export const COMMAND_EDITORS: Record<string, EditorType[]> = {};
+export const COMMAND_EDITORS: Record<string, EditorType[]> = {
+  // L2F_DEV_MODE. What is known: the plugin typings mark addMeasurement as available
+  // only in Dev Mode, and getMeasurements carries no such note. Figma's Dev Mode guide
+  // calls Dev Mode read-only, with pluginData, relaunchData and exportAsync as the
+  // exceptions, and does not mention devStatus or dev resources. Whether setting dev
+  // status and adding dev resources succeed in Dev Mode is therefore a live check, not
+  // documented; they are allowed here so that check can be run.
+  set_dev_status: ["figma", "dev"],
+  get_dev_resources: ["figma", "dev"],
+  add_dev_resource: ["figma", "dev"],
+  add_measurement: ["dev"],
+  get_measurements: ["figma", "dev"],
+};
 
 export function allowedEditors(command: string): EditorType[] {
-  return COMMAND_EDITORS[command] || (READ_ONLY.has(command) ? ALL_EDITORS : EDIT_EDITORS);
+  // Own keys only: "constructor" or "toString" must not resolve to Object.prototype members.
+  if (Object.prototype.hasOwnProperty.call(COMMAND_EDITORS, command)) return COMMAND_EDITORS[command];
+  return READ_ONLY.has(command) ? ALL_EDITORS : EDIT_EDITORS;
 }
 
 export function assertEditorAllowed(command: string, editorType: string, params?: any): void {

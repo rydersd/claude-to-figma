@@ -60,10 +60,15 @@ describe("launch paths", () => {
     expect(Object.keys(env).sort()).toEqual(keys.sort());
     for (const key of keys) expect(env[key]).toBe(`\${${key}:-}`);
   });
-  test("plugin manifest declares the private API and the slides and buzz editors", () => {
-    const manifest = JSON.parse(readFileSync("src/llm2figma_plugin/manifest.json", "utf8"));
-    expect(manifest.enablePrivatePluginApi).toBe(true);
-    expect(manifest.editorType).toEqual(["figma", "figjam", "slides", "buzz"]);
+  test("plugin manifest declares the private API, the slides and buzz editors, and Dev Mode, but not FigJam", () => {
+    for (const file of ["src/llm2figma_plugin/manifest.json", "plugin/figma-plugin/manifest.json"]) {
+      const manifest = JSON.parse(readFileSync(file, "utf8"));
+      expect(manifest.enablePrivatePluginApi).toBe(true);
+      expect(manifest.editorType).toEqual(["figma", "slides", "buzz", "dev"]);
+      // Figma's manifest docs: ["figjam", "dev"] is unsupported. FigJam is dropped for now.
+      expect(manifest.editorType).not.toContain("figjam");
+      expect(manifest.capabilities).toEqual(["inspect"]);
+    }
   });
 });
 

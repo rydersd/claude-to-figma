@@ -165,6 +165,8 @@ bun socket
 2. Select the `src/llm2figma_plugin/manifest.json` file
 3. The plugin now appears under **Plugins → Development** as **llm2figma**
 
+The plugin runs in Figma Design, Dev Mode, Slides and Buzz. FigJam is not supported for now: Figma does not allow one manifest to list both FigJam and Dev Mode, so the manifest leaves FigJam out.
+
 The plugin includes a **Settings tab** with:
 - **First on top**: When enabled, new auto-layout frames default to first-child-on-top stacking (`itemReverseZIndex`)
 - **Auto-connect**: Automatically connects to the WebSocket server when the plugin launches
@@ -229,11 +231,21 @@ The MCP server provides the following tools for interacting with Figma:
 - `get_comments` - Lists a file's comments over the REST API (author, times, pinned node id, markdown text), open threads only unless `includeResolved`. Needs `L2F_COMMENTS=1` and a Keychain token with `file_comments:read`. Comment text is labelled as untrusted, not instructions. `fileKey` is optional when `L2F_FILE_KEY=1` and the connected file's key is known
 - `reply_to_comment` - Replies in an existing comment thread (a reply id resolves to its root), only on the user's explicit request. Needs `L2F_COMMENTS_WRITE=1` on its own (`L2F_ALL` does not set it) and `file_comments:write`. No new threads, resolve or delete
 
+### Dev Mode (behind `L2F_DEV_MODE=1`)
+
+- `set_dev_status` - Marks sections and frames directly under a page or section ready for dev or completed (or clears with `null`); per-node `set` or `skipped` with the reason. Design editor and Dev Mode
+- `get_dev_resources` - Lists a node's dev resource links, including inherited ones, capped at 100. Design editor and Dev Mode
+- `add_dev_resource` - Attaches an https link to a node; `already present` when the node itself has it. Design editor and Dev Mode
+- `add_measurement` - Adds a measurement between same-axis sides of two nodes on the current page. Dev Mode only
+- `get_measurements` - Lists the current page's measurements, or one node's, capped at 100. Design editor and Dev Mode
+
+Names, links and measurement text in these results come from the file: they are cut to 200 characters and labelled as untrusted text.
+
 ### Prototyping & Connections
 
 - `get_reactions` - Returns all prototype interaction triggers and actions from the given nodes, highlighting them in Figma
-- `set_default_connector` - Sets the style template for subsequent `create_connections` calls by copying a FigJam connector's appearance
-- `create_connections` - Creates FigJam connector lines between pairs of nodes, with optional text labels on each connector
+- `set_default_connector` - Sets the style template for subsequent `create_connections` calls from a connector pasted onto the current page (copy one from a FigJam board; the plugin itself does not run in FigJam)
+- `create_connections` - Creates connector lines between pairs of nodes by cloning that connector, with optional text labels on each connector
 
 ### Creating Elements
 
@@ -422,7 +434,7 @@ When working with the Figma MCP:
     - Create native annotations with `set_multiple_annotations` in batches
     - Verify all annotations are properly linked to their targets
     - Delete legacy annotation nodes after successful conversion
-11. Visualize prototype noodles as FigJam connectors:
+11. Visualize prototype noodles as connectors (copied from FigJam, drawn in the design file):
     - Use `get_reactions` to extract prototype flows,
     - set a default connector with `set_default_connector`,
     - and generate connector lines with `create_connections` for clear visual flow mapping.

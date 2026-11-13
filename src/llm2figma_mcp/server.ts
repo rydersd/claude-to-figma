@@ -41,6 +41,7 @@ import { registerSetupTools } from "./tools/setup.js";
 
 import { registerTools as registerReferenceCacheTools } from "./tools/reference-cache.js";
 import { registerTools as registerCodeMapTools } from "./tools/code-map.js";
+import { registerTools as registerDevModeTools } from "./tools/dev-mode.js";
 
 // Create MCP server
 const server = new McpServer({
@@ -87,6 +88,7 @@ registerReferenceCacheTools(server);
 registerSetupTools(server);
 registerFeature("FLOWS", registerFlowTools);
 registerFeature("CODE_MAP", (s) => registerCodeMapTools(s));
+registerFeature("DEV_MODE", registerDevModeTools);
 
 // Register prompts
 registerPrompts(server);

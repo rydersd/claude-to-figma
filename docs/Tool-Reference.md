@@ -13,7 +13,7 @@ The hub for all MCP tools the server exposes. Tools are grouped by what a design
 | [[Tools-Text]] | Text content, fonts, alignment, rich-text range formatting, lists |
 | [[Tools-Layout-and-Styling]] | Auto layout, padding, sizing, fills, strokes, effects, constraints, organization |
 | [[Tools-Components]] | Components, instances, variables, styles, migration, semantic introspection |
-| [[Tools-Prototyping-and-Annotations]] | Reactions, interactions, FigJam connectors, native annotations, comments |
+| [[Tools-Prototyping-and-Annotations]] | Reactions, interactions, connectors, native annotations, comments |
 | [[Tools-Batch-Operations]] | Multi-node operations, mixed mutations, `figma_eval` |
 
 ## Conventions shared by all tools
@@ -50,6 +50,13 @@ Two flagged tools read and reply to Figma comments over the REST API; details in
 
 - `get_comments {fileKey?, since?, includeResolved?, limit?}` — the file's comments with author, times, pinned `nodeId` and text, labelled as untrusted text (`L2F_COMMENTS=1`)
 - `reply_to_comment {fileKey?, commentId, message}` — replies in an existing thread, only when the user asks (`L2F_COMMENTS_WRITE=1`, which `L2F_ALL` does not set)
+
+## Dev Mode
+
+Five flagged tools (`L2F_DEV_MODE=1`) hand frames to developers; details in [Tools-Prototyping-and-Annotations](Tools-Prototyping-and-Annotations.md#dev-mode-status-resources-measurements):
+
+- `set_dev_status`, `get_dev_resources`, `add_dev_resource` — ready-for-dev or completed status and https links on nodes, in the design editor and in Dev Mode
+- `add_measurement`, `get_measurements` — measurements between node sides on the current page; adding is Dev Mode only, reading also works in the design editor
 
 ## Spec sync
 

@@ -8886,9 +8886,22 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     "export_spec",
     "read_spec_nodes"
   ]);
-  var COMMAND_EDITORS = {};
+  var COMMAND_EDITORS = {
+    // L2F_DEV_MODE. What is known: the plugin typings mark addMeasurement as available
+    // only in Dev Mode, and getMeasurements carries no such note. Figma's Dev Mode guide
+    // calls Dev Mode read-only, with pluginData, relaunchData and exportAsync as the
+    // exceptions, and does not mention devStatus or dev resources. Whether setting dev
+    // status and adding dev resources succeed in Dev Mode is therefore a live check, not
+    // documented; they are allowed here so that check can be run.
+    set_dev_status: ["figma", "dev"],
+    get_dev_resources: ["figma", "dev"],
+    add_dev_resource: ["figma", "dev"],
+    add_measurement: ["dev"],
+    get_measurements: ["figma", "dev"]
+  };
   function allowedEditors(command) {
-    return COMMAND_EDITORS[command] || (READ_ONLY.has(command) ? ALL_EDITORS : EDIT_EDITORS);
+    if (Object.prototype.hasOwnProperty.call(COMMAND_EDITORS, command)) return COMMAND_EDITORS[command];
+    return READ_ONLY.has(command) ? ALL_EDITORS : EDIT_EDITORS;
   }
   function assertEditorAllowed(command, editorType, params) {
     if (command === "design_query" && editorType === "dev" && params && params.update != null) {
@@ -8897,6 +8910,199 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (!allowedEditors(command).includes(editorType)) {
       throw new Error(`${command} is not available in the ${editorType} editor`);
     }
+  }
+
+  // src/shared/dev-resource.ts
+  var MAX_URL_LENGTH = 2048;
+  var MAX_UNTRUSTED_TEXT = 200;
+  var LABEL = "[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?";
+  var PORT = "(?:6553[0-5]|655[0-2]\\d|65[0-4]\\d{2}|6[0-4]\\d{3}|[1-5]\\d{4}|[1-9]\\d{0,3})";
+  var HTTPS_URL = new RegExp(`^https://${LABEL}(?:\\.${LABEL})*(?::${PORT})?(?:[/?#][!-\\[\\]-~]*)?$`, "i");
+  function matchesHttpsUrl(url) {
+    return typeof url === "string" && url.length <= MAX_URL_LENGTH && HTTPS_URL.test(url);
+  }
+  function urlKey(url) {
+    const match = /^([A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*)([^?#]*)(.*)$/.exec(url);
+    if (!match) return url;
+    return match[1].toLowerCase() + match[2].replace(/\/$/, "") + match[3];
+  }
+  function sameUrl(a, b) {
+    return urlKey(a) === urlKey(b);
+  }
+  function capText(value) {
+    if (typeof value !== "string" || value.length <= MAX_UNTRUSTED_TEXT) return value;
+    return value.slice(0, MAX_UNTRUSTED_TEXT - 1) + "\u2026";
+  }
+
+  // src/llm2figma_plugin/src/dev-mode.ts
+  var MAX_LIST = 100;
+  var MAX_NAME_LENGTH = 200;
+  var MAX_DESCRIPTION_LENGTH = 1e3;
+  var STATUS_TYPES = ["READY_FOR_DEV", "COMPLETED"];
+  var SIDES = ["TOP", "RIGHT", "BOTTOM", "LEFT"];
+  var HORIZONTAL = ["LEFT", "RIGHT"];
+  function isHttpsUrl(url) {
+    return matchesHttpsUrl(url);
+  }
+  function sameAxis(startSide, endSide) {
+    return HORIZONTAL.includes(startSide) === HORIZONTAL.includes(endSide);
+  }
+  async function requireNode2(nodeId) {
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (!node) throw new Error(`Node not found: ${nodeId}`);
+    return node;
+  }
+  function validStatus(status) {
+    if (status === null) return true;
+    if (!status || typeof status !== "object" || !STATUS_TYPES.includes(status.type)) return false;
+    return status.description === void 0 || typeof status.description === "string" && status.description.length <= MAX_DESCRIPTION_LENGTH;
+  }
+  async function setDevStatus(params) {
+    const { nodeIds, status } = params;
+    if (!Array.isArray(nodeIds) || nodeIds.length === 0 || nodeIds.length > MAX_LIST) {
+      throw new Error(`nodeIds must list 1 to ${MAX_LIST} node ids`);
+    }
+    if (status === void 0 || !validStatus(status)) {
+      throw new Error(`status must be null or { type: "READY_FOR_DEV" | "COMPLETED", description? } (description up to ${MAX_DESCRIPTION_LENGTH} characters)`);
+    }
+    const value = status === null ? null : { type: status.type, ...status.description !== void 0 ? { description: status.description } : {} };
+    const results = [];
+    for (const nodeId of nodeIds) {
+      const node = await figma.getNodeByIdAsync(nodeId);
+      if (!node) {
+        results.push({ nodeId, result: "skipped", reason: "node not found" });
+        continue;
+      }
+      if (!("devStatus" in node)) {
+        results.push({ nodeId, name: capText(node.name), result: "skipped", reason: `${node.type} has no dev status (sections and frames only)` });
+        continue;
+      }
+      const parent = node.parent;
+      if (!parent || parent.type !== "PAGE" && parent.type !== "SECTION") {
+        results.push({ nodeId, name: capText(node.name), result: "skipped", reason: `not directly under a page or section (inside ${parent ? `${parent.type} ${parent.id}` : "nothing"})` });
+        continue;
+      }
+      try {
+        node.devStatus = value;
+      } catch (error) {
+        results.push({ nodeId, name: capText(node.name), result: "skipped", reason: capText(error instanceof Error ? error.message : String(error)) });
+        continue;
+      }
+      const devStatus = node.devStatus ?? null;
+      results.push({ nodeId, name: capText(node.name), result: "set", devStatus: devStatus && devStatus.description !== void 0 ? { ...devStatus, description: capText(devStatus.description) } : devStatus });
+    }
+    return {
+      set: results.filter((r) => r.result === "set").length,
+      skipped: results.filter((r) => r.result === "skipped").length,
+      results
+    };
+  }
+  function resourceSummary(resource) {
+    return {
+      name: capText(resource.name),
+      url: capText(resource.url),
+      nodeId: resource.nodeId,
+      ...resource.inheritedNodeId ? { inheritedNodeId: resource.inheritedNodeId } : {}
+    };
+  }
+  async function getDevResources(params) {
+    const node = await requireNode2(params.nodeId);
+    if (typeof node.getDevResourcesAsync !== "function") throw new Error(`${node.type} ${node.id} has no dev resources`);
+    const all = await node.getDevResourcesAsync({ includeChildren: params.includeChildren === true });
+    return {
+      nodeId: node.id,
+      name: capText(node.name),
+      count: all.length,
+      resources: all.slice(0, MAX_LIST).map(resourceSummary),
+      truncated: all.length > MAX_LIST
+    };
+  }
+  async function addDevResource(params) {
+    const { url } = params;
+    if (!isHttpsUrl(url)) {
+      throw new Error(`url must be an https link (https:// and a host, no spaces, up to ${MAX_URL_LENGTH} characters)`);
+    }
+    const name = params.name === void 0 ? void 0 : String(params.name).trim();
+    if (name !== void 0 && (name.length === 0 || name.length > MAX_NAME_LENGTH)) {
+      throw new Error(`name must be 1 to ${MAX_NAME_LENGTH} characters`);
+    }
+    const node = await requireNode2(params.nodeId);
+    if (typeof node.addDevResourceAsync !== "function") throw new Error(`${node.type} ${node.id} cannot hold dev resources`);
+    const findOwn = async () => (await node.getDevResourcesAsync()).find(
+      (r) => r.nodeId === node.id && !r.inheritedNodeId && typeof r.url === "string" && sameUrl(r.url, url)
+    );
+    const existing = await findOwn();
+    if (existing) return { nodeId: node.id, result: "already present", resource: resourceSummary(existing) };
+    try {
+      await node.addDevResourceAsync(url, name);
+    } catch (error) {
+      const present = await findOwn();
+      if (present) return { nodeId: node.id, result: "already present", resource: resourceSummary(present) };
+      throw error;
+    }
+    const added = await findOwn();
+    return { nodeId: node.id, result: "added", resource: resourceSummary(added ?? { name: name ?? null, url, nodeId: node.id }) };
+  }
+  function requireDevEditor(command) {
+    if (figma.editorType !== "dev") throw new Error(`${command} is only available in Dev Mode (editor: ${figma.editorType})`);
+  }
+  function pageOf(node) {
+    let current = node;
+    while (current && current.type !== "PAGE") current = current.parent;
+    return current || null;
+  }
+  async function requireOnCurrentPage(nodeId, role) {
+    const node = await requireNode2(nodeId);
+    if (node.type === "PAGE" || node.type === "DOCUMENT") throw new Error(`${role} ${nodeId} is a ${node.type}, not a layer`);
+    const page = pageOf(node);
+    if (!page || page.id !== figma.currentPage.id) {
+      throw new Error(`${role} ${nodeId} is not on the current page (${capText(figma.currentPage.name)}); measurements act on the current page only`);
+    }
+    return node;
+  }
+  function measurementSummary(m) {
+    return {
+      id: m.id,
+      start: { nodeId: m.start.node.id, nodeName: capText(m.start.node.name), side: m.start.side },
+      end: { nodeId: m.end.node.id, nodeName: capText(m.end.node.name), side: m.end.side },
+      offset: m.offset,
+      freeText: capText(m.freeText)
+    };
+  }
+  function validOffset(offset) {
+    if (offset === void 0) return true;
+    if (!offset || typeof offset !== "object") return false;
+    if (offset.type === "INNER") return Number.isFinite(offset.relative);
+    if (offset.type === "OUTER") return Number.isFinite(offset.fixed);
+    return false;
+  }
+  async function addMeasurement(params) {
+    requireDevEditor("add_measurement");
+    const { startSide, endSide, offset } = params;
+    if (!SIDES.includes(startSide) || !SIDES.includes(endSide)) throw new Error("startSide and endSide must be TOP, RIGHT, BOTTOM or LEFT");
+    if (!sameAxis(startSide, endSide)) {
+      throw new Error(`startSide ${startSide} and endSide ${endSide} are on different axes: use LEFT/RIGHT with LEFT/RIGHT, or TOP/BOTTOM with TOP/BOTTOM`);
+    }
+    if (!validOffset(offset)) throw new Error('offset must be { type: "INNER", relative: number } or { type: "OUTER", fixed: number }');
+    const start = await requireOnCurrentPage(params.startNodeId, "startNodeId");
+    const end = await requireOnCurrentPage(params.endNodeId, "endNodeId");
+    const measurement = figma.currentPage.addMeasurement(
+      { node: start, side: startSide },
+      { node: end, side: endSide },
+      offset ? { offset } : void 0
+    );
+    return measurementSummary(measurement);
+  }
+  async function getMeasurements(params) {
+    const page = figma.currentPage;
+    const all = params && params.nodeId ? page.getMeasurementsForNode(await requireOnCurrentPage(params.nodeId, "nodeId")) : page.getMeasurements();
+    return {
+      pageId: page.id,
+      pageName: capText(page.name),
+      count: all.length,
+      measurements: all.slice(0, MAX_LIST).map(measurementSummary),
+      truncated: all.length > MAX_LIST
+    };
   }
 
   // src/llm2figma_plugin/src/spec.ts
@@ -8919,7 +9125,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (node.type === "TEXT" && TEXT_STYLE_KEYS.some((key) => isMixed(node[key]))) return "mixed-style text";
     return null;
   }
-  function pageOf(node) {
+  function pageOf2(node) {
     let current = node;
     while (current && current.type !== "PAGE") current = current.parent;
     return current || null;
@@ -8940,7 +9146,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     }
     const node = await figma.getNodeByIdAsync(nodeId);
     if (!node) throw new Error(`Node not found with ID: ${nodeId}`);
-    const nodePage = pageOf(node);
+    const nodePage = pageOf2(node);
     if (!nodePage) throw new Error(`Node ${nodeId} is not on a page.`);
     if (page && nodePage.id !== page.id) throw new Error(`Wrong page: node ${nodeId} is on page ${nodePage.id}, expected ${page.id}.`);
     if (!page) {
@@ -10307,6 +10513,28 @@ ${detail}`);
           throw new Error("Missing required parameters: pageId and flows");
         }
         return await setFlows(params);
+      case "set_dev_status":
+        if (!params || !Array.isArray(params.nodeIds) || !("status" in params)) {
+          throw new Error("Missing required parameters: nodeIds and status");
+        }
+        return await setDevStatus(params);
+      case "get_dev_resources":
+        if (!params || !params.nodeId) {
+          throw new Error("Missing required parameter: nodeId");
+        }
+        return await getDevResources(params);
+      case "add_dev_resource":
+        if (!params || !params.nodeId || !params.url) {
+          throw new Error("Missing required parameters: nodeId and url");
+        }
+        return await addDevResource(params);
+      case "add_measurement":
+        if (!params || !params.startNodeId || !params.startSide || !params.endNodeId || !params.endSide) {
+          throw new Error("Missing required parameters: startNodeId, startSide, endNodeId and endSide");
+        }
+        return await addMeasurement(params);
+      case "get_measurements":
+        return await getMeasurements(params || {});
       // Event streaming commands
       case "subscribe_events":
         startEventStreaming();
