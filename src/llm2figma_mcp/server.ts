@@ -43,6 +43,7 @@ import { registerSetupTools } from "./tools/setup.js";
 import { registerTools as registerReferenceCacheTools } from "./tools/reference-cache.js";
 import { registerTools as registerCodeMapTools } from "./tools/code-map.js";
 import { registerTools as registerDevModeTools } from "./tools/dev-mode.js";
+import { registerTools as registerCalloutTools } from "./tools/callouts.js";
 import { serverInstructions } from "./instructions.js";
 
 // Create MCP server
@@ -91,6 +92,7 @@ registerSetupTools(server);
 registerFeature("FLOWS", registerFlowTools);
 registerFeature("CODE_MAP", (s) => registerCodeMapTools(s));
 registerFeature("DEV_MODE", registerDevModeTools);
+registerFeature("CALLOUTS", registerCalloutTools);
 
 // Register prompts
 registerPrompts(server);

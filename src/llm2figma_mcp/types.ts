@@ -169,7 +169,8 @@ export type FigmaCommand =
   | "get_dev_resources"
   | "add_dev_resource"
   | "add_measurement"
-  | "get_measurements";
+  | "get_measurements"
+  | "place_callouts";
 
 export type CommandParams = {
   get_document_info: Record<string, never>;
@@ -547,6 +548,17 @@ export type CommandParams = {
     offset?: { type: "INNER"; relative: number } | { type: "OUTER"; fixed: number };
   };
   get_measurements: { nodeId?: string };
+  place_callouts: {
+    frameId: string;
+    callouts: Array<{ key?: string; targetId: string; text: string }>;
+    rails?: Array<"left" | "right" | "top" | "bottom">;
+    gap?: number;
+    railOffset?: number;
+    width?: number;
+    denseThreshold?: number;
+    native?: boolean;
+    leaderStyle?: "auto" | "connector" | "vector";
+  };
   export_spec: {
     nodeId: string;
     expect?: { fileKey?: string | null; fileName?: string | null; pageId?: string | null };

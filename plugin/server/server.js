@@ -28099,6 +28099,38 @@ function registerTools30(server, sendCommandToFigma2) {
   });
 }
 
+// src/shared/callouts.ts
+var RAILS = ["left", "right", "top", "bottom"];
+var DEFAULTS = { gap: 12, railOffset: 48, width: 240, denseThreshold: 12 };
+
+// src/llm2figma_mcp/tools/callouts.ts
+var CalloutSchema = z2.object({
+  key: z2.string().min(1).max(100).optional().describe("Stable id for this callout across re-runs (default: targetId). Give two callouts on one target distinct keys"),
+  targetId: z2.string().min(1).describe("The node inside the frame this callout points at"),
+  text: z2.string().min(1).max(2000).describe("The callout text")
+});
+var PlaceCalloutsSchema = {
+  frameId: z2.string().min(1).describe("The frame being reviewed; it must sit directly on a page or in a section"),
+  callouts: z2.array(CalloutSchema).min(1).max(200).refine((list) => new Set(list.map((c) => c.key ?? c.targetId)).size === list.length, { message: "callout keys must be unique (key defaults to targetId)" }),
+  rails: z2.array(z2.enum(RAILS)).min(1).optional().describe("Rails labels may use (default all four). Left and right fill first, then top and bottom"),
+  gap: z2.number().min(0).max(200).optional().describe(`Minimum space between labels, px (default ${DEFAULTS.gap})`),
+  railOffset: z2.number().min(8).max(400).optional().describe(`Gutter between the frame and the rails, where leaders turn, px (default ${DEFAULTS.railOffset})`),
+  width: z2.number().min(80).max(800).optional().describe(`Label width, px (default ${DEFAULTS.width})`),
+  denseThreshold: z2.number().int().min(0).max(200).optional().describe(`Above this many callouts, use numbered badges on the targets and a numbered list in the rails, with no leaders (default ${DEFAULTS.denseThreshold})`),
+  native: z2.boolean().optional().describe("Also write each callout as a native annotation on its target, for Dev Mode (default true)"),
+  leaderStyle: z2.enum(["auto", "connector", "vector"]).optional().describe("auto (default): a FigJam-style connector, which stays attached and can be dragged by hand, when the file has one to clone (the default connector from set_default_connector, or any connector on the page), otherwise drawn vector leaders. connector: fail if there is no connector to clone. vector: always drawn leaders")
+};
+function registerTools31(server, sendCommandToFigma2) {
+  server.tool("place_callouts", "Place review callouts around a frame without covering it: labels go in rails beside the frame (nearer side first, then the other side, then top and bottom), each joined to its target by an orthogonal leader with one elbow in the gutter and a dot on the target, never a diagonal. Leaders are cloned connectors (elbowed, attached to the label and the target) when the file has one to clone, otherwise vectors; only vector leaders are guaranteed not to cross, since Figma routes connector elbows itself. Labels keep their targets' order and never overlap the frame, sibling frames or each other; anything that does not fit is returned in `overflow`. Above denseThreshold callouts it switches to numbered badges on the targets and a matching numbered list. Everything is one group, callouts/<frame name>, next to the frame. With native (default) each callout is also added to its target's annotations, so it shows in Dev Mode; other annotations are kept. Use this for callouts and design reviews instead of drawing lines with create_line. Returns {groupId, mode, leaderStyle, placed: [{key, rail, x, y, leaderId?}], overflow, annotations, verification}; x and y are the label's offset from the frame's top-left.", PlaceCalloutsSchema, async (args2) => {
+    try {
+      const result2 = await sendCommandToFigma2("place_callouts", args2, 60000);
+      return { content: [{ type: "text", text: JSON.stringify(result2) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: `Error placing callouts: ${error instanceof Error ? error.message : String(error)}` }] };
+    }
+  });
+}
+
 // src/llm2figma_mcp/instructions.ts
 var FEEDBACK_REPO = "rydersd/claude-to-figma";
 var FEEDBACK_LABEL = "l2f-feedback";
@@ -28114,6 +28146,9 @@ function serverInstructions(env = process.env) {
   }
   if (isEnabled("VERIFY", env)) {
     lines.push("- Before a bulk or structural edit outside spec sync, take snapshot_positions of the affected root; afterwards diff_positions shows anything missing, added or moved.");
+  }
+  if (isEnabled("CALLOUTS", env)) {
+    lines.push("- For callouts, review notes or annotated walkthroughs, use place_callouts: labels in rails beside the frame, orthogonal leaders, and native annotations for Dev Mode. Never draw callouts with create_line or diagonal vectors over the design. To change them, call it again with the full list and stable keys; tell the user about anything in overflow.");
   }
   lines.push(`- When llm2figma gets in the way (a tool errors, returns wrong or partial results, is missing something you needed, or you had to work around it with figma_eval), say so plainly in your reply to the user, then file a GitHub issue: first look for an open one (gh issue list -R ${FEEDBACK_REPO} --label ${FEEDBACK_LABEL} --search "<tool>"), and comment there if it exists; otherwise gh issue create -R ${FEEDBACK_REPO} --label ${FEEDBACK_LABEL} with the tool, what you called, what happened against what you expected, and your workaround. The repository is public: describe only the tool's behaviour, never file names or keys, node or layer names, client, company or project names, or design content.`);
   return lines.join(`
@@ -28157,6 +28192,7 @@ registerSetupTools(server);
 registerFeature("FLOWS", registerFlowTools);
 registerFeature("CODE_MAP", (s) => registerTools29(s));
 registerFeature("DEV_MODE", registerTools30);
+registerFeature("CALLOUTS", registerTools31);
 registerPrompts(server);
 async function main() {
   installFigmaPluginFiles();

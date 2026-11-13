@@ -43,5 +43,10 @@ describe("server instructions", () => {
     expect(serverInstructions({ L2F_SPEC_SYNC: "1" })).not.toContain("snapshot_positions");
     expect(serverInstructions({ L2F_VERIFY: "1" })).toContain("snapshot_positions");
     expect(serverInstructions({ L2F_VERIFY: "1" })).not.toContain("pull_spec");
+    expect(serverInstructions({ L2F_CALLOUTS: "1" })).toContain("use place_callouts");
+    expect(serverInstructions({ L2F_CALLOUTS: "1" })).toContain("Never draw callouts with create_line");
+    expect(serverInstructions({ L2F_ALL: "1" })).toContain("place_callouts");
+    expect(serverInstructions({})).not.toContain("place_callouts");
+    expect(serverInstructions({ L2F_VERIFY: "1" })).not.toContain("place_callouts");
   });
 });
