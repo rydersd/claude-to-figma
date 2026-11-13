@@ -6,7 +6,7 @@ import { FEATURES } from "../src/shared/flags";
 const flagRefs = Object.fromEntries(FEATURES.map(f => [`L2F_${f}`, `\${L2F_${f}:-}`]));
 export const FLAG_ENV_KEYS = ["L2F_ALL", ...FEATURES.map(f => `L2F_${f}`)];
 // Settings that are not features (L2F_ALL never touches them), passed through the same way.
-export const SETTING_ENV_KEYS = ["L2F_SPEC_DIR"];
+export const SETTING_ENV_KEYS = ["L2F_SPEC_DIR", "L2F_NO_RELAY_AUTOSTART"];
 const settingRefs = Object.fromEntries(SETTING_ENV_KEYS.map(k => [k, `\${${k}:-}`]));
 
 // Arguments after the server entry path that the server reads (--server=…).

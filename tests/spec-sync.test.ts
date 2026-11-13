@@ -1215,7 +1215,7 @@ describe("spec sync (PR 11b)", () => {
     });
 
     test("L2F_SPEC_DIR reaches both launch paths as a setting, not a flag", () => {
-      expect(SETTING_ENV_KEYS).toEqual(["L2F_SPEC_DIR"]);
+      expect(SETTING_ENV_KEYS).toContain("L2F_SPEC_DIR");
       expect(FLAG_ENV_KEYS).not.toContain("L2F_SPEC_DIR");
       expect(makeMcpConfig({}, "/bun", "/repo", {}).mcpServers.LLM2Figma.env.L2F_SPEC_DIR).toBe("${L2F_SPEC_DIR:-}");
       const manifest = JSON.parse(readFileSync("plugin/.claude-plugin/plugin.json", "utf8"));

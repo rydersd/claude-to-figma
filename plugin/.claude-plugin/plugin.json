@@ -26,7 +26,8 @@
         "L2F_DEV_MODE": "${L2F_DEV_MODE:-}",
         "L2F_SLIDES": "${L2F_SLIDES:-}",
         "L2F_TEXT_PATH": "${L2F_TEXT_PATH:-}",
-        "L2F_SPEC_DIR": "${L2F_SPEC_DIR:-}"
+        "L2F_SPEC_DIR": "${L2F_SPEC_DIR:-}",
+        "L2F_NO_RELAY_AUTOSTART": "${L2F_NO_RELAY_AUTOSTART:-}"
       }
     }
   }

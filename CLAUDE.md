@@ -91,7 +91,7 @@ Full details and gotchas: [`wiki/concepts/event-streaming.md`](wiki/concepts/eve
 ## Setup
 
 1. Run `bun setup` — installs dependencies and writes MCP config (machine-specific)
-2. `bun socket` in one terminal (WebSocket relay)
+2. The MCP server starts the WebSocket relay itself when port 3055 is free (`bun socket` starts it by hand; `L2F_NO_RELAY_AUTOSTART=1` turns autostart off)
 3. In Figma: Plugins → Development → Link existing plugin → select `src/llm2figma_plugin/manifest.json`
 4. Run plugin in Figma and click Connect, then use tools from Claude Code (they auto-join when one file is connected)
 
@@ -112,7 +112,7 @@ Without them, the two library tools soft-fail with setup instructions instead of
 
 ## Claude Code plugin (`plugin/`)
 
-`plugin/` is a self-contained Claude Code plugin, `llm2figma`, listed by `.claude-plugin/marketplace.json`. The installed copy has no `node_modules`, so `plugin/server/server.js` and `plugin/server/relay.js` are `bun build` bundles of `src/`, and `plugin/figma-plugin/` copies the Figma plugin files. **After changing `src/`, run `bun run build` (or `bun run build:claude-plugin`) and commit `plugin/`.** When installed as a plugin, the server starts the relay itself if port 3055 is free (`src/llm2figma_mcp/plugin-runtime.ts`) and copies the Figma plugin to `${CLAUDE_PLUGIN_DATA}/figma-plugin/` so the import path survives updates. Skills: `plugin/skills/draw-in-figma` (how to work in Figma well) and `plugin/skills/setup` (`/llm2figma:setup`).
+`plugin/` is a self-contained Claude Code plugin, `llm2figma`, listed by `.claude-plugin/marketplace.json`. The installed copy has no `node_modules`, so `plugin/server/server.js` and `plugin/server/relay.js` are `bun build` bundles of `src/`, and `plugin/figma-plugin/` copies the Figma plugin files. **After changing `src/`, run `bun run build` (or `bun run build:claude-plugin`) and commit `plugin/`.** Both installs start the relay themselves if port 3055 is free (`src/llm2figma_mcp/plugin-runtime.ts`): the plugin runs its bundled `server/relay.js`, and a clone install runs the checkout's `src/socket.ts` (pid, lock and log in `~/.llm2figma`); `L2F_NO_RELAY_AUTOSTART=1` turns this off for either. Both use the same pid-file, lock and protocol-version rules, and the relay is detached so it outlives the session. When installed as a plugin, the server also copies the Figma plugin to `${CLAUDE_PLUGIN_DATA}/figma-plugin/` so the import path survives updates. Skills: `plugin/skills/draw-in-figma` (how to work in Figma well) and `plugin/skills/setup` (`/llm2figma:setup`).
 
 ## Machine Portability
 

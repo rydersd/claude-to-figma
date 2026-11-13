@@ -61,7 +61,7 @@ cd ~/llm2figma
 bun setup --user
 ```
 
-3. Start the WebSocket relay and leave it running while you work:
+3. The WebSocket relay starts automatically. When the MCP server starts and port 3055 is free, it starts the relay from this repo in the background. The relay keeps running after the session ends, so other sessions keep their connection. Its log and pid file are in `~/.llm2figma`. If the port is held by another program, the server leaves it alone and `setup_status` reports it. To start the relay by hand instead, set `L2F_NO_RELAY_AUTOSTART=1` and run:
 
 ```bash
 bun socket
@@ -109,6 +109,7 @@ New tool families ship behind server-side flags. A tool whose flag is off is not
 - `L2F_ALL=1` turns on every flag except `L2F_COMMENTS_WRITE`, which posts comments as you and must be set on its own.
 - `L2F_<FEATURE>=1` turns on one flag. The flags are `FILE_KEY`, `COMMENTS`, `COMMENTS_WRITE`, `FLOWS`, `VARIABLES_WRITE`, `COMPONENT_PROPERTIES`, `GRID_LAYOUT`, `VERIFY`, `SPEC_SYNC`, `CODE_MAP`, `DEV_MODE`, `SLIDES` and `TEXT_PATH`.
 - `L2F_SPEC_DIR` is a setting, not a flag: the folder Spec files resolve against. `L2F_ALL` doesn't set it.
+- `L2F_NO_RELAY_AUTOSTART=1` is a setting, not a flag: the server then doesn't start the relay, and you run `bun socket` yourself. `L2F_ALL` doesn't set it.
 
 **Keep `L2F_ALL` on permanently (recommended).** `bun setup` writes `"L2F_ALL": "${L2F_ALL:-}"`, which only picks up a value exported in the environment Claude Code was launched from. Apps launched from the Dock or Spotlight (VS Code, Claude desktop) don't read your shell profile, so the flag is usually empty there. Write a literal `"1"` instead. `bun setup` keeps existing values, so a later setup or machine switch won't undo it.
 
