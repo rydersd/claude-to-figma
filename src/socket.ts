@@ -137,8 +137,23 @@ const server = Bun.serve({
 
           // Add client to channel
           const channelClients = channels.get(channelName)!;
+          const role = data.role === "mcp" ? "mcp" : "plugin";
+          // The plugin reuses one channel per file, so the same file open in
+          // two windows would ask for the same channel. Commands are broadcast
+          // to every peer, so a second plugin would receive (and apply) every
+          // write twice: refuse it, and the plugin falls back to a new name.
+          if (role === "plugin" && [...channelClients].some((c) => c !== ws && isPlugin(c) && c.readyState === WebSocket.OPEN)) {
+            ws.send(JSON.stringify({
+              type: "error",
+              code: "channel_taken",
+              channel: channelName,
+              message: `Channel ${channelName} already has a Figma window connected`,
+            }));
+            if (channelClients.size === 0) channels.delete(channelName);
+            return;
+          }
           channelClients.add(ws);
-          roles.set(ws, data.role === "mcp" ? "mcp" : "plugin");
+          roles.set(ws, role);
 
           console.log(`\n✓ Client joined channel "${channelName}" (${channelClients.size} total clients)`);
 

@@ -5,7 +5,7 @@
 import { writeFileSync } from "fs";
 
 // src/relay-protocol.ts
-var RELAY_PROTOCOL_VERSION = "2";
+var RELAY_PROTOCOL_VERSION = "3";
 var RELAY_VERSION_HEADER = "X-L2F-Relay-Protocol";
 var RELAY_PORT = Number(process.env.L2F_RELAY_PORT) || 3055;
 
@@ -106,8 +106,20 @@ var server = Bun.serve({
             channels.set(channelName, new Set);
           }
           const channelClients = channels.get(channelName);
+          const role = data.role === "mcp" ? "mcp" : "plugin";
+          if (role === "plugin" && [...channelClients].some((c) => c !== ws && isPlugin(c) && c.readyState === WebSocket.OPEN)) {
+            ws.send(JSON.stringify({
+              type: "error",
+              code: "channel_taken",
+              channel: channelName,
+              message: `Channel ${channelName} already has a Figma window connected`
+            }));
+            if (channelClients.size === 0)
+              channels.delete(channelName);
+            return;
+          }
           channelClients.add(ws);
-          roles.set(ws, data.role === "mcp" ? "mcp" : "plugin");
+          roles.set(ws, role);
           console.log(`
 \u2713 Client joined channel "${channelName}" (${channelClients.size} total clients)`);
           ws.send(JSON.stringify({

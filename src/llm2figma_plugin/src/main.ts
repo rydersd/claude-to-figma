@@ -78,6 +78,9 @@ figma.ui.onmessage = async (msg: any) => {
     case "close-plugin":
       figma.closePlugin();
       break;
+    case "save-channel":
+      await saveChannel(msg.channel);
+      break;
     case "resize-ui": {
       // The UI reports its content height so the window shrinks when a
       // section (such as MCP setup) collapses, and grows when one opens.
@@ -586,6 +589,43 @@ async function handleCommand(command: string, params: any) {
 }
 
 // Initialize settings on load
+// --- One channel per file ---
+// Each file keeps the channel it last joined (keyed by file key, in this
+// user's clientStorage), so closing and reopening the file or restarting the
+// plugin rejoins the channel the MCP server is already in. Without a file key
+// (plugins can't always read one) every run gets a new channel, as before.
+const CHANNELS_KEY = "channels";
+const MAX_SAVED_CHANNELS = 50;
+const CHANNEL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+async function loadChannel(): Promise<string | null> {
+  const fileKey = figma.fileKey;
+  if (!fileKey) return null;
+  try {
+    const saved = await figma.clientStorage.getAsync(CHANNELS_KEY);
+    const entry = saved && typeof saved === "object" ? saved[fileKey] : null;
+    return entry && typeof entry.channel === "string" && CHANNEL_NAME.test(entry.channel) ? entry.channel : null;
+  } catch (error) {
+    console.error("Error loading saved channel:", error);
+    return null;
+  }
+}
+
+async function saveChannel(channel: unknown): Promise<void> {
+  const fileKey = figma.fileKey;
+  if (!fileKey || typeof channel !== "string" || !CHANNEL_NAME.test(channel)) return;
+  try {
+    const saved = (await figma.clientStorage.getAsync(CHANNELS_KEY)) || {};
+    const map: Record<string, { channel: string; at: number }> = typeof saved === "object" ? { ...saved } : {};
+    map[fileKey] = { channel, at: Date.now() };
+    // Keep the most recently used files only.
+    const keep = Object.entries(map).sort((a, b) => (b[1]?.at || 0) - (a[1]?.at || 0)).slice(0, MAX_SAVED_CHANNELS);
+    await figma.clientStorage.setAsync(CHANNELS_KEY, Object.fromEntries(keep));
+  } catch (error) {
+    console.error("Error saving channel:", error);
+  }
+}
+
 (async function initializePlugin() {
   try {
     const savedSettings = await figma.clientStorage.getAsync("settings");
@@ -601,9 +641,10 @@ async function handleCommand(command: string, params: any) {
       }
     }
 
-    // Send initial settings to UI
+    // Send initial settings to UI, with this file's channel when it has one
     figma.ui.postMessage({
       type: "init-settings",
+      savedChannel: await loadChannel(),
       settings: {
         serverPort: state.serverPort,
         firstOnTop: state.firstOnTop,

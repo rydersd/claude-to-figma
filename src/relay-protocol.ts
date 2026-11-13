@@ -1,7 +1,7 @@
 // Shared between the relay (src/socket.ts) and the MCP server. Bump it when
 // the relay's messages change, so an installed plugin replaces an older relay
 // it started earlier instead of talking to it.
-export const RELAY_PROTOCOL_VERSION = "2";
+export const RELAY_PROTOCOL_VERSION = "3";
 export const RELAY_VERSION_HEADER = "X-L2F-Relay-Protocol";
 
 // The Figma plugin connects to 3055 by default (its UI can change it).
