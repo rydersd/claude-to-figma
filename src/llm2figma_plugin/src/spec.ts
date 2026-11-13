@@ -454,8 +454,8 @@ function liveSize(node: any): { width: number; height: number } | undefined {
 // included only when propsHash differs from the baseHashes entry (or there is
 // none), so an unchanged design costs a hash per node. `size` is the live width
 // and height of the nodes in sizeIds (an update naming one dimension needs the
-// other). `missingDestinations` lists the destinationIds (prototype link
-// targets the Spec writes) that are not a node on this page. Writes nothing.
+// other). `destinations` describes each of destinationIds (the targets of the
+// prototype links the Spec adds). Writes nothing.
 export async function readSpecNodes(params: any) {
   const { rootId, expect, baseHashes, truncated, sizeIds, destinationIds, maxNodes, maxDepth, maxBytes, commandId } = params || {};
   if (!rootId || typeof rootId !== "string") throw new Error("Missing rootId parameter");
@@ -480,17 +480,24 @@ export async function readSpecNodes(params: any) {
     const size = liveSize(id === read.rootId ? read.root : await figma.getNodeByIdAsync(id));
     if (size) nodes[id].size = size;
   }
-  // Prototype destinations the Spec links to: the ones that are not a node on
-  // this page.
-  const missingDestinations: string[] = [];
+  // Destinations of the prototype links the Spec adds: null when not a node in
+  // the file; else whether it is on this page, and a top-level frame there
+  // (directly on the page or in a section), which a NAVIGATE link needs.
+  const destinations: Record<string, { onPage: boolean; topLevelFrame: boolean } | null> = {};
   for (const id of Array.isArray(destinationIds) ? destinationIds : []) {
-    const target: any = typeof id === "string" ? await figma.getNodeByIdAsync(id) : null;
+    if (typeof id !== "string") continue;
+    const target: any = await figma.getNodeByIdAsync(id);
     const targetPage = target && !target.removed ? pageOf(target) : null;
-    if (!targetPage || targetPage.id !== read.pageId) missingDestinations.push(String(id));
+    if (!targetPage) { destinations[id] = null; continue; }
+    const parentType = target.parent ? target.parent.type : null;
+    destinations[id] = {
+      onPage: targetPage.id === read.pageId,
+      topLevelFrame: target.type === "FRAME" && (parentType === "PAGE" || parentType === "SECTION"),
+    };
   }
   return {
     fileKey: read.fileKey, fileName: read.fileName, pageId: read.pageId, rootId: read.rootId, rootParentId: read.rootParentId,
-    rootParentLayoutMode: read.rootParentLayoutMode, truncated: read.truncated, nodeCount: Object.keys(nodes).length, nodes, missingDestinations,
+    rootParentLayoutMode: read.rootParentLayoutMode, truncated: read.truncated, nodeCount: Object.keys(nodes).length, nodes, destinations,
   };
 }
 

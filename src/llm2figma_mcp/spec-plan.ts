@@ -9,7 +9,7 @@
 // docs/Spec-Sync.md and the plan's "Spec sync" section for the tables.
 
 import {
-  OPAQUE_TYPE, SPEC_DEFAULTS, UNREAD_KEY, clip, lockProps, normalizeNode, normalizeSpecTree, reactionDestinations, showList, showValue,
+  OPAQUE_TYPE, SPEC_DEFAULTS, UNREAD_KEY, clip, lockProps, normalizeNode, normalizeSpecTree, reactionLinks, showList, showValue,
   stableStringify, type ParentLayout, type SpecFile, type SpecLockFile, type SpecType,
 } from "../shared/spec.js";
 
@@ -33,8 +33,8 @@ export interface LiveRead {
   truncated: boolean;
   nodeCount: number;
   nodes: Record<string, LiveNode>;
-  // The destinationIds sent that are not a node on the page.
-  missingDestinations?: string[];
+  // What the plugin found for each destinationId sent (see DestinationInfo).
+  destinations?: Record<string, DestinationInfo>;
 }
 
 export type PlanOperation =
@@ -148,10 +148,9 @@ export interface PreparedSpec {
   // Nodes whose Spec width or height differs from the base: the read returns
   // their live size, since an update naming one dimension needs the other.
   sizeIds: string[];
-  // Prototype destinations outside the Spec that a changed or new node's
-  // reactions link to, each with the Spec places linking to it: the live read
-  // checks they exist.
-  destinations: Map<string, string[]>;
+  // Destinations of the prototype links the Spec adds, each with the Spec
+  // places linking to it and their navigation: the live read checks them.
+  destinations: Map<string, Array<{ at: string; navigation: string }>>;
 }
 
 const MAX_LISTED_ERRORS = 10;
@@ -274,36 +273,55 @@ export function prepareSpec(spec: SpecFile, lock: SpecLockFile, rootParentLayout
     if (node.props.truncated === true) truncated[id] = typeof node.props.reason === "string" ? node.props.reason : "node budget";
   }
   const sizeIds: string[] = [];
-  const destinations = new Map<string, string[]>();
-  const linkFrom = (at: string, reactions: unknown) => {
-    for (const target of reactionDestinations(reactions)) {
-      if (seen.has(target)) continue;
-      if (!destinations.has(target)) destinations.set(target, []);
-      destinations.get(target)!.push(at);
+  // Prototype links the Spec adds (a destination and navigation the SpecLock
+  // does not have on that node, or any link on a new node): only these are
+  // checked, so links the user did not touch pass through as Figma holds them.
+  const destinations = new Map<string, Array<{ at: string; navigation: string }>>();
+  const linkErrors: string[] = [];
+  const linkFrom = (at: string, reactions: unknown, baseReactions: unknown) => {
+    const before = new Set(reactionLinks(baseReactions).map(link => `${link.destinationId}\n${link.navigation}`));
+    for (const { destinationId, navigation } of reactionLinks(reactions)) {
+      if (before.has(`${destinationId}\n${navigation}`)) continue;
+      if (!seen.has(destinationId) && lock.nodes[destinationId]) {
+        linkErrors.push(`${at}: reactions link to ${showValue(destinationId)}, which this Spec removes; keep the destination, or link elsewhere`);
+        continue;
+      }
+      if (!destinations.has(destinationId)) destinations.set(destinationId, []);
+      destinations.get(destinationId)!.push({ at, navigation });
     }
   };
   for (const [id, node] of desired) {
     const base = lock.nodes[id].props;
     if (RESIZABLE.has(String(node.props.type)) && (!same(node.props.width, base.width) || !same(node.props.height, base.height))) sizeIds.push(id);
-    if (!same(node.props.reactions, base.reactions)) linkFrom(`${where(node.path)} (${clip(id)})`, node.props.reactions);
+    if (!same(lockProps(node.props).reactions, base.reactions)) linkFrom(`${where(node.path)} (${clip(id)})`, node.props.reactions, base.reactions);
   }
   const linkSubtree = (node: Record<string, any>, path: number[]) => {
-    linkFrom(where(path), node.reactions);
+    linkFrom(where(path), node.reactions, []);
     (Array.isArray(node.children) ? node.children : []).forEach((child: any, i: number) => linkSubtree(child, [...path, i]));
   };
   for (const op of creates) linkSubtree(op.node, op.path);
+  if (linkErrors.length) failWith(linkErrors);
   return { desired, desiredChildren, creates, baseHashes, truncated, sizeIds, destinations };
 }
 
-// Refuses the plan when a prototype link the Spec writes points at a node that
-// is not on the page (read_spec_nodes' missingDestinations), naming each node
-// that links to it. A destination in the Spec itself is never sent: the live
-// read covers it.
-export function checkDestinations(prepared: PreparedSpec, missing: readonly string[]): void {
+// What read_spec_nodes found for one destination: null when it is not a node
+// in the file; otherwise whether it is on the Spec's page, and whether it is a
+// top-level frame there (directly on the page or in a section).
+export type DestinationInfo = { onPage: boolean; topLevelFrame: boolean } | null;
+
+// Refuses the plan when a prototype link the Spec adds cannot be written:
+// its destination is not a node in the file, or a NAVIGATE link's destination
+// is not a top-level frame on the Spec's page. Names each linking node.
+export function checkDestinations(prepared: PreparedSpec, found: Record<string, DestinationInfo>): void {
   const errors: string[] = [];
-  for (const target of missing) {
-    for (const at of prepared.destinations.get(target) ?? []) {
-      errors.push(`${at}: reactions link to destinationId ${showValue(target)}, which is not a node on this page. A node created in this apply has no id yet: apply it first, then link to it in a second plan`);
+  for (const [target, links] of prepared.destinations) {
+    const info = found[target] ?? null;
+    for (const { at, navigation } of links) {
+      if (!info) {
+        errors.push(`${at}: reactions link to destinationId ${showValue(target)}, which is not a node in this file. A node created in this apply has no id yet: apply it first, then link to it in a second plan`);
+      } else if (navigation === "NAVIGATE" && !(info.onPage && info.topLevelFrame)) {
+        errors.push(`${at}: a NAVIGATE link needs a top-level frame on this page as its destination, and ${showValue(target)} is not one`);
+      }
     }
   }
   if (errors.length) failWith(errors);
@@ -489,6 +507,8 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
         }
         // A path compared by hash is written as the Spec's pathData.
         if (key === "pathHash") set.pathData = want.props.pathData;
+        // Reactions are compared in comparableReactions' form but written as the Spec has them.
+        else if (key === "reactions") set.reactions = want.props.reactions ?? value;
         else set[key] = value;
       } else if (!desiredChanged) {
         drifted.push(key);
@@ -499,6 +519,7 @@ export function computePlan({ lock, live, prepared }: PlanInput): PlanBody {
         // Never over a value Figma holds unexpressed ($unread).
         if (value !== undefined && value !== UNREADABLE && b !== UNREADABLE && l !== UNREADABLE) {
           if (key === "pathHash") overwrite.pathData = want.props.pathData;
+          else if (key === "reactions") overwrite.reactions = want.props.reactions ?? value;
           else overwrite[key] = value;
         }
       }

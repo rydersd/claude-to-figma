@@ -263,10 +263,10 @@ export async function planSpec(args: { path: string }, send: SendCommandFn, opti
   if (!live || typeof live !== "object" || !live.nodes || typeof live.nodes !== "object" || live.rootId !== lock.rootId) {
     throw new Error("The Figma plugin returned no node read. Rebuild and re-run the plugin (bun run build) so it knows read_spec_nodes.");
   }
-  if (pre.destinations.size && !Array.isArray(live.missingDestinations)) {
+  if (pre.destinations.size && (!live.destinations || typeof live.destinations !== "object")) {
     throw new Error("The Figma plugin did not check the Spec's prototype destinations. Rebuild and re-run the plugin (bun run build).");
   }
-  checkDestinations(pre, live.missingDestinations ?? []);
+  checkDestinations(pre, live.destinations ?? {});
   const connectedKey = live.fileKey ?? (options.userFileKey ?? getChannelFileKey)() ?? null;
   if (lock.fileKey && connectedKey && lock.fileKey !== connectedKey) {
     throw new Error(`Wrong file: ${paths.specPath} is for file key ${clip(String(lock.fileKey))}, but the connected file's key is ${clip(String(connectedKey))}.`);

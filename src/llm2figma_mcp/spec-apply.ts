@@ -11,7 +11,7 @@
 // See docs/Spec-Sync.md, "apply_spec".
 
 import {
-  SPEC_DEFAULTS, canonicalValue, hashProps, hashString, lockProps, normalizeNode, stableStringify,
+  SPEC_DEFAULTS, canonicalValue, comparableReactions, hashProps, hashString, lockProps, normalizeNode, stableStringify,
   type ParentLayout, type SpecFile, type SpecLockFile, type SpecLockNode, type SpecType,
 } from "../shared/spec.js";
 import type { ExpectedNode, Plan, PlanIssue, PlanOperation } from "./spec-plan.js";
@@ -237,7 +237,9 @@ export function findPartial(sent: PlanOperation[], failed: Array<Record<string, 
       }
       const got = orDefault(op.nodeType, key, live.props[key]);
       if (got === undefined) continue;
-      if (!same(canonicalValue(key, raw), got)) keys.push(key);
+      const want = canonicalValue(key, raw);
+      // The read-back is in the SpecLock's form (lockProps): compare in it.
+      if (!same(key === "reactions" ? comparableReactions(want) : want, got)) keys.push(key);
     }
     if (keys.length) out.push({ id: op.id, keys });
   }

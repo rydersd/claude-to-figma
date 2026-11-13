@@ -289,15 +289,49 @@ function canonicalReactions(list: unknown): unknown[] | undefined {
   return out;
 }
 
-// The NODE destinations a reactions value links to.
-export function reactionDestinations(reactions: unknown): string[] {
-  const ids: string[] = [];
+// The NODE links a reactions value holds: each destination with its navigation
+// (NAVIGATE, OVERLAY, SWAP, SCROLL_TO, CHANGE_TO).
+export interface ReactionLink { destinationId: string; navigation: string }
+
+export function reactionLinks(reactions: unknown): ReactionLink[] {
+  const links: ReactionLink[] = [];
   for (const reaction of Array.isArray(reactions) ? reactions : []) {
     for (const action of Array.isArray(reaction?.actions) ? reaction.actions : []) {
-      if (action && action.type === "NODE" && typeof action.destinationId === "string") ids.push(action.destinationId);
+      if (action && action.type === "NODE" && typeof action.destinationId === "string") {
+        links.push({ destinationId: action.destinationId, navigation: String(action.navigation ?? "") });
+      }
     }
   }
-  return ids;
+  return links;
+}
+
+// Fields Figma fills in on a NODE action it reads back when they were not
+// written (prototyping.ts's builders always send them, so Figma holds them).
+const NODE_ACTION_DEFAULTS: Record<string, unknown> = {
+  destinationId: null, preserveScrollPosition: false, resetInteractiveComponents: false, resetScrollPosition: false,
+  resetVideoPosition: false, transition: null,
+};
+
+const float32 = (value: unknown): unknown => {
+  if (typeof value === "number") return Math.fround(value);
+  if (Array.isArray(value)) return value.map(float32);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, float32(v)]));
+  return value;
+};
+
+// Canonical reactions in the form they are COMPARED in (the SpecLock's form,
+// through lockProps): a NODE action's missing fields filled with what Figma
+// reads back for them, and every number as Figma stores it (float32), so a
+// hand-written link and Figma's read-back of it compare equal. Idempotent. The
+// value written to Figma is always the Spec's own, never this one.
+export function comparableReactions(list: unknown): unknown {
+  if (!Array.isArray(list)) return list;
+  return plainJson(float32(list.map((reaction: any) => ({
+    ...reaction,
+    actions: Array.isArray(reaction?.actions)
+      ? reaction.actions.map((action: any) => (action && action.type === "NODE" ? { ...NODE_ACTION_DEFAULTS, ...action } : action))
+      : reaction?.actions,
+  }))));
 }
 
 // One property's value in canonical form (undefined when it cannot be written).
@@ -487,12 +521,14 @@ export function hashProps(props: Record<string, unknown>): string {
 
 // The form a node's canonical properties take in a SpecLock: the same, except a
 // vector's pathData is replaced by pathHash (hashString of the canonical
-// pathData), so a lock stays small. propsHash is hashProps(lockProps(props));
+// pathData), so a lock stays small, and `reactions` is in comparableReactions'
+// form. propsHash is hashProps(lockProps(props));
 // compare a live or Spec node against a lock entry through lockProps too.
 export function lockProps(props: Record<string, unknown>): Record<string, unknown> {
-  if (typeof props.pathData !== "string") return props;
-  const { pathData, ...rest } = props;
-  return orderKeys({ ...rest, pathHash: hashString(pathData) });
+  const out = Array.isArray(props.reactions) ? { ...props, reactions: comparableReactions(props.reactions) } : props;
+  if (typeof out.pathData !== "string") return out;
+  const { pathData, ...rest } = out;
+  return orderKeys({ ...rest, pathHash: hashString(pathData as string) });
 }
 
 // One SpecLock entry: the node's canonical properties as Figma held them at the

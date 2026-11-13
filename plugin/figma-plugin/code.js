@@ -379,6 +379,27 @@
     }
     return out;
   }
+  var NODE_ACTION_DEFAULTS = {
+    destinationId: null,
+    preserveScrollPosition: false,
+    resetInteractiveComponents: false,
+    resetScrollPosition: false,
+    resetVideoPosition: false,
+    transition: null
+  };
+  var float32 = (value) => {
+    if (typeof value === "number") return Math.fround(value);
+    if (Array.isArray(value)) return value.map(float32);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, float32(v)]));
+    return value;
+  };
+  function comparableReactions(list) {
+    if (!Array.isArray(list)) return list;
+    return plainJson(float32(list.map((reaction) => ({
+      ...reaction,
+      actions: Array.isArray(reaction?.actions) ? reaction.actions.map((action) => action && action.type === "NODE" ? { ...NODE_ACTION_DEFAULTS, ...action } : action) : reaction?.actions
+    }))));
+  }
   function canonicalValue(key, value) {
     if (COLOR_KEYS.has(key)) return canonicalColor(value);
     if (key === "effects") return canonicalEffects(value);
@@ -518,8 +539,9 @@
     return hashString(stableStringify(props));
   }
   function lockProps(props) {
-    if (typeof props.pathData !== "string") return props;
-    const { pathData, ...rest } = props;
+    const out = Array.isArray(props.reactions) ? { ...props, reactions: comparableReactions(props.reactions) } : props;
+    if (typeof out.pathData !== "string") return out;
+    const { pathData, ...rest } = out;
     return orderKeys({ ...rest, pathHash: hashString(pathData) });
   }
   function lockNodesFromTree(tree, rootParentId) {
@@ -6710,6 +6732,24 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     "layoutSizingHorizontal",
     "layoutSizingVertical"
   ];
+  async function replaceReactions(node, reactions) {
+    if (typeof node.setReactionsAsync !== "function") {
+      throw new Error(`reactions not written: ${node.type} node ${node.id} has no setReactionsAsync`);
+    }
+    const before = Array.isArray(node.reactions) ? JSON.parse(JSON.stringify(node.reactions)) : [];
+    if (before.length) await node.setReactionsAsync([]);
+    try {
+      await node.setReactionsAsync(reactions);
+    } catch (error) {
+      if (before.length) {
+        try {
+          await node.setReactionsAsync(before);
+        } catch {
+        }
+      }
+      throw error;
+    }
+  }
   async function updateNodeProperties(existingNode, spec, only) {
     const changedProps = [];
     const type = existingNode.type.toLowerCase();
@@ -6731,8 +6771,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         }
       }
     };
-    if (typeof existingNode.setReactionsAsync === "function" && want("reactions") && Array.isArray(spec.reactions)) {
-      await existingNode.setReactionsAsync(spec.reactions);
+    if (want("reactions") && Array.isArray(spec.reactions)) {
+      await replaceReactions(existingNode, spec.reactions);
       changedProps.push("reactions");
     }
     if (want("name") && spec.name !== void 0 && existingNode.name !== spec.name) {
@@ -7295,7 +7335,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     if (Array.isArray(props.reactions) && props.reactions.length) {
       try {
         const node = await figma.getNodeByIdAsync(result.id);
-        if (node) await node.setReactionsAsync(props.reactions);
+        if (node) await replaceReactions(node, props.reactions);
       } catch (err) {
         ctx.counters.errors++;
         ctx.errors.push(withPath({ type, name: props.name || "(unnamed)", nodeId: result.id, error: "Reactions not set: " + (err.message || String(err)) }));
@@ -9603,11 +9643,20 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       const size = liveSize(id === read.rootId ? read.root : await figma.getNodeByIdAsync(id));
       if (size) nodes[id].size = size;
     }
-    const missingDestinations = [];
+    const destinations = {};
     for (const id of Array.isArray(destinationIds) ? destinationIds : []) {
-      const target = typeof id === "string" ? await figma.getNodeByIdAsync(id) : null;
+      if (typeof id !== "string") continue;
+      const target = await figma.getNodeByIdAsync(id);
       const targetPage = target && !target.removed ? pageOf2(target) : null;
-      if (!targetPage || targetPage.id !== read.pageId) missingDestinations.push(String(id));
+      if (!targetPage) {
+        destinations[id] = null;
+        continue;
+      }
+      const parentType = target.parent ? target.parent.type : null;
+      destinations[id] = {
+        onPage: targetPage.id === read.pageId,
+        topLevelFrame: target.type === "FRAME" && (parentType === "PAGE" || parentType === "SECTION")
+      };
     }
     return {
       fileKey: read.fileKey,
@@ -9619,7 +9668,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       truncated: read.truncated,
       nodeCount: Object.keys(nodes).length,
       nodes,
-      missingDestinations
+      destinations
     };
   }
   function forcedReasons(truncated) {

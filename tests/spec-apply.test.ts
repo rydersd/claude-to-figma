@@ -58,10 +58,20 @@ function makeNode(type: string, extra: any = {}, parent: any = null): any {
     clipsContent: true, itemReverseZIndex: false, itemSpacing: 0, counterAxisSpacing: 0,
     paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0, primaryAxisAlignItems: "MIN", counterAxisAlignItems: "MIN",
     cornerRadius: 0, rel: [[1, 0, x], [0, 1, y]] as M, reactions: [],
-    // Like Figma, the read-back also carries the deprecated singular `action`.
+    // Like Figma: a non-empty list replaces a non-empty one only after a clear
+    // ("Reaction was invalid"), and the read-back carries the deprecated
+    // singular `action`, fills a NODE action's reset/preserve fields and
+    // stores numbers as float32. `reactionError` makes every call throw.
     async setReactionsAsync(list: any[]) {
+      if (this.reactionError) throw new Error(this.reactionError);
       reactionWrites.push({ id: this.id, reactions: JSON.parse(JSON.stringify(list)) });
-      this.reactions = list.map((r: any) => ({ action: r.actions[0], actions: JSON.parse(JSON.stringify(r.actions)), trigger: { ...r.trigger } }));
+      if (this.reactions.length && list.length) throw new Error("Reaction was invalid");
+      this.reactions = list.map((r: any) => {
+        const actions = JSON.parse(JSON.stringify(r.actions), (_k, v) => (typeof v === "number" ? Math.fround(v) : v)).map((a: any) => (a.type === "NODE"
+          ? { resetScrollPosition: false, resetInteractiveComponents: false, resetVideoPosition: false, preserveScrollPosition: false, transition: null, ...a }
+          : a));
+        return { action: actions[0], actions, trigger: { ...r.trigger } };
+      });
     },
     resize(w: number, h: number) { if (!this.ignoreResize) { this.width = w; this.height = h; } },
     appendChild(child: any) { detach(child); child.parent = this; this.children.push(child); },
@@ -660,6 +670,16 @@ describe("spec sync apply (PR 11d)", () => {
       actions: [{ destinationId, navigation: "NAVIGATE", preserveScrollPosition: false, transition: null, type: "NODE" }],
       trigger: { type: "ON_CLICK" },
     }];
+    // The SpecLock's (comparison) form: a NODE action's missing fields filled
+    // with what Figma reads back for them.
+    const locked = (destinationId: string) => [{
+      actions: [{
+        destinationId, navigation: "NAVIGATE", preserveScrollPosition: false, resetInteractiveComponents: false,
+        resetScrollPosition: false, resetVideoPosition: false, transition: null, type: "NODE",
+      }],
+      trigger: { type: "ON_CLICK" },
+    }];
+    const lastDestinationIds = () => sent.filter(s => s.command === "read_spec_nodes").at(-1).params.destinationIds;
     async function linked() {
       const seeded = await seed();
       const screenB = makeNode("FRAME", { name: "Screen B", x: 500 }, page);
@@ -677,7 +697,7 @@ describe("spec sync apply (PR 11d)", () => {
       expect(swatch.$unread).toBeUndefined();
       // A node without reactions has no key: [] is the default.
       expect(readJson(specPath()).tree.children.find((c: any) => c.name === "Title").reactions).toBeUndefined();
-      expect(readJson(lockPath()).nodes[byName("Swatch").id].props.reactions).toEqual(canonical(screenB.id));
+      expect(readJson(lockPath()).nodes[byName("Swatch").id].props.reactions).toEqual(locked(screenB.id));
     });
 
     test("retargeting destinationId is one update of reactions, written with setReactionsAsync; a re-plan is empty", async () => {
@@ -690,7 +710,8 @@ describe("spec sync apply (PR 11d)", () => {
       const before = snapshot();
       const result = await apply(planned.planId);
       expect(result.counts).toMatchObject({ updated: 1, partial: 0, failed: 0 });
-      expect(reactionWrites).toEqual([{ id: byName("Swatch").id, reactions: canonical(screenC.id) }]);
+      // Cleared first (the mock, like Figma, refuses a replacement otherwise), then the plan's value exactly.
+      expect(reactionWrites).toEqual([{ id: byName("Swatch").id, reactions: [] }, { id: byName("Swatch").id, reactions: canonical(screenC.id) }]);
       expect(changedFields(before, snapshot(), byName("Swatch").id)).toEqual(["reactions"]);
       expect(undoCommits).toBe(2);
       expect((await plan()).counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
@@ -727,16 +748,115 @@ describe("spec sync apply (PR 11d)", () => {
       await expect(plan()).rejects.toThrow(/reactions .* cannot be written/);
     });
 
-    test("a destinationId that is not a node on the page is a plan error naming the node; one in the Spec is fine", async () => {
+    test("a destinationId that is not a node in the file is a plan error naming the node", async () => {
       const { root, byName } = await linked();
       await pull(root);
       editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = "404:1"; });
-      await expect(plan()).rejects.toThrow(new RegExp(`tree\\.children\\[2\\] \\(${byName("Swatch").id}\\): reactions link to destinationId "404:1"`));
-      expect(sent.filter(s => s.command === "read_spec_nodes").at(-1).params.destinationIds).toEqual(["404:1"]);
-      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = byName("Row").id; });
+      await expect(plan()).rejects.toThrow(new RegExp(`tree\\.children\\[2\\] \\(${byName("Swatch").id}\\): reactions link to destinationId "404:1", which is not a node in this file`));
+      expect(lastDestinationIds()).toEqual(["404:1"]);
+    });
+
+    test("NAVIGATE needs a top-level frame on the page; SCROLL_TO may target a node inside the Spec", async () => {
+      const { root, byName } = await linked();
+      await pull(root);
+      const row = byName("Row");
+      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = row.id; });
+      await expect(plan()).rejects.toThrow(/a NAVIGATE link needs a top-level frame on this page/);
+      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].navigation = "SCROLL_TO"; });
       const planned = await plan();
       expect(planned.counts.updates).toBe(1);
-      expect(sent.filter(s => s.command === "read_spec_nodes").at(-1).params.destinationIds).toEqual([]);
+      expect(lastDestinationIds()).toEqual([row.id]);
+    });
+
+    test("a link to a node this Spec removes is refused at plan", async () => {
+      const { root, byName } = await linked();
+      await pull(root);
+      const row = byName("Row");
+      editSpec((spec, find) => {
+        Object.assign(find("Swatch").reactions[0].actions[0], { destinationId: row.id, navigation: "SCROLL_TO" });
+        spec.tree.children = spec.tree.children.filter((c: any) => c.id !== row.id);
+      });
+      await expect(plan()).rejects.toThrow(`reactions link to "${row.id}", which this Spec removes`);
+    });
+
+    test("only links the Spec adds are checked: an untouched CHANGE_TO link to another page passes through", async () => {
+      const { root, byName, screenB, screenC } = await linked();
+      const otherPage = makeNode("PAGE", { name: "Page 2" });
+      const variant = makeNode("FRAME", { name: "Variant" }, makeNode("FRAME", { name: "Set" }, otherPage));
+      byName("Swatch").reactions = [
+        navigate(screenB.id),
+        { trigger: { type: "ON_HOVER" }, actions: [{ type: "NODE", destinationId: variant.id, navigation: "CHANGE_TO", transition: null }] },
+      ];
+      await pull(root);
+      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = screenC.id; });
+      const planned = await plan();
+      expect(planned.counts.updates).toBe(1);
+      expect(lastDestinationIds()).toEqual([screenC.id]);
+      expect((await apply(planned.planId)).counts).toMatchObject({ updated: 1, partial: 0, failed: 0 });
+      expect((await plan()).counts.operations).toBe(0);
+    });
+
+    test("a hand-written link Figma reads back with defaults and float32 numbers is not partial, and a re-plan is empty", async () => {
+      const { root, byName, screenB } = await linked();
+      await pull(root);
+      const written = [{
+        trigger: { type: "ON_CLICK" },
+        actions: [{ type: "NODE", destinationId: screenB.id, navigation: "NAVIGATE", transition: { type: "DISSOLVE", duration: 0.3, easing: { type: "EASE_OUT" } } }],
+      }];
+      editSpec((_s, find) => { find("Title").reactions = written; });
+      const planned = await plan();
+      expect(planned.operations).toEqual([{ op: "update", id: byName("Title").id, name: "Title", keys: ["reactions"] }]);
+      const result = await apply(planned.planId);
+      expect(result.counts).toMatchObject({ updated: 1, partial: 0, failed: 0 });
+      // Written exactly as planned; Figma's read-back differs (defaults, float32).
+      expect(reactionWrites.at(-1)!.reactions).toEqual((store.get(planned.planId).operations[0] as any).set.reactions);
+      expect(reactionWrites.at(-1)!.reactions[0].actions[0].transition.duration).toBe(0.3);
+      expect(byName("Title").reactions[0].actions[0]).toMatchObject({ resetScrollPosition: false, transition: { duration: Math.fround(0.3) } });
+      expect(Math.fround(0.3)).not.toBe(0.3);
+      expect((await plan()).counts).toMatchObject({ operations: 0, drift: 0, conflicts: 0 });
+    });
+
+    test("setReactionsAsync throwing fails that node with the error text and writes nothing else on it", async () => {
+      const { root, byName, screenC } = await linked();
+      await pull(root);
+      const swatch = byName("Swatch");
+      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = screenC.id; find("Swatch").fillColor = "#00FF00"; });
+      const planned = await plan();
+      swatch.reactionError = "Unable to establish connection to Figma";
+      const before = snapshot();
+      const result = await apply(planned.planId);
+      expect(result.failed).toEqual([expect.objectContaining({ op: "update", id: swatch.id, error: expect.stringContaining("Unable to establish connection to Figma") })]);
+      expect(result.counts).toMatchObject({ updated: 0, partial: 0, failed: 1 });
+      expect(changedFields(before, snapshot(), swatch.id)).toEqual([]);
+      // The edit stays an edit: the next plan proposes it again.
+      delete swatch.reactionError;
+      expect((await plan()).operations).toEqual([expect.objectContaining({ id: swatch.id, keys: ["fillColor", "reactions"] })]);
+    });
+
+    test("a list Figma rejects after the clear is put back, and the node is reported failed", async () => {
+      const { root, byName, screenB, screenC } = await linked();
+      await pull(root);
+      const swatch = byName("Swatch");
+      const real = swatch.setReactionsAsync;
+      swatch.setReactionsAsync = async function (this: any, list: any[]) {
+        if (list.length && list[0].actions[0].destinationId === screenC.id) throw new Error("Reaction was invalid");
+        return real.call(this, list);
+      };
+      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = screenC.id; });
+      const result = await apply((await plan()).planId);
+      expect(result.failed).toEqual([expect.objectContaining({ id: swatch.id, error: "Reaction was invalid" })]);
+      expect(swatch.reactions[0].actions[0].destinationId).toBe(screenB.id);
+    });
+
+    test("a node without setReactionsAsync is reported failed, never skipped or partial", async () => {
+      const { root, byName, screenC } = await linked();
+      await pull(root);
+      const swatch = byName("Swatch");
+      delete swatch.setReactionsAsync;
+      editSpec((_s, find) => { find("Swatch").reactions[0].actions[0].destinationId = screenC.id; });
+      const result = await apply((await plan()).planId);
+      expect(result.failed).toEqual([expect.objectContaining({ id: swatch.id, error: expect.stringContaining("has no setReactionsAsync") })]);
+      expect(result.partial).toEqual([]);
     });
 
     test("the canonical form and the hashes do not depend on the order Figma returns keys in", async () => {
@@ -744,7 +864,7 @@ describe("spec sync apply (PR 11d)", () => {
       await pull(root);
       const lock = readJson(lockPath());
       const swatch = byName("Swatch");
-      expect(lock.nodes[swatch.id].props.reactions).toEqual(canonical(screenB.id));
+      expect(lock.nodes[swatch.id].props.reactions).toEqual(locked(screenB.id));
       const reordered = navigate(screenB.id);
       swatch.reactions = [{
         actions: reordered.actions.map((a: any) => Object.fromEntries(Object.entries(a).reverse())),

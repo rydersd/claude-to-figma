@@ -23781,15 +23781,41 @@ function canonicalReactions(list) {
   }
   return out;
 }
-function reactionDestinations(reactions) {
-  const ids = [];
+function reactionLinks(reactions) {
+  const links = [];
   for (const reaction of Array.isArray(reactions) ? reactions : []) {
     for (const action of Array.isArray(reaction?.actions) ? reaction.actions : []) {
-      if (action && action.type === "NODE" && typeof action.destinationId === "string")
-        ids.push(action.destinationId);
+      if (action && action.type === "NODE" && typeof action.destinationId === "string") {
+        links.push({ destinationId: action.destinationId, navigation: String(action.navigation ?? "") });
+      }
     }
   }
-  return ids;
+  return links;
+}
+var NODE_ACTION_DEFAULTS = {
+  destinationId: null,
+  preserveScrollPosition: false,
+  resetInteractiveComponents: false,
+  resetScrollPosition: false,
+  resetVideoPosition: false,
+  transition: null
+};
+var float32 = (value) => {
+  if (typeof value === "number")
+    return Math.fround(value);
+  if (Array.isArray(value))
+    return value.map(float32);
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, float32(v)]));
+  return value;
+};
+function comparableReactions(list) {
+  if (!Array.isArray(list))
+    return list;
+  return plainJson(float32(list.map((reaction) => ({
+    ...reaction,
+    actions: Array.isArray(reaction?.actions) ? reaction.actions.map((action) => action && action.type === "NODE" ? { ...NODE_ACTION_DEFAULTS, ...action } : action) : reaction?.actions
+  }))));
 }
 function canonicalValue(key, value) {
   if (COLOR_KEYS.has(key))
@@ -23977,9 +24003,10 @@ function hashProps(props) {
   return hashString(stableStringify(props));
 }
 function lockProps(props) {
-  if (typeof props.pathData !== "string")
-    return props;
-  const { pathData, ...rest } = props;
+  const out = Array.isArray(props.reactions) ? { ...props, reactions: comparableReactions(props.reactions) } : props;
+  if (typeof out.pathData !== "string")
+    return out;
+  const { pathData, ...rest } = out;
   return orderKeys({ ...rest, pathHash: hashString(pathData) });
 }
 function lockNodesFromTree(tree, rootParentId) {
@@ -24264,35 +24291,50 @@ function prepareSpec(spec, lock, rootParentLayout = {}) {
   }
   const sizeIds = [];
   const destinations = new Map;
-  const linkFrom = (at, reactions) => {
-    for (const target of reactionDestinations(reactions)) {
-      if (seen.has(target))
+  const linkErrors = [];
+  const linkFrom = (at, reactions, baseReactions) => {
+    const before = new Set(reactionLinks(baseReactions).map((link) => `${link.destinationId}
+${link.navigation}`));
+    for (const { destinationId, navigation } of reactionLinks(reactions)) {
+      if (before.has(`${destinationId}
+${navigation}`))
         continue;
-      if (!destinations.has(target))
-        destinations.set(target, []);
-      destinations.get(target).push(at);
+      if (!seen.has(destinationId) && lock.nodes[destinationId]) {
+        linkErrors.push(`${at}: reactions link to ${showValue(destinationId)}, which this Spec removes; keep the destination, or link elsewhere`);
+        continue;
+      }
+      if (!destinations.has(destinationId))
+        destinations.set(destinationId, []);
+      destinations.get(destinationId).push({ at, navigation });
     }
   };
   for (const [id, node] of desired) {
     const base = lock.nodes[id].props;
     if (RESIZABLE.has(String(node.props.type)) && (!same(node.props.width, base.width) || !same(node.props.height, base.height)))
       sizeIds.push(id);
-    if (!same(node.props.reactions, base.reactions))
-      linkFrom(`${where(node.path)} (${clip(id)})`, node.props.reactions);
+    if (!same(lockProps(node.props).reactions, base.reactions))
+      linkFrom(`${where(node.path)} (${clip(id)})`, node.props.reactions, base.reactions);
   }
   const linkSubtree = (node, path4) => {
-    linkFrom(where(path4), node.reactions);
+    linkFrom(where(path4), node.reactions, []);
     (Array.isArray(node.children) ? node.children : []).forEach((child, i) => linkSubtree(child, [...path4, i]));
   };
   for (const op of creates)
     linkSubtree(op.node, op.path);
+  if (linkErrors.length)
+    failWith(linkErrors);
   return { desired, desiredChildren, creates, baseHashes, truncated, sizeIds, destinations };
 }
-function checkDestinations(prepared, missing) {
+function checkDestinations(prepared, found) {
   const errors = [];
-  for (const target of missing) {
-    for (const at of prepared.destinations.get(target) ?? []) {
-      errors.push(`${at}: reactions link to destinationId ${showValue(target)}, which is not a node on this page. A node created in this apply has no id yet: apply it first, then link to it in a second plan`);
+  for (const [target, links] of prepared.destinations) {
+    const info = found[target] ?? null;
+    for (const { at, navigation } of links) {
+      if (!info) {
+        errors.push(`${at}: reactions link to destinationId ${showValue(target)}, which is not a node in this file. A node created in this apply has no id yet: apply it first, then link to it in a second plan`);
+      } else if (navigation === "NAVIGATE" && !(info.onPage && info.topLevelFrame)) {
+        errors.push(`${at}: a NAVIGATE link needs a top-level frame on this page as its destination, and ${showValue(target)} is not one`);
+      }
     }
   }
   if (errors.length)
@@ -24463,6 +24505,8 @@ function computePlan({ lock, live, prepared }) {
         }
         if (key === "pathHash")
           set2.pathData = want.props.pathData;
+        else if (key === "reactions")
+          set2.reactions = want.props.reactions ?? value;
         else
           set2[key] = value;
       } else if (!desiredChanged) {
@@ -24474,6 +24518,8 @@ function computePlan({ lock, live, prepared }) {
         if (value !== undefined && value !== UNREADABLE && b !== UNREADABLE && l !== UNREADABLE) {
           if (key === "pathHash")
             overwrite.pathData = want.props.pathData;
+          else if (key === "reactions")
+            overwrite.reactions = want.props.reactions ?? value;
           else
             overwrite[key] = value;
         }
@@ -24877,8 +24923,8 @@ function findPartial(sent, failed, created, readBack, spec) {
       if (op.fromLive?.includes(key) || skip.has(key))
         continue;
       if (key === "pathData") {
-        const want = canonicalValue("pathData", raw);
-        if (typeof want === "string" && live.props.pathHash !== hashString(want))
+        const want2 = canonicalValue("pathData", raw);
+        if (typeof want2 === "string" && live.props.pathHash !== hashString(want2))
           keys.push(key);
         continue;
       }
@@ -24892,7 +24938,8 @@ function findPartial(sent, failed, created, readBack, spec) {
       const got = orDefault(op.nodeType, key, live.props[key]);
       if (got === undefined)
         continue;
-      if (!same2(canonicalValue(key, raw), got))
+      const want = canonicalValue(key, raw);
+      if (!same2(key === "reactions" ? comparableReactions(want) : want, got))
         keys.push(key);
     }
     if (keys.length)
@@ -25196,10 +25243,10 @@ async function planSpec(args2, send, options = {}) {
   if (!live || typeof live !== "object" || !live.nodes || typeof live.nodes !== "object" || live.rootId !== lock.rootId) {
     throw new Error("The Figma plugin returned no node read. Rebuild and re-run the plugin (bun run build) so it knows read_spec_nodes.");
   }
-  if (pre.destinations.size && !Array.isArray(live.missingDestinations)) {
+  if (pre.destinations.size && (!live.destinations || typeof live.destinations !== "object")) {
     throw new Error("The Figma plugin did not check the Spec's prototype destinations. Rebuild and re-run the plugin (bun run build).");
   }
-  checkDestinations(pre, live.missingDestinations ?? []);
+  checkDestinations(pre, live.destinations ?? {});
   const connectedKey = live.fileKey ?? (options.userFileKey ?? getChannelFileKey)() ?? null;
   if (lock.fileKey && connectedKey && lock.fileKey !== connectedKey) {
     throw new Error(`Wrong file: ${paths.specPath} is for file key ${clip(String(lock.fileKey))}, but the connected file's key is ${clip(String(connectedKey))}.`);
