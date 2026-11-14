@@ -571,8 +571,8 @@ export function parseWireframe(filePath: string): ParseResult {
   // Extract title
   const titleMatch = raw.match(/<title>([^<]+)<\/title>/i);
   const rawTitle = titleMatch ? titleMatch[1].trim() : "Unknown";
-  // Clean title: remove "· Equinix PCP Partner Portal" suffix
-  const pageTitle = rawTitle.replace(/\s*[·\-]\s*Equinix PCP Partner Portal\s*$/i, "").trim();
+  // Clean title: drop a trailing " · <site name>" suffix
+  const pageTitle = rawTitle.replace(/\s+·\s+[^·]+$/, "").trim();
 
   const persona = detectPersona(rawTitle);
   const variant = detectVariant(rawTitle);

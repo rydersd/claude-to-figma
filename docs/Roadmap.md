@@ -30,7 +30,7 @@ The biggest gaps between an HTML prototype and what the pipeline can reproduce:
 - `get_library_components` and `search_library_components` MCP tools expose that index (scored search: exact/prefix/substring/token/description matches, +10 for a matching property value); both soft-fail with setup instructions when `FIGMA_API_TOKEN`/`FIGMA_LIBRARY_FILE_KEYS` aren't configured.
 - `create_node_tree`'s `instance` node type resolves `$lib:<name>` refs server-side (unique exact match, or top score ≥60 with a ≥20-point lead over the runner-up — otherwise a controlled error listing candidates) and the plugin imports, places, sets properties, and applies text overrides; sync mode updates matched instances in place.
 - `component_proposal_guide` prompt + library-first directives in `node_tree_guide`/`design_strategy`, and a `component_proposal` `build_page_section` template, close the gap workflow when no library match fits — see [[Tools-Components#team-library-components|library-first rule]].
-- Verified live against the QUIX library: 527 component sets indexed.
+- Verified live against a production team library: 527 component sets indexed.
 
 **Phase 2 (not yet built):**
 

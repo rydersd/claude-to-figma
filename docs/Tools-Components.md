@@ -31,8 +31,8 @@ Two tools discover **published team-library components** (the Assets panel equiv
   {
     "totalSets": 527,
     "sets": [
-      { "name": "Badge", "variants": 6, "description": "Compact status indicator", "library": "QUIX" },
-      { "name": "Banner", "variants": 4, "description": "Full-width page-level message", "library": "QUIX" }
+      { "name": "Badge", "variants": 6, "description": "Compact status indicator", "library": "Example Library" },
+      { "name": "Banner", "variants": 4, "description": "Full-width page-level message", "library": "Example Library" }
     ]
   }
   ```
@@ -47,7 +47,7 @@ Two tools discover **published team-library components** (the Assets panel equiv
         "name": "Badge",
         "score": 100,
         "description": "Compact status indicator",
-        "library": "QUIX",
+        "library": "Example Library",
         "componentKey": "a1b2c3d4e5f6...",
         "propertyValues": { "State": ["Default", "Success", "Warning", "Error"] },
         "variants": [{ "name": "State=Default", "key": "..." }, { "name": "State=Success", "key": "..." }],
