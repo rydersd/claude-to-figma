@@ -5,7 +5,7 @@
 // ---------------------------------------------------------------------------
 
 // --- Brand DNA token constants ---
-// Full brand tokens (from equinix-brand.json)
+// Full brand tokens (from the brand token file)
 const BRAND = {
   bgDark: "#131925",
   bgBlack: "#000000",
@@ -26,7 +26,7 @@ const BRAND = {
   mediaRadius: 8,
 } as const;
 
-// SLDS tokens (from equinix-pc.json)
+// SLDS tokens (from the SLDS token file)
 const SLDS = {
   surface: "#ffffff",
   surfaceSecondary: "#f3f3f3",

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let Claude discover, search, and place published Figma library components (e.g. QUIX Component Library v2), and route unfillable gaps into a rationalized component/pattern proposal workflow.
+**Goal:** Let Claude discover, search, and place published Figma library components (e.g. a team component library), and route unfillable gaps into a rationalized component/pattern proposal workflow.
 
 **Architecture:** A new MCP-server-side module (`tools/library.ts`) fetches published components from the Figma REST API, builds a searchable in-memory index, and exposes two tools plus a `$lib:` resolution pass that runs inside `create_node_tree` before dispatch. The plugin gains one new tree node type (`instance`) that reuses the existing `createComponentInstance`. Prompts and a proposal frame template encode the gap workflow.
 
@@ -110,18 +110,18 @@ const FIXTURE_SETS = [
 
 describe("buildLibraryIndex", () => {
   test("groups variants under their component set with merged property values", () => {
-    const index = buildLibraryIndex("FILEKEY", "QUIX v2", FIXTURE_COMPONENTS, FIXTURE_SETS);
+    const index = buildLibraryIndex("FILEKEY", "Example Library v2", FIXTURE_COMPONENTS, FIXTURE_SETS);
     const badge = index.find((s) => s.setName === "Badge")!;
     expect(badge.variants.length).toBe(2);
     expect(badge.description).toBe("Status indicator chip");
     expect(badge.propertyValues).toEqual({ State: ["Default", "Success"] });
     expect(badge.variants[0].key).toBe("badge-default-key");
-    expect(badge.libraryName).toBe("QUIX v2");
+    expect(badge.libraryName).toBe("Example Library v2");
     expect(badge.libraryFileKey).toBe("FILEKEY");
   });
 
   test("treats components without a state group as single-variant sets", () => {
-    const index = buildLibraryIndex("FILEKEY", "QUIX v2", FIXTURE_COMPONENTS, FIXTURE_SETS);
+    const index = buildLibraryIndex("FILEKEY", "Example Library v2", FIXTURE_COMPONENTS, FIXTURE_SETS);
     const divider = index.find((s) => s.setName === "Divider")!;
     expect(divider.variants.length).toBe(1);
     expect(divider.variants[0].key).toBe("divider-key");
@@ -262,7 +262,7 @@ function makeSet(setName: string, extra: Partial<import("../src/claude_to_figma_
     setName,
     description: "",
     libraryFileKey: "F",
-    libraryName: "QUIX v2",
+    libraryName: "Example Library v2",
     variants: [{ key: setName.toLowerCase() + "-key", name: setName, properties: {} }],
     propertyValues: {},
     ...extra,
@@ -622,7 +622,7 @@ describe("loadLibraryIndex", () => {
         ? { meta: { component_sets: FIXTURE_SETS } }
         : path.includes("/components")
         ? { meta: { components: FIXTURE_COMPONENTS } }
-        : { name: "QUIX v2" }; // /v1/files/KEY1/meta
+        : { name: "Example Library v2" }; // /v1/files/KEY1/meta
       return new Response(JSON.stringify(body), { status: 200 });
     }) as any;
     try {
@@ -821,7 +821,7 @@ describe("formatLibraryList", () => {
       name: "Badge",
       variants: 1,
       description: "Status chip",
-      library: "QUIX v2",
+      library: "Example Library v2",
     });
     expect(out.sets[0].keys).toBeUndefined();
   });
@@ -1586,9 +1586,9 @@ Expected: build succeeds; no TypeScript errors.
 
 - [ ] **Step 2: End-to-end verification with the live plugin** (requires: relay running, plugin joined to a channel, env vars set, MCP server restarted)
 
-1. `get_library_components` → returns the QUIX set list (Accordion, Badge, Banner...).
+1. `get_library_components` → returns the library set list (Accordion, Badge, Banner...).
 2. `search_library_components {query: "badge"}` → Badge with score 100, componentKey, `State` values.
-3. `create_node_tree` with `{ "type": "frame", "width": 400, "height": 200, "layoutMode": "VERTICAL", "children": [{ "type": "instance", "component": "$lib:Badge", "properties": { "State": "Success" } }] }` → real QUIX Badge instance appears in the frame.
+3. `create_node_tree` with `{ "type": "frame", "width": 400, "height": 200, "layoutMode": "VERTICAL", "children": [{ "type": "instance", "component": "$lib:Badge", "properties": { "State": "Success" } }] }` → real library Badge instance appears in the frame.
 4. `create_node_tree` with `"component": "$lib:zzz-nonexistent"` → error listing candidates/proposal directive, nothing placed.
 5. `build_page_section {template: "component_proposal", props: {name: "Metric Tile", rationale: [{candidate: "Badge", reason: "cannot hold a KPI value + trend"}]}}` → proposal frame renders with all sections.
 

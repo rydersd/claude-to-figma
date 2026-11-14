@@ -21435,7 +21435,7 @@ function parseWireframe(filePath) {
   const fileSize = Buffer.byteLength(raw, "utf-8");
   const titleMatch = raw.match(/<title>([^<]+)<\/title>/i);
   const rawTitle = titleMatch ? titleMatch[1].trim() : "Unknown";
-  const pageTitle = rawTitle.replace(/\s*[\u00B7\-]\s*Equinix PCP Partner Portal\s*$/i, "").trim();
+  const pageTitle = rawTitle.replace(/\s+\u00B7\s+[^\u00B7]+$/, "").trim();
   const persona = detectPersona(rawTitle);
   const variant = detectVariant(rawTitle);
   const rawSections = splitBySections(raw);

@@ -7,8 +7,8 @@
 
 claude-to-figma can *place* a published library component (`create_component_instance` →
 `figma.importComponentByKeyAsync(componentKey)`) but has no way to *discover* one. `get_local_components`
-scans only local pages. When designing in a file with an enabled team library (e.g. QUIX Component
-Library v2), Claude cannot see that Accordion, Badge, Banner, etc. exist — so it draws raw shapes
+scans only local pages. When designing in a file with an enabled team library (e.g. a team component
+library), Claude cannot see that Accordion, Badge, Banner, etc. exist — so it draws raw shapes
 instead of placing real design-system instances.
 
 Figma's Plugin API cannot enumerate library components (only library *variables* via

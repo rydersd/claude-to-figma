@@ -72,18 +72,18 @@ const FIXTURE_SETS = [
 
 describe("buildLibraryIndex", () => {
   test("groups variants under their component set with merged property values", () => {
-    const index = buildLibraryIndex("FILEKEY", "QUIX v2", FIXTURE_COMPONENTS, FIXTURE_SETS);
+    const index = buildLibraryIndex("FILEKEY", "Example Library v2", FIXTURE_COMPONENTS, FIXTURE_SETS);
     const badge = index.find((s) => s.setName === "Badge")!;
     expect(badge.variants.length).toBe(2);
     expect(badge.description).toBe("Status indicator chip");
     expect(badge.propertyValues).toEqual({ State: ["Default", "Success"] });
     expect(badge.variants[0].key).toBe("badge-default-key");
-    expect(badge.libraryName).toBe("QUIX v2");
+    expect(badge.libraryName).toBe("Example Library v2");
     expect(badge.libraryFileKey).toBe("FILEKEY");
   });
 
   test("treats components without a state group as single-variant sets", () => {
-    const index = buildLibraryIndex("FILEKEY", "QUIX v2", FIXTURE_COMPONENTS, FIXTURE_SETS);
+    const index = buildLibraryIndex("FILEKEY", "Example Library v2", FIXTURE_COMPONENTS, FIXTURE_SETS);
     const divider = index.find((s) => s.setName === "Divider")!;
     expect(divider.variants.length).toBe(1);
     expect(divider.variants[0].key).toBe("divider-key");
@@ -106,7 +106,7 @@ describe("buildLibraryIndex", () => {
         containing_frame: { pageName: "Icons" },
       },
     ];
-    const index = buildLibraryIndex("FILEKEY", "QUIX v2", twoStandalone, []);
+    const index = buildLibraryIndex("FILEKEY", "Example Library v2", twoStandalone, []);
     expect(index.length).toBe(2);
     const v1 = index.find((s) => s.variants[0].key === "icon-share-v1")!;
     const v2 = index.find((s) => s.variants[0].key === "icon-share-v2")!;
@@ -120,7 +120,7 @@ function makeSet(setName: string, extra: Partial<import("../src/llm2figma_mcp/to
     setName,
     description: "",
     libraryFileKey: "F",
-    libraryName: "QUIX v2",
+    libraryName: "Example Library v2",
     variants: [{ key: setName.toLowerCase() + "-key", name: setName, properties: {} }],
     propertyValues: {},
     ...extra,
@@ -283,7 +283,7 @@ describe("loadLibraryIndex", () => {
         ? { meta: { component_sets: FIXTURE_SETS } }
         : path.includes("/components")
         ? { meta: { components: FIXTURE_COMPONENTS } }
-        : { name: "QUIX v2" }; // /v1/files/KEY1/meta
+        : { name: "Example Library v2" }; // /v1/files/KEY1/meta
       return new Response(JSON.stringify(body), { status: 200 });
     }) as any;
     try {
@@ -354,7 +354,7 @@ describe("formatLibraryList", () => {
       name: "Badge",
       variants: 1,
       description: "Status chip",
-      library: "QUIX v2",
+      library: "Example Library v2",
     });
     expect(out.sets[0].keys).toBeUndefined();
   });
