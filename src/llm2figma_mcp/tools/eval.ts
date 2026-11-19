@@ -5,7 +5,7 @@ import type { SendCommandFn } from "../types.js";
 // The plugin runs with documentAccess: dynamic-page, so Figma rejects the
 // synchronous lookups that scripts written for other bridges often use.
 export const DYNAMIC_PAGE_HINT =
-  "This plugin uses documentAccess: dynamic-page, so synchronous lookups are rejected. Use the async forms: await figma.getNodeByIdAsync(id), await figma.getStyleByIdAsync(id), await page.loadAsync() before reading another page's children, and await figma.variables.getVariableByIdAsync(id).";
+  "This plugin uses documentAccess: dynamic-page, so synchronous lookups are rejected. Use the async forms: await figma.getNodeByIdAsync(id), await figma.getStyleByIdAsync(id), await instance.getMainComponentAsync() instead of instance.mainComponent (findAll/findOne callbacks cannot await, so collect instances first, then await each), await page.loadAsync() before reading another page's children, and await figma.variables.getVariableByIdAsync(id).";
 
 export function evalErrorText(error: string | undefined): string {
   const text = `Eval error: ${error}`;
@@ -15,7 +15,7 @@ export function evalErrorText(error: string | undefined): string {
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
   server.tool(
     "figma_eval",
-    "WARNING: Executes arbitrary JavaScript in the Figma plugin sandbox. Can read, modify, or delete any nodes in the document. Use with caution. Code is the body of an async function receiving: figma, hexToFigmaColor, appendOrInsertChild, loadAllFonts, getVariableByName, bindVariableToColor, resolveColorValue, sendProgressUpdate, introspectNode, setProperties. Use `return` to send results. Figma nodes auto-serialize to {id, name, type}. Only async document APIs work (documentAccess: dynamic-page): use await figma.getNodeByIdAsync(id), not figma.getNodeById(id).",
+    "WARNING: Executes arbitrary JavaScript in the Figma plugin sandbox. Can read, modify, or delete any nodes in the document. Use with caution. Code is the body of an async function receiving: figma, hexToFigmaColor, appendOrInsertChild, loadAllFonts, getVariableByName, bindVariableToColor, resolveColorValue, sendProgressUpdate, introspectNode, setProperties. Use `return` to send results. Figma nodes auto-serialize to {id, name, type}. Only async document APIs work (documentAccess: dynamic-page): use await figma.getNodeByIdAsync(id), not figma.getNodeById(id), and await instance.getMainComponentAsync(), not instance.mainComponent.",
     {
       code: z.string().describe("JavaScript code body. Use `return` for results. `figma` and helpers available as locals."),
     },
