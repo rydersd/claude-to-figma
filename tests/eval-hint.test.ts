@@ -9,6 +9,12 @@ describe("figma_eval error hint", () => {
     expect(text).toContain("figma.getNodeByIdAsync(id)");
   });
 
+  test("tells callers how to read an instance's main component", () => {
+    const text = evalErrorText("in get_mainComponent: Cannot call with documentAccess: dynamic-page. Use node.getMainComponentAsync instead.");
+    expect(text).toContain("getMainComponentAsync()");
+    expect(text).toContain("collect instances first");
+  });
+
   test("leaves other errors unchanged", () => {
     expect(evalErrorText("x is not defined")).toBe("Eval error: x is not defined");
   });
