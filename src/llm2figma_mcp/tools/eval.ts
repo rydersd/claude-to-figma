@@ -7,9 +7,14 @@ import type { SendCommandFn } from "../types.js";
 export const DYNAMIC_PAGE_HINT =
   "This plugin uses documentAccess: dynamic-page, so synchronous lookups are rejected. Use the async forms: await figma.getNodeByIdAsync(id), await figma.getStyleByIdAsync(id), await instance.getMainComponentAsync() instead of instance.mainComponent (findAll/findOne callbacks cannot await, so collect instances first, then await each), await page.loadAsync() before reading another page's children, and await figma.variables.getVariableByIdAsync(id).";
 
+export const UNLOADED_FONT_HINT =
+  "Load a text node's fonts before editing it: await loadAllFonts(textNode) (a local in figma_eval; it handles mixed fonts and caches loads for the session).";
+
 export function evalErrorText(error: string | undefined): string {
   const text = `Eval error: ${error}`;
-  return /dynamic-page/.test(error ?? "") ? `${text}\n${DYNAMIC_PAGE_HINT}` : text;
+  if (/dynamic-page/.test(error ?? "")) return `${text}\n${DYNAMIC_PAGE_HINT}`;
+  if (/unloaded font/i.test(error ?? "")) return `${text}\n${UNLOADED_FONT_HINT}`;
+  return text;
 }
 
 // Reading instance.mainComponent always throws under dynamic-page, and Figma logs
@@ -28,7 +33,7 @@ export const SYNC_MAIN_COMPONENT_TEXT =
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
   server.tool(
     "figma_eval",
-    "WARNING: Executes arbitrary JavaScript in the Figma plugin sandbox. Can read, modify, or delete any nodes in the document. Use with caution. Code is the body of an async function receiving: figma, hexToFigmaColor, appendOrInsertChild, loadAllFonts, getVariableByName, bindVariableToColor, resolveColorValue, sendProgressUpdate, introspectNode, setProperties, resizeWithReadBack. Use `return` to send results. Figma nodes auto-serialize to {id, name, type}. Only async document APIs work (documentAccess: dynamic-page): use await figma.getNodeByIdAsync(id), not figma.getNodeById(id), and await instance.getMainComponentAsync(), not instance.mainComponent. Figma ignores resize() without an error on any layer inside an instance (ids starting with \"I\") and clamps it to min/max sizes: call resizeWithReadBack(node, w, h) instead, which returns { applied, partial, cause }.",
+    "WARNING: Executes arbitrary JavaScript in the Figma plugin sandbox. Can read, modify, or delete any nodes in the document. Use with caution. Code is the body of an async function receiving: figma, hexToFigmaColor, appendOrInsertChild, loadAllFonts, getVariableByName, bindVariableToColor, resolveColorValue, sendProgressUpdate, introspectNode, setProperties, resizeWithReadBack. Use `return` to send results. Figma nodes auto-serialize to {id, name, type}. Only async document APIs work (documentAccess: dynamic-page): use await figma.getNodeByIdAsync(id), not figma.getNodeById(id), and await instance.getMainComponentAsync(), not instance.mainComponent. Figma ignores resize() without an error on any layer inside an instance (ids starting with \"I\") and clamps it to min/max sizes: call resizeWithReadBack(node, w, h) instead, which returns { applied, partial, cause }. Before editing text, await loadAllFonts(textNode). An instance cannot take new children and its layers' x/y cannot be overridden: place additions as siblings of the instance instead.",
     {
       code: z.string().describe("JavaScript code body. Use `return` for results. `figma` and helpers available as locals."),
     },

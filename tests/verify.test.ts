@@ -101,8 +101,8 @@ describe("resize read-back", () => {
     });
   });
   test("each cause is named, and an unexplained partial says so", () => {
-    expect(resizeReadBack({ width: 10, height: 20 }, { width: 10, height: 50 }, { minHeight: 50 }).cause).toBe("height: minHeight is 50");
-    expect(resizeReadBack({ width: 900, height: 20 }, { width: 400, height: 20 }, { maxWidth: 400 }).cause).toBe("width: maxWidth is 400");
+    expect(resizeReadBack({ width: 10, height: 20 }, { width: 10, height: 50 }, { minHeight: 50 }).cause).toStartWith("height: minHeight is 50 (set minHeight = null on this node");
+    expect(resizeReadBack({ width: 900, height: 20 }, { width: 400, height: 20 }, { maxWidth: 400 }).cause).toStartWith("width: maxWidth is 400 (set maxWidth = null on this node");
     expect(resizeReadBack({ width: 10, height: 20 }, { width: 64, height: 20 }, { layoutSizingHorizontal: "HUG" }).cause).toBe("width: layoutSizingHorizontal is HUG");
     // Issue #52: inside an instance Figma drops the resize, whatever the sizing mode.
     expect(resizeReadBack({ width: 56, height: 40 }, { width: 860, height: 40 }, { layoutSizingHorizontal: "FIXED", insideInstance: true }).cause)
@@ -120,7 +120,7 @@ describe("resize read-back", () => {
     expect(result.requested).toEqual({ width: 300, height: 80 });
     expect(result.applied).toEqual({ width: 300, height: 200 });
     expect(result.partial).toBe(true);
-    expect(result.cause).toBe("height: minHeight is 200");
+    expect(result.cause).toStartWith("height: minHeight is 200 (set minHeight = null");
   });
 
   test("a mock that drops the height with no explanation is reported unexplained", async () => {
@@ -149,7 +149,8 @@ describe("resize read-back", () => {
     ] });
     expect(result.results[0]).toMatchObject({ success: true, op: "resize", nodeId: ok.id, name: ok.name, width: 40, height: 50, partial: false, cause: null });
     // `width`/`height` stay the requested values, as before; `applied` is what Figma did.
-    expect(result.results[1]).toMatchObject({ width: 40, height: 50, applied: { width: 40, height: 120 }, partial: true, cause: "height: minHeight is 120" });
+    expect(result.results[1]).toMatchObject({ width: 40, height: 50, applied: { width: 40, height: 120 }, partial: true });
+    expect(result.results[1].cause).toStartWith("height: minHeight is 120 (set minHeight = null");
   });
 });
 

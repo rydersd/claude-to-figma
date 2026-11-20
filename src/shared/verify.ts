@@ -60,8 +60,8 @@ function axisCause(axis: "width" | "height", requested: number, applied: number,
   const maxName = horizontal ? "maxWidth" : "maxHeight";
   if (s.insideInstance) return `${axis}: the layer is inside an instance, where Figma ignores resize(); resize it in the main component, or detach the instance`;
   if (sizing === "HUG" || sizing === "FILL") return `${axis}: ${horizontal ? "layoutSizingHorizontal" : "layoutSizingVertical"} is ${sizing}`;
-  if (typeof min === "number" && requested < min - SIZE_EPSILON) return `${axis}: ${minName} is ${min}`;
-  if (typeof max === "number" && requested > max + SIZE_EPSILON) return `${axis}: ${maxName} is ${max}`;
+  if (typeof min === "number" && requested < min - SIZE_EPSILON) return `${axis}: ${minName} is ${min} (set ${minName} = null on this node before resizing; on an instance that is a local override, so never clear it on the component)`;
+  if (typeof max === "number" && requested > max + SIZE_EPSILON) return `${axis}: ${maxName} is ${max} (set ${maxName} = null on this node before resizing; on an instance that is a local override, so never clear it on the component)`;
   if (s.type === "TEXT" && (s.textAutoResize === "WIDTH_AND_HEIGHT" || (!horizontal && s.textAutoResize === "HEIGHT"))) {
     return `${axis}: textAutoResize is ${s.textAutoResize}`;
   }

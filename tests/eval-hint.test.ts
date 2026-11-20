@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DYNAMIC_PAGE_HINT, evalErrorText, syncMainComponentRead } from "../src/llm2figma_mcp/tools/eval";
+import { DYNAMIC_PAGE_HINT, UNLOADED_FONT_HINT, evalErrorText, syncMainComponentRead } from "../src/llm2figma_mcp/tools/eval";
 
 describe("figma_eval error hint", () => {
   test("adds the async-lookup hint when Figma rejects a sync call under dynamic-page", () => {
@@ -13,6 +13,12 @@ describe("figma_eval error hint", () => {
     const text = evalErrorText("in get_mainComponent: Cannot call with documentAccess: dynamic-page. Use node.getMainComponentAsync instead.");
     expect(text).toContain("getMainComponentAsync()");
     expect(text).toContain("collect instances first");
+  });
+
+  test("points unloaded-font errors at the loadAllFonts local", () => {
+    const text = evalErrorText('in set_characters: Cannot write to node with unloaded font "Inter Regular". Please call figma.loadFontAsync({ family: "Inter", style: "Regular" }) and await the returned promise first.');
+    expect(text).toContain(UNLOADED_FONT_HINT);
+    expect(text).not.toContain(DYNAMIC_PAGE_HINT);
   });
 
   test("leaves other errors unchanged", () => {
