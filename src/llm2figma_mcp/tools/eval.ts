@@ -12,6 +12,19 @@ export function evalErrorText(error: string | undefined): string {
   return /dynamic-page/.test(error ?? "") ? `${text}\n${DYNAMIC_PAGE_HINT}` : text;
 }
 
+// Reading instance.mainComponent always throws under dynamic-page, and Figma logs
+// each throw to the plugin console. Scripts copied from skills written for other
+// Figma bridges do this inside findAll/findOne callbacks, so catch it before the
+// script runs: no console error, no half-applied changes, and the fix up front.
+// componentPropertyReferences.mainComponent is a plain string and stays allowed.
+export function syncMainComponentRead(code: string): boolean {
+  const stripped = code.replace(/componentPropertyReferences\s*(\?\.|\.)\s*mainComponent/g, "");
+  return /(\?\.|\.)\s*mainComponent\b(?!\s*=[^=])/.test(stripped);
+}
+
+export const SYNC_MAIN_COMPONENT_TEXT =
+  "Eval not run: the script reads .mainComponent, which Figma rejects under documentAccess: dynamic-page. Use await instance.getMainComponentAsync(). findAll/findOne callbacks cannot await, so collect the instances first (const insts = root.findAllWithCriteria({ types: [\"INSTANCE\"] })), then loop: for (const i of insts) { const mc = await i.getMainComponentAsync(); ... }.";
+
 export function registerTools(server: McpServer, sendCommandToFigma: SendCommandFn) {
   server.tool(
     "figma_eval",
@@ -20,6 +33,9 @@ export function registerTools(server: McpServer, sendCommandToFigma: SendCommand
       code: z.string().describe("JavaScript code body. Use `return` for results. `figma` and helpers available as locals."),
     },
     async ({ code }: { code: string }) => {
+      if (syncMainComponentRead(code)) {
+        return { content: [{ type: "text" as const, text: SYNC_MAIN_COMPONENT_TEXT }] };
+      }
       try {
         const result = await sendCommandToFigma("figma_eval", { code }, 120000);
         const typedResult = result as { success: boolean; result?: any; error?: string };
