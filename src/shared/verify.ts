@@ -39,6 +39,9 @@ export interface SizingState {
   minHeight?: number | null;
   maxHeight?: number | null;
   textAutoResize?: string;
+  // A layer inside an instance (its id starts with "I"). Figma ignores resize()
+  // there and throws nothing; measured live, 20 Nov 2026 (issue #52).
+  insideInstance?: boolean;
 }
 
 export interface ResizeReadBack {
@@ -55,6 +58,7 @@ function axisCause(axis: "width" | "height", requested: number, applied: number,
   const max = horizontal ? s.maxWidth : s.maxHeight;
   const minName = horizontal ? "minWidth" : "minHeight";
   const maxName = horizontal ? "maxWidth" : "maxHeight";
+  if (s.insideInstance) return `${axis}: the layer is inside an instance, where Figma ignores resize(); resize it in the main component, or detach the instance`;
   if (sizing === "HUG" || sizing === "FILL") return `${axis}: ${horizontal ? "layoutSizingHorizontal" : "layoutSizingVertical"} is ${sizing}`;
   if (typeof min === "number" && requested < min - SIZE_EPSILON) return `${axis}: ${minName} is ${min}`;
   if (typeof max === "number" && requested > max + SIZE_EPSILON) return `${axis}: ${maxName} is ${max}`;

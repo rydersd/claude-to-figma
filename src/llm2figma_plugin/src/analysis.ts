@@ -1252,11 +1252,12 @@ export async function figmaEval(params: any) {
   var fn = new AsyncFunction("figma", "hexToFigmaColor", "appendOrInsertChild",
     "loadAllFonts", "getVariableByName", "bindVariableToColor",
     "resolveColorValue", "sendProgressUpdate", "introspectNode", "setProperties",
-    params.code);
+    "resizeWithReadBack", params.code);
   try {
     var rawResult = await fn(figma, hexToFigmaColor, appendOrInsertChild,
       loadAllFonts, getVariableByName, bindVariableToColor,
-      resolveColorValue, sendProgressUpdate, introspectNode, setProperties);
+      resolveColorValue, sendProgressUpdate, introspectNode, setProperties,
+      resizeWithReadBack);
     return { success: true, result: safeSerialize(rawResult) };
   } catch (error: any) {
     return { success: false, error: formatError(error) };

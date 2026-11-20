@@ -3431,6 +3431,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
     const max = horizontal ? s.maxWidth : s.maxHeight;
     const minName = horizontal ? "minWidth" : "minHeight";
     const maxName = horizontal ? "maxWidth" : "maxHeight";
+    if (s.insideInstance) return `${axis}: the layer is inside an instance, where Figma ignores resize(); resize it in the main component, or detach the instance`;
     if (sizing === "HUG" || sizing === "FILL") return `${axis}: ${horizontal ? "layoutSizingHorizontal" : "layoutSizingVertical"} is ${sizing}`;
     if (typeof min === "number" && requested < min - SIZE_EPSILON) return `${axis}: ${minName} is ${min}`;
     if (typeof max === "number" && requested > max + SIZE_EPSILON) return `${axis}: ${maxName} is ${max}`;
@@ -3513,7 +3514,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       maxWidth: node.maxWidth,
       minHeight: node.minHeight,
       maxHeight: node.maxHeight,
-      textAutoResize: node.textAutoResize
+      textAutoResize: node.textAutoResize,
+      insideInstance: typeof node.id === "string" && node.id.charAt(0) === "I"
     });
   }
   function positionEntry(node) {
@@ -8526,6 +8528,7 @@ Processing annotation ${i + 1}/${annotations.length}:`,
       "sendProgressUpdate",
       "introspectNode",
       "setProperties",
+      "resizeWithReadBack",
       params.code
     );
     try {
@@ -8539,7 +8542,8 @@ Processing annotation ${i + 1}/${annotations.length}:`,
         resolveColorValue,
         sendProgressUpdate,
         introspectNode,
-        setProperties
+        setProperties,
+        resizeWithReadBack
       );
       return { success: true, result: safeSerialize(rawResult) };
     } catch (error) {
