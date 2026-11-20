@@ -20671,10 +20671,18 @@ function evalErrorText(error) {
   return /dynamic-page/.test(error ?? "") ? `${text}
 ${DYNAMIC_PAGE_HINT}` : text;
 }
+function syncMainComponentRead(code) {
+  const stripped = code.replace(/componentPropertyReferences\s*(\?\.|\.)\s*mainComponent/g, "");
+  return /(\?\.|\.)\s*mainComponent\b(?!\s*=[^=])/.test(stripped);
+}
+var SYNC_MAIN_COMPONENT_TEXT = 'Eval not run: the script reads .mainComponent, which Figma rejects under documentAccess: dynamic-page. Use await instance.getMainComponentAsync(). findAll/findOne callbacks cannot await, so collect the instances first (const insts = root.findAllWithCriteria({ types: ["INSTANCE"] })), then loop: for (const i of insts) { const mc = await i.getMainComponentAsync(); ... }.';
 function registerTools21(server, sendCommandToFigma2) {
   server.tool("figma_eval", "WARNING: Executes arbitrary JavaScript in the Figma plugin sandbox. Can read, modify, or delete any nodes in the document. Use with caution. Code is the body of an async function receiving: figma, hexToFigmaColor, appendOrInsertChild, loadAllFonts, getVariableByName, bindVariableToColor, resolveColorValue, sendProgressUpdate, introspectNode, setProperties. Use `return` to send results. Figma nodes auto-serialize to {id, name, type}. Only async document APIs work (documentAccess: dynamic-page): use await figma.getNodeByIdAsync(id), not figma.getNodeById(id), and await instance.getMainComponentAsync(), not instance.mainComponent.", {
     code: z2.string().describe("JavaScript code body. Use `return` for results. `figma` and helpers available as locals.")
   }, async ({ code }) => {
+    if (syncMainComponentRead(code)) {
+      return { content: [{ type: "text", text: SYNC_MAIN_COMPONENT_TEXT }] };
+    }
     try {
       const result = await sendCommandToFigma2("figma_eval", { code }, 120000);
       const typedResult = result;
