@@ -21,6 +21,7 @@ export function resizeWithReadBack(node: any, width: number, height: number): Re
     minWidth: node.minWidth, maxWidth: node.maxWidth,
     minHeight: node.minHeight, maxHeight: node.maxHeight,
     textAutoResize: node.textAutoResize,
+    insideInstance: typeof node.id === "string" && node.id.charAt(0) === "I",
   });
 }
 

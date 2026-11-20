@@ -104,6 +104,9 @@ describe("resize read-back", () => {
     expect(resizeReadBack({ width: 10, height: 20 }, { width: 10, height: 50 }, { minHeight: 50 }).cause).toBe("height: minHeight is 50");
     expect(resizeReadBack({ width: 900, height: 20 }, { width: 400, height: 20 }, { maxWidth: 400 }).cause).toBe("width: maxWidth is 400");
     expect(resizeReadBack({ width: 10, height: 20 }, { width: 64, height: 20 }, { layoutSizingHorizontal: "HUG" }).cause).toBe("width: layoutSizingHorizontal is HUG");
+    // Issue #52: inside an instance Figma drops the resize, whatever the sizing mode.
+    expect(resizeReadBack({ width: 56, height: 40 }, { width: 860, height: 40 }, { layoutSizingHorizontal: "FIXED", insideInstance: true }).cause)
+      .toBe("width: the layer is inside an instance, where Figma ignores resize(); resize it in the main component, or detach the instance");
     expect(resizeReadBack({ width: 10, height: 20 }, { width: 10, height: 30 }, { layoutSizingVertical: "FILL" }).cause).toBe("height: layoutSizingVertical is FILL");
     expect(resizeReadBack({ width: 10, height: 20 }, { width: 10, height: 18 }, { type: "TEXT", textAutoResize: "HEIGHT" }).cause).toBe("height: textAutoResize is HEIGHT");
     expect(resizeReadBack({ width: 10, height: 20 }, { width: 10, height: 100 }, {}).cause).toContain("height: unexplained");
