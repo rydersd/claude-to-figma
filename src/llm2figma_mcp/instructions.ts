@@ -3,7 +3,7 @@
 // flagged tools that are actually registered are mentioned.
 import { isEnabled } from "../shared/flags";
 
-export const FEEDBACK_REPO = "rydersd/claude-to-figma";
+export const FEEDBACK_REPO = "rydersd/llm-to-figma";
 export const FEEDBACK_LABEL = "l2f-feedback";
 
 export function serverInstructions(env: Record<string, string | undefined> = process.env): string {

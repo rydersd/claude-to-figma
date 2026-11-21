@@ -35,7 +35,7 @@ Full documentation lives in the [project wiki](docs/Home.md) — setup, architec
 You need the **Figma desktop app** and [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`). In Claude Code:
 
 ```
-/plugin marketplace add rydersd/claude-to-figma
+/plugin marketplace add rydersd/llm-to-figma
 /plugin install llm2figma@rydersd
 ```
 

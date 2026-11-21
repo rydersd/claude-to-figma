@@ -33,7 +33,7 @@ describe("server instructions", () => {
       expect(text).toContain("layoutWarnings");
       expect(text).toContain("get_local_components");
       expect(text).toContain("three times");
-      expect(text).toContain("gh issue create -R rydersd/claude-to-figma --label l2f-feedback");
+      expect(text).toContain("gh issue create -R rydersd/llm-to-figma --label l2f-feedback");
       expect(text).toContain("The repository is public");
     }
   });
